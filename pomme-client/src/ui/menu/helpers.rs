@@ -237,10 +237,42 @@ pub(super) fn push_button_f(
     label: &str,
     enabled: bool,
 ) -> bool {
+    push_button_spans_f(
+        elements,
+        ctx,
+        any_hovered,
+        cursor,
+        clicked,
+        x,
+        y,
+        w,
+        h,
+        gs,
+        vec![TextSpan::new(label.into(), common::WHITE)],
+        enabled,
+    )
+}
+
+/// A focusable button whose label preserves per-span colors and formatting.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn push_button_spans_f(
+    elements: &mut Vec<MenuElement>,
+    ctx: &mut FocusCtx,
+    any_hovered: &mut bool,
+    cursor: (f32, f32),
+    clicked: bool,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    gs: f32,
+    spans: Vec<TextSpan>,
+    enabled: bool,
+) -> bool {
     let real_hovered = enabled && common::hit_test(cursor, [x, y, w, h]);
     let focused = ctx.focused(enabled, real_hovered);
     let draw_cursor = focus_cursor(focused, real_hovered, x, y, w, h, cursor);
-    common::push_button(
+    common::push_button_spans(
         elements,
         draw_cursor,
         x,
@@ -249,7 +281,7 @@ pub(super) fn push_button_f(
         h,
         gs,
         common::FONT_SIZE * gs,
-        label,
+        spans,
         enabled,
     );
     *any_hovered |= real_hovered;

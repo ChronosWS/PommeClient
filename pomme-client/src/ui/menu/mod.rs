@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
 use crate::app::core::DisplayMode;
-use crate::app::input::KeyBindings;
+use crate::app::input::{Action, KeyBindings};
 use crate::audio::SoundCategory;
 use crate::renderer::CloudMode;
 use crate::renderer::pipelines::menu_overlay::{
@@ -542,6 +542,7 @@ fn atlas_dirty(count: usize, last: &mut usize, since: &mut Option<Instant>) -> b
 
 pub struct MainMenu {
     pub key_bindings: KeyBindings,
+    action_binding: Option<Action>,
     username: String,
     version: String,
     screen: Screen,
@@ -698,6 +699,7 @@ impl MainMenu {
         let settings = load_settings(game_dir);
         Self {
             key_bindings: settings.key_bindings,
+            action_binding: None,
             username,
             version,
             screen: Screen::Main,
@@ -818,6 +820,7 @@ impl MainMenu {
     fn set_screen(&mut self, screen: Screen) {
         self.flush_settings();
         self.screen = screen;
+        self.action_binding = None;
         self.focused_field = None;
         self.focus = None;
         self.screen_gen += 1;

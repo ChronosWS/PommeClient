@@ -544,7 +544,20 @@ impl MainMenu {
                 //
                 // Binding Button
                 //
-                let binding_clicked = push_button_f(
+                let selected = self.action_binding.as_ref() == Some(entry.action);
+                let mut binding_span = TextSpan::new(binding.into_owned(), WHITE);
+                binding_span.underline = selected;
+                let spans = if selected {
+                    let yellow = common::rgb(0xffff55);
+                    vec![
+                        TextSpan::new("> ".into(), yellow),
+                        binding_span,
+                        TextSpan::new(" <".into(), yellow),
+                    ]
+                } else {
+                    vec![binding_span]
+                };
+                let binding_clicked = push_button_spans_f(
                     &mut elements,
                     ctx,
                     &mut any_hovered,
@@ -555,9 +568,17 @@ impl MainMenu {
                     binding_button_width,
                     BTN_H * gs,
                     gs,
-                    &binding,
+                    spans,
                     true,
                 );
+                if binding_clicked {
+                    self.action_binding = if selected {
+                        None
+                    } else {
+                        Some(entry.action.clone())
+                    };
+                    any_clicked = true;
+                }
 
                 //
                 // Reset Button
@@ -617,7 +638,9 @@ impl MainMenu {
         if done_pressed {
             // TODO: Hardcoded, not using the settings_back functionality for now
             self.set_screen(Screen::OptionsControls);
-            return empty_result(1.0);
+            let mut result = empty_result(1.0);
+            result.clicked_button = true;
+            return result;
         }
 
         MainMenuResult {

@@ -688,14 +688,61 @@ fn push_button_inner(
     enabled: bool,
     scroll: Option<&LabelScroll<'_>>,
 ) -> bool {
-    let hovered = enabled && hit_test(cursor, [x, y, w, h]);
+    let hovered = push_button_background(elements, cursor, x, y, w, h, gs, enabled);
+    let text_col = if enabled { WHITE } else { COL_DISABLED };
+    push_widget_label(elements, x, y, w, h, gs, fs, label, text_col, scroll);
+    hovered
+}
 
-    let (sprite, text_col) = if !enabled {
-        (SpriteId::ButtonDisabled, COL_DISABLED)
+/// A button with a centered, styled label. Disabled labels retain formatting
+/// but use the standard inactive text color.
+#[allow(clippy::too_many_arguments)]
+pub fn push_button_spans(
+    elements: &mut Vec<MenuElement>,
+    cursor: (f32, f32),
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    gs: f32,
+    fs: f32,
+    mut spans: Vec<crate::ui::text::TextSpan>,
+    enabled: bool,
+) -> bool {
+    let hovered = push_button_background(elements, cursor, x, y, w, h, gs, enabled);
+    if !enabled {
+        for span in &mut spans {
+            span.color = COL_DISABLED;
+        }
+    }
+    elements.push(MenuElement::TextSpans {
+        x: x + w / 2.0,
+        y: y + (h - fs) / 2.0 + 1.0,
+        spans,
+        scale: fs,
+        centered: true,
+    });
+    hovered
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_button_background(
+    elements: &mut Vec<MenuElement>,
+    cursor: (f32, f32),
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    gs: f32,
+    enabled: bool,
+) -> bool {
+    let hovered = enabled && hit_test(cursor, [x, y, w, h]);
+    let sprite = if !enabled {
+        SpriteId::ButtonDisabled
     } else if hovered {
-        (SpriteId::ButtonHover, WHITE)
+        SpriteId::ButtonHover
     } else {
-        (SpriteId::ButtonNormal, WHITE)
+        SpriteId::ButtonNormal
     };
 
     let border = if enabled { BTN_BORDER } else { 1.0 };
@@ -708,8 +755,6 @@ fn push_button_inner(
         border: border * gs,
         tint: WHITE,
     });
-
-    push_widget_label(elements, x, y, w, h, gs, fs, label, text_col, scroll);
 
     hovered
 }
