@@ -1,40 +1,9 @@
-//! Input System
+//! Physical input state, logical action metadata, and persistent key bindings.
 //!
-//! Conceptual overview:
-//!
-//! The input system is responsible for mapping physical inputs such
-//! as keyboard, mouse and controller inputs to actions taken within
-//! the client.  It consists of the following components:
-//! - An input-binding-label, such as "key.keyboard.w" representing the W key
-//!   that can appear in a configuration file
-//! - An input-event, which represents the physical input the client reads from
-//!   the hardward
-//! - An action-binding, representing the intent of the user when the bound
-//!   input is recognized.
-//! - An action-context, which represents when the action is allowed to be taken
-//!
-//! For example, consider the following definition:
-//! input-binding-label: key.keyboard.w
-//! input-event: winit::keyboard::PhysicalKey::Code(87)
-//! action-binding: Action::Forward
-//! action-context: Game
-//!
-//! This would mean that in the config file, there would be an entry like:
-//! "input": [
-//!     {
-//!         "label": "key.keyboard.w",
-//!         "input": "W",
-//!         "action": "Forward",
-//!         "context": "Game"
-//!     }
-//! ]
-//!
-//! When the keyboard key for "W" is pressed, that key would be sent to the
-//! ActionMap which would then evaluate it against the current game Context
-//! to return the Action.  The Action would then be executed according to
-//! its rules.
-//!
-//! This does imply there is also a game context
+//! Key bindings serialize action IDs to arrays of physical input IDs, for
+//! example `"key.jump": ["key.keyboard.space", "key.gamepad.south"]`.
+//! The Key Binds screen edits these settings using limited input capture;
+//! live gameplay still uses the existing hardcoded mappings.
 use std::collections::{HashMap, HashSet};
 
 use gilrs::ff::{BaseEffect, Effect, EffectBuilder, Repeat, Replay};
@@ -47,15 +16,12 @@ use crate::app::phases::AppPhase;
 use crate::app::state_slot::StateSlot;
 
 pub mod action;
-pub mod action_map;
+
 pub mod input_key;
 pub mod key_bindings;
 mod metadata;
 
 pub use action::{Action, ActionCategory, ActionCategoryMetadata, ActionMetadata};
-pub use action_map::{
-    ControllerEvent, GameContext, GameContextId, InputEvent, KeyEvent, MouseEvent,
-};
 pub use input_key::{InputIdError, InputKey};
 pub use key_bindings::{ActionBindingsRef, KeyBinding, KeyBindings};
 pub use metadata::{ActionId, BindingMetadata, DisplayText, StringId};
@@ -485,11 +451,36 @@ impl InputState {
     pub fn on_gamepad_event(&mut self, event: &gilrs::Event) {
         self.active_gamepad_id = Some(event.id);
 
+        if self.binding_capture {
+            tracing::info!(
+                gamepad_id = ?event.id,
+                gilrs_event = ?event.event,
+                "Gamepad event during key binding capture"
+            );
+            if let Some(gamepad) = self.get_active_gamepad() {
+                tracing::info!(
+                    name = gamepad.name(),
+                    os_name = gamepad.os_name(),
+                    uuid = ?gamepad.uuid(),
+                    mapping_source = ?gamepad.mapping_source(),
+                    left_trigger_code = ?gamepad.button_code(Button::LeftTrigger2),
+                    right_trigger_code = ?gamepad.button_code(Button::RightTrigger2),
+                    "Gamepad mapping during key binding capture"
+                );
+            }
+        }
+
         if let gilrs::EventType::ButtonReleased(button, _) = event.event {
             self.binding_gamepad_buttons_down
                 .remove(&(event.id, button));
         } else if self.binding_capture {
+            // DualSense triggers can emit an unmapped digital ButtonPressed(Unknown)
+            // before the mapped analog trigger crosses gilrs's press threshold and
+            // emits ButtonPressed(RightTrigger2). Capture accepts the first press,
+            // so ignore Unknown rather than letting the duplicate signal win.
+            // Unknown also cannot distinguish different unmapped physical buttons.
             if let gilrs::EventType::ButtonPressed(button, _) = event.event
+                && button != Button::Unknown
                 && self.binding_gamepad_buttons_down.insert((event.id, button))
             {
                 let input = InputKey::Controller(button);

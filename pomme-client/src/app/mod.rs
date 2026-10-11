@@ -670,6 +670,9 @@ impl ApplicationHandler for App {
                 ) || matches!(self.phase.get(), AppPhase::InGame { game, .. } if game.paused || game.gui_open())
                     || self.core.input.is_cursor_captured() =>
             {
+                // TODO: Investigate controller touchpad clicks arriving as mouse
+                // input (DualShock/DualSense), including whether a separate gamepad
+                // event is available and whether the pointer source can be identified.
                 self.core.input.on_mouse_button(button, state);
             }
 
