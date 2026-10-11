@@ -12,6 +12,7 @@ use winit::keyboard::KeyCode;
 use winit::monitor::MonitorHandle;
 use winit::window::{CursorGrabMode, Fullscreen, Window};
 
+use crate::app::action_consumers::ActionConsumers;
 use crate::app::input::{
     Action, InputState, KEY_BACK, KEY_FORWARD, KEY_LEFT, KEY_RIGHT, STICK_MOVEMENT_THRESHOLD,
 };
@@ -470,6 +471,7 @@ pub struct AppCore {
     pub presence: Option<DiscordPresence>,
     pub display_mode: DisplayMode,
     pub input: InputState,
+    pub action_consumers: ActionConsumers,
     pub menu: MainMenu,
     pub tokio_rt: Arc<tokio::runtime::Runtime>,
     pub data_dirs: DataDirs,
@@ -619,6 +621,7 @@ impl AppCore {
             presence,
             display_mode,
             input: InputState::new(),
+            action_consumers: ActionConsumers::default(),
             menu,
             tokio_rt,
             data_dirs,

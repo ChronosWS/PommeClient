@@ -737,7 +737,7 @@ impl ApplicationHandler for App {
                 let core = &mut self.core;
 
                 core.input.collect_gamepad_events();
-                let should_apply_cursor_grab = action_consumers::process_actions(
+                let should_apply_cursor_grab = core.action_consumers.process_actions(
                     &mut core.input,
                     &mut self.phase,
                     frame_time,
