@@ -334,6 +334,10 @@ pub struct MainMenuResult {
 
 #[derive(Default)]
 pub struct MenuInput {
+    /// Dedicated Key Binds capture; ordinary menu input is neutral in this
+    /// mode.
+    pub binding_capture: bool,
+    pub binding_presses: Vec<crate::app::input::InputKey>,
     pub cursor: (f32, f32),
     pub clicked: bool,
     pub mouse_held: bool,
@@ -376,6 +380,8 @@ impl MenuInput {
     /// click or key state.
     pub fn backdrop() -> Self {
         Self {
+            binding_capture: false,
+            binding_presses: Vec::new(),
             cursor: (-1.0, -1.0),
             clicked: false,
             mouse_held: false,
@@ -817,10 +823,18 @@ impl MainMenu {
         self.set_screen(Screen::OptionsChatSettings);
     }
 
+    pub fn binding_capture_active(&self) -> bool {
+        matches!(self.screen, Screen::OptionsKeybinds) && self.action_binding.is_some()
+    }
+
+    pub fn end_binding_capture(&mut self) {
+        self.action_binding = None;
+    }
+
     fn set_screen(&mut self, screen: Screen) {
         self.flush_settings();
         self.screen = screen;
-        self.action_binding = None;
+        self.end_binding_capture();
         self.focused_field = None;
         self.focus = None;
         self.screen_gen += 1;

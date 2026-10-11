@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::input::{DisplayText, StringId};
+use crate::app::input::{DisplayText, InputKey, StringId};
 use crate::resource_pack::PackCompat;
 use crate::ui::common::BTN_H;
 use crate::ui::text::TextSpan;
@@ -386,6 +386,31 @@ impl MainMenu {
         input: &MenuInput,
         text_width_fn: common::TextWidthFn,
     ) -> MainMenuResult {
+        let capturing = input.binding_capture || self.action_binding.is_some();
+        if let Some(action) = self.action_binding.as_ref()
+            && let Some(pressed) = input.binding_presses.first()
+        {
+            let inputs = if matches!(
+                pressed,
+                InputKey::Keyboard(winit::keyboard::KeyCode::Escape)
+            ) {
+                Vec::new()
+            } else {
+                vec![pressed.clone()]
+            };
+            self.key_bindings.set(action.clone(), inputs);
+            self.end_binding_capture();
+            self.settings_dirty = true;
+            self.save_settings();
+        }
+        // The accepting press must not also activate a widget or navigate back.
+        let neutral_input = MenuInput {
+            cursor: input.cursor,
+            dt: input.dt,
+            ..MenuInput::default()
+        };
+        let input = if capturing { &neutral_input } else { input };
+
         // Early-out input handling
         if input.escape {
             // TODO: Hardcoded, not using the settings_back functionality for now
@@ -2098,6 +2123,78 @@ mod tests {
         );
         menu.gui_scale_setting = 1;
         menu
+    }
+
+    #[test]
+    fn binding_capture_replaces_all_inputs_without_activating_done() {
+        let mut menu = test_menu("pomme-keybind-capture-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        menu.action_binding = Some(Action::Jump);
+        menu.build_options_keybinds(
+            800.0,
+            600.0,
+            &MenuInput {
+                binding_capture: true,
+                binding_presses: vec![
+                    InputKey::Mouse(winit::event::MouseButton::Left),
+                    InputKey::Keyboard(winit::keyboard::KeyCode::KeyW),
+                ],
+                cursor: (400.0, 575.0),
+                clicked: true,
+                enter: true,
+                ..MenuInput::default()
+            },
+            &|_, _| 0.0,
+        );
+        assert!(matches!(menu.screen, Screen::OptionsKeybinds));
+        assert!(menu.action_binding.is_none());
+        let entry = menu
+            .key_bindings
+            .iter()
+            .find(|entry| *entry.action == Action::Jump)
+            .unwrap();
+        assert!(matches!(
+            entry.inputs,
+            [InputKey::Mouse(winit::event::MouseButton::Left)]
+        ));
+    }
+
+    #[test]
+    fn escape_capture_unbinds_instead_of_navigating_back() {
+        let mut menu = test_menu("pomme-keybind-unbind-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        menu.action_binding = Some(Action::Jump);
+        menu.build_options_keybinds(
+            800.0,
+            600.0,
+            &MenuInput {
+                binding_capture: true,
+                binding_presses: vec![InputKey::Keyboard(winit::keyboard::KeyCode::Escape)],
+                escape: true,
+                ..MenuInput::default()
+            },
+            &|_, _| 0.0,
+        );
+        assert!(matches!(menu.screen, Screen::OptionsKeybinds));
+        assert!(menu.action_binding.is_none());
+        assert!(
+            menu.key_bindings
+                .iter()
+                .find(|entry| *entry.action == Action::Jump)
+                .unwrap()
+                .inputs
+                .is_empty()
+        );
+        menu.build_options_keybinds(
+            800.0,
+            600.0,
+            &MenuInput {
+                escape: true,
+                ..MenuInput::default()
+            },
+            &|_, _| 0.0,
+        );
+        assert!(matches!(menu.screen, Screen::OptionsControls));
     }
 
     /// A grid of one `Pair` row at 800x600: the left widget spans x 245..395

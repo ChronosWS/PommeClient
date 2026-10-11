@@ -325,6 +325,14 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        let binding_capture = self.core.menu.binding_capture_active()
+            && self.core.unfocused_since.is_none()
+            && match self.phase.get() {
+                AppPhase::InMenu { .. } => true,
+                AppPhase::InGame { game, .. } => game.options_from_game && !game.dialog_open(),
+                _ => false,
+            };
+        self.core.input.set_binding_capture(binding_capture);
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
                 // A world saves on the way out, so the window stays up for it
@@ -385,6 +393,10 @@ impl ApplicationHandler for App {
             // TODO: Migrate _fully_ to Action system
             WindowEvent::KeyboardInput { event, .. } => {
                 self.phase.transition(|mut app| {
+                    if self.core.input.captures_key_event(&event) {
+                        self.core.input.on_key_event(&event);
+                        return app;
+                    }
                     // F3 held suppresses global keys (vanilla
                     // handleGlobalKeyPress); press only, no repeat.
                     if let Some(Gfx { window, .. }) = app.gfx_mut()
@@ -666,6 +678,10 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::Focused(focused) => {
+                if !focused {
+                    self.core.menu.end_binding_capture();
+                    self.core.input.set_binding_capture(false);
+                }
                 self.core.unfocused_since = (!focused).then(Instant::now);
                 // The window manager may silently drop a cursor lock on focus
                 // change, so a quick refocus (under the pause-on-lost-focus

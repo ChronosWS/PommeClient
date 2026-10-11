@@ -99,6 +99,11 @@ impl<'de> Deserialize<'de> for KeyBindings {
 }
 
 impl KeyBindings {
+    /// Replace all inputs for an action; an empty vector explicitly unbinds it.
+    pub fn set(&mut self, action: Action, inputs: Vec<InputKey>) {
+        self.0.insert(action, inputs);
+    }
+
     /// Configured bindings; callers choose the UI's category and display order.
     pub fn iter(&self) -> impl Iterator<Item = ActionBindingsRef<'_>> {
         self.0.iter().map(|(action, inputs)| ActionBindingsRef {

@@ -649,6 +649,17 @@ impl AppCore {
     }
 
     pub fn build_menu_input(&mut self, dt: f32) -> MenuInput {
+        if self.input.binding_capture_active() {
+            self.menu_dpad.step(0, dt);
+            self.input.consume_menu_scroll();
+            return MenuInput {
+                cursor: self.input.cursor_pos(),
+                dt,
+                binding_capture: true,
+                binding_presses: self.input.take_binding_presses(),
+                ..MenuInput::default()
+            };
+        }
         let credits_keys_down = credits_key_mask(|code| self.input.key_pressed(code));
         let credits_keys_pressed = credits_key_mask(|code| self.input.key_just_pressed(code));
         let dpad_dir = i32::from(self.input.gamepad_button_down(gilrs::Button::DPadRight))
@@ -669,6 +680,7 @@ impl AppCore {
             dt,
             credits_keys_down,
             credits_keys_pressed,
+            ..MenuInput::default()
         }
     }
 
