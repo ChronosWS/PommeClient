@@ -1680,7 +1680,7 @@ pub(crate) fn server_dialog_key(
         // to the screen under it.
         if code == KeyCode::Escape {
             game.escape_chat();
-            core.input.clear_action(input::Action::OpenMenu);
+            core.input.consume_latest_action(input::Action::Close);
             core.apply_cursor_grab(window, Some(game));
         } else {
             core.input.on_menu_key_event(event);
@@ -1694,7 +1694,7 @@ pub(crate) fn server_dialog_key(
                 .as_mut()
                 .and_then(|dialog| dialog.handle_escape());
             settle_server_dialog(action, core, connection, game);
-            core.input.clear_action(input::Action::OpenMenu);
+            core.input.consume_latest_action(input::Action::Close);
             core.apply_cursor_grab(window, Some(game));
         }
         KeyCode::Tab => {

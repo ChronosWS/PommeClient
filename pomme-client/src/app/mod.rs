@@ -521,9 +521,9 @@ impl ApplicationHandler for App {
                                     match code {
                                         KeyCode::Escape => {
                                             let closed = game.escape_chat();
-                                            self.core
-                                                .input
-                                                .clear_action(crate::app::input::Action::OpenMenu);
+                                            self.core.input.consume_latest_action(
+                                                crate::app::input::Action::Close,
+                                            );
                                             if closed {
                                                 self.core.apply_cursor_grab(
                                                     &gfx.window,
@@ -542,9 +542,9 @@ impl ApplicationHandler for App {
                                     match code {
                                         KeyCode::Escape => {
                                             game.close_creative_inventory();
-                                            self.core
-                                                .input
-                                                .clear_action(crate::app::input::Action::OpenMenu);
+                                            self.core.input.consume_latest_action(
+                                                crate::app::input::Action::Close,
+                                            );
                                             self.core
                                                 .apply_cursor_grab(&gfx.window, Some(&mut game));
                                         }
@@ -575,9 +575,9 @@ impl ApplicationHandler for App {
                                             game.pause_screen =
                                                 crate::ui::pause::PauseScreen::Hidden;
                                             game.f3_chord_consumed = true;
-                                            self.core
-                                                .input
-                                                .clear_action(crate::app::input::Action::OpenMenu);
+                                            self.core.input.consume_latest_action(
+                                                crate::app::input::Action::Close,
+                                            );
                                             self.core
                                                 .apply_cursor_grab(&gfx.window, Some(&mut game));
                                         }

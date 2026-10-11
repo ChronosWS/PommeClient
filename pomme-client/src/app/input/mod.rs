@@ -350,10 +350,6 @@ impl InputState {
                     self.selected_slot = (self.selected_slot + 8) % 9;
                 }
 
-                Button::Start => {
-                    self.recent_actions.insert(Action::OpenMenu, true);
-                }
-
                 Button::DPadRight => {
                     self.recent_actions.insert(Action::OpenChat, true);
                 }
@@ -366,10 +362,6 @@ impl InputState {
                 }
                 Button::LeftTrigger2 => {
                     self.recent_actions.insert(Action::Use, false);
-                }
-
-                Button::Start => {
-                    self.recent_actions.insert(Action::OpenMenu, false);
                 }
 
                 Button::DPadRight => {
@@ -401,9 +393,7 @@ impl InputState {
                 self.is_right_mouse_held() || self.is_gamepad_button_held(Button::LeftTrigger2)
             }
             Action::ToggleInventory => self.is_action_held(action),
-            Action::OpenMenu => {
-                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::Start)
-            }
+            Action::OpenMenu => self.is_action_held(action),
             Action::ViewPlayerList => self.is_action_held(action),
             Action::ChangePerspective => {
                 self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadUp)
@@ -417,6 +407,14 @@ impl InputState {
             Action::DropItem | Action::SwapOffhand => self.is_default_key_held(action),
             // Vanilla `key.spectatorHotbar` default: middle mouse.
             Action::SpectatorHotbar => self.middle_click.held,
+        }
+    }
+
+    /// Preserve raw screen/debug handling until those paths migrate to
+    /// consumers.
+    pub(crate) fn consume_latest_action(&mut self, action: Action) {
+        if !self.binding_capture {
+            self.action_events.consume_latest_action(action);
         }
     }
 
@@ -587,9 +585,6 @@ impl InputState {
                                 .action_press_counts
                                 .entry(Action::SwapOffhand)
                                 .or_insert(0) += 1;
-                        }
-                        KeyCode::Escape => {
-                            self.recent_actions.insert(Action::OpenMenu, true);
                         }
 
                         KeyCode::KeyT => {

@@ -92,9 +92,14 @@ enum InputEvent {
     FocusLost,
 }
 
+struct QueuedInput {
+    event: InputEvent,
+    consumed_action: Option<Action>,
+}
+
 #[derive(Default)]
 pub struct ActionDispatcher {
-    input_queue: VecDeque<InputEvent>,
+    input_queue: VecDeque<QueuedInput>,
     action_states: ActionStates,
 }
 
@@ -110,26 +115,43 @@ impl ActionDispatcher {
     }
 
     pub fn on_press(&mut self, source: InputSource) {
-        self.input_queue.push_back(InputEvent::Press(source));
+        self.queue_input(InputEvent::Press(source));
     }
 
     pub fn on_repeat(&mut self, source: &InputSource) {
-        self.input_queue
-            .push_back(InputEvent::Repeat(source.clone()));
+        self.queue_input(InputEvent::Repeat(source.clone()));
     }
 
     pub fn on_release(&mut self, source: &InputSource) {
-        self.input_queue
-            .push_back(InputEvent::Release(source.clone()));
+        self.queue_input(InputEvent::Release(source.clone()));
     }
 
     pub fn on_device_disconnected(&mut self, device: InputDeviceId) {
-        self.input_queue
-            .push_back(InputEvent::DeviceDisconnected(device));
+        self.queue_input(InputEvent::DeviceDisconnected(device));
     }
 
     pub fn on_focus_lost(&mut self) {
-        self.input_queue.push_back(InputEvent::FocusLost);
+        self.queue_input(InputEvent::FocusLost);
+    }
+
+    fn queue_input(&mut self, event: InputEvent) {
+        self.input_queue.push_back(QueuedInput {
+            event,
+            consumed_action: None,
+        });
+    }
+
+    /// Transitional bridge for raw handlers that already handled the latest
+    /// collected press/repeat. Resolution and held state remain unchanged;
+    /// only delivery of this action for that occurrence is consumed.
+    pub(crate) fn consume_latest_action(&mut self, action: Action) {
+        if let Some(QueuedInput {
+            event: InputEvent::Press(_) | InputEvent::Repeat(_),
+            consumed_action,
+        }) = self.input_queue.back_mut()
+        {
+            *consumed_action = Some(action);
+        }
     }
 
     fn press(
@@ -247,7 +269,12 @@ impl ActionDispatcher {
         handlers: &mut [&mut ActionHandler<'_>],
     ) {
         let mut events = Vec::new();
-        while let Some(input) = self.input_queue.pop_front() {
+        while let Some(QueuedInput {
+            event: input,
+            consumed_action: consumed,
+        }) = self.input_queue.pop_front()
+        {
+            let occurrence_start = events.len();
             match input {
                 InputEvent::Press(source) => {
                     self.press(source, frame_time, &mut resolve_bindings, &mut events)
@@ -265,6 +292,14 @@ impl ActionDispatcher {
                 InputEvent::FocusLost => {
                     self.cancel(None, ReleaseReason::FocusLost, frame_time, &mut events)
                 }
+            }
+            if let Some(action) = consumed {
+                let occurrence = events.split_off(occurrence_start);
+                events.extend(
+                    occurrence
+                        .into_iter()
+                        .filter(|event| event.action != action),
+                );
             }
         }
         for event in events {

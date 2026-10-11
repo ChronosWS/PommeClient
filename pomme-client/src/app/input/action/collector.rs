@@ -6,10 +6,10 @@ use std::time::Instant;
 
 use gilrs::{Button, Event, EventType};
 use winit::event::{ElementState, WindowEvent};
-use winit::keyboard::PhysicalKey;
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 use super::dispatcher::{ActionDispatcher, ActionHandler, InputDeviceId, InputSource};
-use crate::app::input::{InputKey, KeyBindings};
+use crate::app::input::{Action, InputKey, KeyBindings};
 
 #[derive(Default)]
 pub struct ActionCollector {
@@ -28,6 +28,10 @@ impl ActionCollector {
         &self.dispatcher
     }
 
+    pub(crate) fn consume_latest_action(&mut self, action: super::Action) {
+        self.dispatcher.consume_latest_action(action);
+    }
+
     pub fn dispatch(
         &mut self,
         frame_time: Instant,
@@ -36,7 +40,15 @@ impl ActionCollector {
     ) {
         self.dispatcher.dispatch(
             frame_time,
-            |input| bindings.actions_for_input(input).cloned().collect(),
+            |input| {
+                // Escape is reserved, not a configurable binding. Capture filtering
+                // still happens at arrival, before this fixed rule can run.
+                if matches!(input, InputKey::Keyboard(KeyCode::Escape)) {
+                    vec![Action::Close]
+                } else {
+                    bindings.actions_for_input(input).cloned().collect()
+                }
+            },
             handlers,
         );
     }
@@ -168,6 +180,117 @@ mod tests {
     use crate::app::input::action::dispatcher::{
         ActionEvent, ActionEventKind, ActionStates, EventDisposition, HoldTransition, ReleaseReason,
     };
+
+    #[test]
+    fn raw_consumption_affects_only_latest_occurrence_and_not_held_state() {
+        let mut collector = ActionCollector::new();
+        let mut bindings = KeyBindings::default();
+        let escape = source(InputKey::Keyboard(KeyCode::KeyM));
+        bindings.set(Action::OpenMenu, vec![escape.input.clone()]);
+        bindings.set(Action::ChangePerspective, vec![escape.input.clone()]);
+        collector.handle_input(escape.clone(), ElementState::Pressed, false, false);
+        collector.consume_latest_action(Action::OpenMenu);
+        let events = dispatch_events(&mut collector, Instant::now(), &bindings);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, Action::ChangePerspective);
+        assert!(
+            collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::OpenMenu)
+        );
+
+        collector.handle_input(escape.clone(), ElementState::Pressed, true, false);
+        collector.consume_latest_action(Action::OpenMenu);
+        collector.handle_input(escape.clone(), ElementState::Released, false, false);
+        collector.handle_input(escape.clone(), ElementState::Pressed, false, false);
+        let events = dispatch_events(&mut collector, Instant::now(), &bindings);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.action != Action::OpenMenu
+                    || event.kind != ActionEventKind::Repeat)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.action == Action::OpenMenu
+                    && event.kind == ActionEventKind::Press)
+        );
+        assert!(events.iter().any(|event| event.action == Action::OpenMenu
+            && matches!(event.kind, ActionEventKind::Release(_))));
+        collector.handle_input(escape, ElementState::Released, false, false);
+        dispatch_events(&mut collector, Instant::now(), &bindings);
+        assert!(collector.dispatcher().action_states().is_empty());
+    }
+
+    #[test]
+    fn escape_resolves_only_close_even_when_bindings_are_replaced_or_cleared() {
+        for close_inputs in [vec![], vec![InputKey::Keyboard(KeyCode::F4)]] {
+            let mut bindings = KeyBindings::default();
+            bindings.set(Action::Close, close_inputs);
+            bindings.set(Action::OpenMenu, vec![InputKey::Keyboard(KeyCode::Escape)]);
+            let mut collector = ActionCollector::new();
+            let escape = source(InputKey::Keyboard(KeyCode::Escape));
+            collector.handle_input(escape.clone(), ElementState::Pressed, false, false);
+            let events = dispatch_events(&mut collector, Instant::now(), &bindings);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].action, Action::Close);
+            assert_eq!(events[0].kind, ActionEventKind::Press);
+            assert!(
+                collector
+                    .dispatcher()
+                    .action_states()
+                    .contains_key(&Action::Close)
+            );
+            collector.handle_input(escape.clone(), ElementState::Pressed, true, false);
+            collector.handle_input(escape, ElementState::Released, false, false);
+            let events = dispatch_events(&mut collector, Instant::now(), &bindings);
+            assert_eq!(events.len(), 2);
+            assert!(events.iter().all(|event| event.action == Action::Close));
+            assert_eq!(events[0].kind, ActionEventKind::Repeat);
+            assert!(matches!(events[1].kind, ActionEventKind::Release(_)));
+            assert!(collector.dispatcher().action_states().is_empty());
+        }
+    }
+
+    #[test]
+    fn captured_escape_is_suppressed_until_release() {
+        let bindings = KeyBindings::default();
+        let mut collector = ActionCollector::new();
+        let escape = source(InputKey::Keyboard(KeyCode::Escape));
+        collector.handle_input(escape.clone(), ElementState::Pressed, false, true);
+        collector.handle_input(escape.clone(), ElementState::Pressed, true, false);
+        assert!(dispatch_events(&mut collector, Instant::now(), &bindings).is_empty());
+        collector.handle_input(escape.clone(), ElementState::Released, false, false);
+        assert!(dispatch_events(&mut collector, Instant::now(), &bindings).is_empty());
+        collector.handle_input(escape, ElementState::Pressed, false, false);
+        assert_eq!(
+            dispatch_events(&mut collector, Instant::now(), &bindings)[0].action,
+            Action::Close
+        );
+    }
+
+    #[test]
+    fn already_handled_escape_does_not_deliver_close_again() {
+        let bindings = KeyBindings::default();
+        let mut collector = ActionCollector::new();
+        let escape = source(InputKey::Keyboard(KeyCode::Escape));
+        collector.handle_input(escape.clone(), ElementState::Pressed, false, false);
+        collector.consume_latest_action(Action::Close);
+        assert!(dispatch_events(&mut collector, Instant::now(), &bindings).is_empty());
+        assert!(
+            collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::Close)
+        );
+        collector.handle_input(escape, ElementState::Released, false, false);
+        let events = dispatch_events(&mut collector, Instant::now(), &bindings);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, ActionEventKind::Release(_)));
+        assert!(collector.dispatcher().action_states().is_empty());
+    }
 
     fn source(input: InputKey) -> InputSource {
         InputSource {

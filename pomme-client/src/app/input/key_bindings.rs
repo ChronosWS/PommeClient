@@ -15,6 +15,8 @@ pub struct ActionBindingsRef<'a> {
 /// serializes as `"key_bindings": { "key.jump": ["key.keyboard.space", ...] }`.
 /// Missing actions use defaults; saved arrays replace those defaults, and an
 /// empty array explicitly unbinds an action. Vector order is preserved.
+/// Saved Escape bindings are ignored because Escape is reserved for screen
+/// handling and clearing bindings during capture.
 #[derive(Clone)]
 pub struct KeyBindings(HashMap<Action, Vec<InputKey>>);
 

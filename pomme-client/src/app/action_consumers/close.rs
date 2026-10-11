@@ -1,13 +1,17 @@
 //! Frame-local close requests resolved from configured action bindings.
 
-use crate::app::input::Action;
+use winit::keyboard::KeyCode;
+
+use super::open_menu::{OpenMenuOutcome, process_menu_request};
 use crate::app::input::action::dispatcher::{ActionEvent, ActionEventKind, EventDisposition};
+use crate::app::input::{Action, InputKey};
 use crate::app::phases::AppPhase;
 use crate::app::phases::in_game::GameState;
 
 pub struct CloseConsumer {
     enabled: bool,
     close_requested: bool,
+    escape_requested: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +26,7 @@ impl CloseConsumer {
             enabled: !binding_capture
                 && matches!(phase, AppPhase::InGame { game, .. } if !game.dialog_open()),
             close_requested: false,
+            escape_requested: false,
         }
     }
 
@@ -29,16 +34,29 @@ impl CloseConsumer {
         if !self.enabled || event.action != Action::Close {
             return EventDisposition::Pass;
         }
-        // The existing controller close path reacts to presses, not repeats.
-        if event.kind == ActionEventKind::Press {
+        let escape = matches!(event.source.input, InputKey::Keyboard(KeyCode::Escape));
+        // Fixed Escape keeps keyboard-repeat behavior; configurable Close
+        // retains the existing press-only controller semantics.
+        if event.kind == ActionEventKind::Press || (escape && event.kind == ActionEventKind::Repeat)
+        {
             self.close_requested = true;
+            self.escape_requested |= escape;
         }
         EventDisposition::Consume
     }
 
     pub fn apply(&mut self, game: &mut GameState) -> CloseOutcome {
+        let escape_requested = std::mem::take(&mut self.escape_requested);
         if !self.take_close_request() || game.dialog_open() {
             return CloseOutcome::Unchanged;
+        }
+        if escape_requested {
+            // Physical Escape retains its screen-back/pause behavior without
+            // making controller East or other Close bindings open pause menus.
+            return match process_menu_request(game) {
+                OpenMenuOutcome::RefreshCursorGrab => CloseOutcome::RefreshCursorGrab,
+                OpenMenuOutcome::Unchanged => CloseOutcome::Unchanged,
+            };
         }
         let mut refresh_cursor_grab = false;
         if !game.dead
@@ -82,6 +100,7 @@ mod tests {
         CloseConsumer {
             enabled,
             close_requested: false,
+            escape_requested: false,
         }
     }
 
@@ -119,15 +138,14 @@ mod tests {
     }
 
     #[test]
-    fn default_controller_closes_but_escape_remains_open_menu() {
+    fn default_controller_closes_and_escape_is_not_a_configurable_binding() {
         let bindings = KeyBindings::default();
         let mut dispatcher = ActionDispatcher::new();
         dispatcher.on_press(source(InputKey::Controller(Button::East)));
         dispatcher.on_press(source(InputKey::Keyboard(KeyCode::Escape)));
         let (requested, passed) = dispatch(&mut dispatcher, &bindings, true);
         assert!(requested);
-        assert_eq!(passed.len(), 1);
-        assert_eq!(passed[0].action, Action::OpenMenu);
+        assert!(passed.is_empty());
     }
 
     #[test]
@@ -220,6 +238,36 @@ mod tests {
         event.action = Action::Jump;
         assert_eq!(close.handle_event(&event), EventDisposition::Pass);
         assert!(close.take_close_request());
+        assert!(!close.take_close_request());
+    }
+
+    #[test]
+    fn escape_requests_screen_back_behavior_and_accepts_repeats() {
+        let mut close = consumer(true);
+        let mut event = ActionEvent {
+            action: Action::Close,
+            source: source(InputKey::Keyboard(KeyCode::Escape)),
+            kind: ActionEventKind::Press,
+            timestamp: Instant::now(),
+            hold_transition: HoldTransition::Started,
+        };
+        assert_eq!(close.handle_event(&event), EventDisposition::Consume);
+        assert!(close.escape_requested);
+        assert!(close.take_close_request());
+        close.escape_requested = false;
+        event.kind = ActionEventKind::Repeat;
+        close.handle_event(&event);
+        assert!(close.escape_requested);
+        assert!(close.take_close_request());
+
+        let mut close = consumer(true);
+        event.source = source(InputKey::Keyboard(KeyCode::F4));
+        event.kind = ActionEventKind::Press;
+        close.handle_event(&event);
+        assert!(close.take_close_request());
+        assert!(!close.escape_requested);
+        event.kind = ActionEventKind::Repeat;
+        close.handle_event(&event);
         assert!(!close.take_close_request());
     }
 

@@ -3,6 +3,7 @@
 
 pub mod close;
 pub mod inventory;
+pub mod open_menu;
 pub mod perspective;
 pub mod player_list;
 
@@ -10,6 +11,7 @@ use std::time::Instant;
 
 use close::{CloseConsumer, CloseOutcome};
 use inventory::{InventoryConsumer, InventoryOutcome};
+use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
 use perspective::PerspectiveConsumer;
 use player_list::PlayerListConsumer;
 
@@ -34,6 +36,9 @@ pub fn process_actions(
     );
     let mut inventory_handler =
         |event: &ActionEvent, _: &ActionStates| inventory.handle_event(event);
+    let mut open_menu = OpenMenuConsumer::new(phase.get(), input.binding_capture_active());
+    let mut open_menu_handler =
+        |event: &ActionEvent, _: &ActionStates| open_menu.handle_event(event);
     let mut close = CloseConsumer::new(phase.get(), input.binding_capture_active());
     let mut close_handler = |event: &ActionEvent, _: &ActionStates| close.handle_event(event);
     let mut perspective = PerspectiveConsumer::new(phase.get(), input.binding_capture_active());
@@ -45,6 +50,7 @@ pub fn process_actions(
         bindings,
         &mut [
             &mut inventory_handler,
+            &mut open_menu_handler,
             &mut close_handler,
             &mut perspective_handler,
             &mut player_list_handler,
@@ -67,45 +73,7 @@ pub fn process_actions(
         {
             should_apply_cursor_grab |=
                 inventory.apply(game) == InventoryOutcome::RefreshCursorGrab;
-            // A dialog (or the confirm screen over it) is a screen, and
-            // vanilla runs no key mapping while one is up.
-            if input.action_just_pressed(Action::OpenMenu) && !game.dialog_open() {
-                if game.chat.is_open() {
-                    // ChatScreen consumes Escape before the game-level
-                    // pause action: link confirmation, then suggestions,
-                    // then the chat screen itself.
-                    should_apply_cursor_grab = game.escape_chat();
-                } else if game.game_mode_switcher.is_some() {
-                    // Esc cancels the F3+F4 switcher without applying.
-                    game.game_mode_switcher = None;
-                    should_apply_cursor_grab = true;
-                } else if game.chunk_load_bench.is_some() {
-                    // Cancel a running benchmark instead of opening the menu;
-                    // update_game restores the render distance next frame.
-                    game.chunk_load_abort = true;
-                    should_apply_cursor_grab = true;
-                } else if !game.dead && !game.death_screen_open && !game.options_from_game {
-                    use crate::ui::pause::PauseScreen;
-                    if game.inventory_open || game.open_container.is_some() {
-                        game.close_menu();
-                    } else if game.paused {
-                        // Step back through the benchmark sub-screens; close
-                        // the menu from the main screen.
-                        match game.pause_screen {
-                            PauseScreen::ChunkLoader => game.pause_screen = PauseScreen::Benchmark,
-                            PauseScreen::Benchmark => game.pause_screen = PauseScreen::Main,
-                            PauseScreen::Main | PauseScreen::Hidden => game.paused = false,
-                        }
-                    } else {
-                        game.paused = true;
-                        game.pause_screen = PauseScreen::Main;
-                    }
-
-                    should_apply_cursor_grab = true;
-                }
-
-                input.clear_action(Action::OpenMenu);
-            }
+            should_apply_cursor_grab |= open_menu.apply(game) == OpenMenuOutcome::RefreshCursorGrab;
             should_apply_cursor_grab |= close.apply(game) == CloseOutcome::RefreshCursorGrab;
             if perspective.take_change_request() {
                 gfx.renderer.cycle_camera_mode();

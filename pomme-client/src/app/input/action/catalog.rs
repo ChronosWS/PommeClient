@@ -195,7 +195,7 @@ actions! {
         fallback: "Open Menu",
         category: Miscellaneous,
         listed: false,
-        defaults: [Keyboard(KeyCode::Escape), Controller(Button::Start)],
+        defaults: [Controller(Button::Start)],
     },
     ViewPlayerList => {
         id: "key.playerlist",
@@ -229,7 +229,7 @@ actions! {
         listed: true,
         defaults: [Keyboard(KeyCode::Slash)],
     },
-    // Keyboard Escape closes through OpenMenu, not the Close action.
+    // Escape resolves to Close independently of configurable bindings.
     Close => {
         id: "key.close",
         translation_id: None,
