@@ -1611,18 +1611,20 @@ pub(crate) fn build_server_screens(
             gs,
             crate::ui::server_dialog::WidgetInput {
                 cursor: core.input.cursor_pos(),
-                clicked: core.input.left_just_pressed() && !modal_open,
-                held: core.input.left_held() && !modal_open,
-                shift: core.input.shift_held(),
+                clicked: core.input.has_pending_left_mouse_press() && !modal_open,
+                held: core.input.is_left_mouse_held() && !modal_open,
+                shift: core.input.is_shift_held(),
                 activate: !modal_open
-                    && (core.input.enter_pressed()
-                        || core.input.key_just_pressed(winit::keyboard::KeyCode::Space)),
+                    && (core.input.take_enter_press()
+                        || core
+                            .input
+                            .has_pending_key_press(winit::keyboard::KeyCode::Space)),
                 arrow_steps: i32::from(
                     core.input
-                        .key_just_pressed(winit::keyboard::KeyCode::ArrowRight),
+                        .has_pending_key_press(winit::keyboard::KeyCode::ArrowRight),
                 ) - i32::from(
                     core.input
-                        .key_just_pressed(winit::keyboard::KeyCode::ArrowLeft),
+                        .has_pending_key_press(winit::keyboard::KeyCode::ArrowLeft),
                 ),
                 tick,
                 advanced_tooltips: game.advanced_item_tooltips,
@@ -1640,7 +1642,7 @@ pub(crate) fn build_server_screens(
 
     if game.chat.has_pending_modal_prompt() {
         let cursor = core.input.cursor_pos();
-        let clicked = core.input.left_just_pressed();
+        let clicked = core.input.has_pending_left_mouse_press();
         // `AbstractButton.onClick` plays the click; this is the same
         // last-frame hit test the modal presses with.
         if clicked && game.chat.hovering_clickable(cursor, false) {
@@ -1696,7 +1698,7 @@ pub(crate) fn server_dialog_key(
         }
         KeyCode::Tab => {
             if let Some(dialog) = game.server_dialog.as_mut() {
-                dialog.handle_tab(core.input.shift_held());
+                dialog.handle_tab(core.input.is_shift_held());
             }
         }
         _ => core.input.on_menu_key_event(event),
@@ -2181,7 +2183,11 @@ pub fn update_game(
     game.update_light(core.menu.chunk_detail);
 
     // F1 (vanilla keyToggleGui); only while no screen or chat is open.
-    if core.input.key_just_pressed(winit::keyboard::KeyCode::F1) && game.input_live() {
+    if core
+        .input
+        .has_pending_key_press(winit::keyboard::KeyCode::F1)
+        && game.input_live()
+    {
         game.hide_gui = !game.hide_gui;
     }
     if std::mem::take(&mut game.stop_sleeping_requested) {
@@ -2235,13 +2241,13 @@ pub fn update_game(
 
     let partial_tick = core.tick_accumulator / TICK_RATE;
 
-    let enter = core.input.enter_pressed();
-    let tab = core.input.tab_pressed();
-    let shift = core.input.shift_held();
-    let up = core.input.up_pressed();
-    let down = core.input.down_pressed();
-    let page_up = core.input.page_up_pressed();
-    let page_down = core.input.page_down_pressed();
+    let enter = core.input.take_enter_press();
+    let tab = core.input.take_tab_press();
+    let shift = core.input.is_shift_held();
+    let up = core.input.take_arrow_up_press();
+    let down = core.input.take_arrow_down_press();
+    let page_up = core.input.take_page_up_press();
+    let page_down = core.input.take_page_down_press();
     // The ordered key/char stream goes to whichever text consumer owns this
     // frame; menus (in-game options) drain it themselves in build_menu_input.
     let text_events = if game.chat.is_open() || game.wants_text_input() {
@@ -2791,8 +2797,8 @@ pub fn update_game(
             &lines,
             status.as_ref(),
             core.input.cursor_pos(),
-            core.input.left_just_pressed(),
-            core.input.escape_pressed(),
+            core.input.has_pending_left_mouse_press(),
+            core.input.take_escape_press(),
         );
         apply_result_action(action, ResultKind::Fps, status, json, core, gfx, game);
     }
@@ -2913,8 +2919,8 @@ pub fn update_game(
             &lines,
             status.as_ref(),
             core.input.cursor_pos(),
-            core.input.left_just_pressed(),
-            core.input.escape_pressed(),
+            core.input.has_pending_left_mouse_press(),
+            core.input.take_escape_press(),
         );
         apply_result_action(action, ResultKind::ChunkLoad, status, json, core, gfx, game);
     }
@@ -2940,7 +2946,7 @@ pub fn update_game(
         core.sync_display_mode(&gfx.window);
     } else if game.death_screen_open && !dialog_open {
         let cursor = core.input.cursor_pos();
-        let clicked = core.input.left_just_pressed() && !game.respawn_sent;
+        let clicked = core.input.has_pending_left_mouse_press() && !game.respawn_sent;
         death_action = if game.death_confirm {
             death::build_death_confirm(
                 &mut elements,
@@ -2972,7 +2978,7 @@ pub fn update_game(
         core.input.clear_just_pressed_actions();
     } else if game.paused && !matches!(game.pause_screen, PauseScreen::Hidden) && !dialog_open {
         let cursor = core.input.cursor_pos();
-        let clicked = core.input.left_just_pressed();
+        let clicked = core.input.has_pending_left_mouse_press();
         pause_action = pause::build_pause_menu(
             &mut elements,
             sw,
@@ -2994,18 +3000,24 @@ pub fn update_game(
         let keys_live = !game.wants_text_input();
         let menu_scroll = core.input.consume_menu_scroll_xy();
         let input = crate::ui::container::ContainerInput {
-            left_pressed: core.input.left_just_pressed(),
-            right_pressed: core.input.right_just_pressed(),
-            middle_pressed: core.input.middle_just_pressed(),
-            left_held: core.input.left_held(),
-            right_held: core.input.right_held(),
-            shift: core.input.shift_held(),
+            left_pressed: core.input.has_pending_left_mouse_press(),
+            right_pressed: core.input.has_pending_right_mouse_press(),
+            middle_pressed: core.input.has_pending_middle_mouse_press(),
+            left_held: core.input.is_left_mouse_held(),
+            right_held: core.input.is_right_mouse_held(),
+            shift: core.input.is_shift_held(),
             hotbar_swap: keys_live
-                .then(|| core.input.hotbar_key_just_pressed())
+                .then(|| core.input.has_pending_hotbar_key_press())
                 .flatten(),
-            swap_offhand: keys_live && core.input.key_just_pressed(winit::keyboard::KeyCode::KeyF),
-            throw: keys_live && core.input.key_just_pressed(winit::keyboard::KeyCode::KeyQ),
-            throw_all: core.input.ctrl_held(),
+            swap_offhand: keys_live
+                && core
+                    .input
+                    .has_pending_key_press(winit::keyboard::KeyCode::KeyF),
+            throw: keys_live
+                && core
+                    .input
+                    .has_pending_key_press(winit::keyboard::KeyCode::KeyQ),
+            throw_all: core.input.is_ctrl_held(),
         };
         // The anvil rename field consumes this frame's typing; a changed
         // accepted name goes to the server (vanilla `onNameChanged`).
@@ -3248,9 +3260,9 @@ pub fn update_game(
     // selection, the bundle tooltip); only survival containers have them here.
     if game.creative_inventory_open && !dialog_open {
         let cursor = core.input.cursor_pos();
-        let clicked = core.input.left_just_pressed();
-        let middle_clicked = core.input.middle_just_pressed();
-        let right_clicked = core.input.right_just_pressed();
+        let clicked = core.input.has_pending_left_mouse_press();
+        let middle_clicked = core.input.has_pending_middle_mouse_press();
+        let right_clicked = core.input.has_pending_right_mouse_press();
         let scroll_delta = core.input.consume_menu_scroll();
         // `typed`/`backspace` come from the frame's single drain up top; a
         // second drain here would always read empty.
@@ -3265,14 +3277,16 @@ pub fn update_game(
             right_clicked,
             scroll_delta,
             &text_events,
-            core.input.key_just_pressed(winit::keyboard::KeyCode::KeyT),
-            core.input.hotbar_key_just_pressed(),
-            core.input.key_just_pressed(winit::keyboard::KeyCode::KeyF),
+            core.input
+                .has_pending_key_press(winit::keyboard::KeyCode::KeyT),
+            core.input.has_pending_hotbar_key_press(),
+            core.input
+                .has_pending_key_press(winit::keyboard::KeyCode::KeyF),
             &game.player.inventory,
             gs,
             game.advanced_item_tooltips,
-            core.input.left_held(),
-            core.input.right_held(),
+            core.input.is_left_mouse_held(),
+            core.input.is_right_mouse_held(),
             &|t, s| gfx.renderer.menu_text_width(t, s),
         );
         player_preview = crate::ui::creative_inventory::player_preview(
@@ -3328,7 +3342,7 @@ pub fn update_game(
         // targets before its widgets.
         let chat_takes_click = game
             .chat
-            .hovering_clickable(core.input.cursor_pos(), core.input.shift_held());
+            .hovering_clickable(core.input.cursor_pos(), core.input.is_shift_held());
         let chat_action = game.chat.build(
             &mut elements,
             crate::ui::chat::ChatBuildContext {
@@ -3337,8 +3351,8 @@ pub fn update_game(
                 gui_scale: gs,
                 cursor: core.input.cursor_pos(),
                 covered: dialog_open,
-                clicked: core.input.left_just_pressed(),
-                shift: core.input.shift_held(),
+                clicked: core.input.has_pending_left_mouse_press(),
+                shift: core.input.is_shift_held(),
                 command_tree: command_tree.as_deref(),
                 advanced_item_tooltips: game.advanced_item_tooltips,
                 text_width_fn: &|t, s| gfx.renderer.menu_text_width(t, s),
@@ -3361,7 +3375,7 @@ pub fn update_game(
                 crate::lang::translate("multiplayer.stopSleeping").unwrap_or("Leave Bed"),
                 true,
             );
-            if hovered && core.input.left_just_pressed() && !chat_takes_click {
+            if hovered && core.input.has_pending_left_mouse_press() && !chat_takes_click {
                 core.audio.play_ui_click();
                 game.stop_sleeping_requested = true;
             }
@@ -3417,7 +3431,7 @@ pub fn update_game(
     if game.chat.is_open() && !dialog_open && core.input.cursor_moved_this_frame() {
         let icon = if game
             .chat
-            .hovering_clickable(core.input.cursor_pos(), core.input.shift_held())
+            .hovering_clickable(core.input.cursor_pos(), core.input.is_shift_held())
         {
             winit::window::CursorIcon::Pointer
         } else {

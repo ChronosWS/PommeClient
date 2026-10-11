@@ -207,7 +207,7 @@ pub fn draw_status(
             fs,
             label,
             true,
-        ) && core.input.left_just_pressed();
+        ) && core.input.has_pending_left_mouse_press();
     }
 
     core.input.clear_just_pressed_actions();

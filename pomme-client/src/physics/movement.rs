@@ -645,7 +645,7 @@ fn update_sprint_state(
         player.sprint_toggle_timer -= 1;
     }
     let current_shift = input.performing_action(input::Action::Sneak);
-    let current_backward = input.key_pressed(KeyCode::KeyS)
+    let current_backward = input.is_key_held(KeyCode::KeyS)
         || input
             .get_gamepad_movement_axes()
             .map(|vec| vec.y < -input::STICK_MOVEMENT_THRESHOLD)
@@ -1070,16 +1070,16 @@ fn move_vector(input: &InputState) -> (f32, f32) {
     } else {
         let mut forward = 0.0_f32;
         let mut strafe = 0.0_f32;
-        if input.key_pressed(KeyCode::KeyW) {
+        if input.is_key_held(KeyCode::KeyW) {
             forward += 1.0;
         }
-        if input.key_pressed(KeyCode::KeyS) {
+        if input.is_key_held(KeyCode::KeyS) {
             forward -= 1.0;
         }
-        if input.key_pressed(KeyCode::KeyA) {
+        if input.is_key_held(KeyCode::KeyA) {
             strafe += 1.0;
         }
-        if input.key_pressed(KeyCode::KeyD) {
+        if input.is_key_held(KeyCode::KeyD) {
             strafe -= 1.0;
         }
         normalize_vec2(strafe, forward)
@@ -1424,10 +1424,10 @@ mod tests {
         plain.position = shifted.position;
 
         let mut shift_input = InputState::released();
-        shift_input.set_key_pressed_for_test(KeyCode::KeyW, true);
-        shift_input.set_key_pressed_for_test(KeyCode::ShiftLeft, true);
+        shift_input.set_key_held_for_test(KeyCode::KeyW, true);
+        shift_input.set_key_held_for_test(KeyCode::ShiftLeft, true);
         let mut plain_input = InputState::released();
-        plain_input.set_key_pressed_for_test(KeyCode::KeyW, true);
+        plain_input.set_key_held_for_test(KeyCode::KeyW, true);
 
         tick(
             &mut shifted,
@@ -1534,7 +1534,7 @@ mod tests {
         let stone = find_state("stone", &[]);
         chunks.set_block_state(8, 65, 8, stone);
         let mut input = InputState::released();
-        input.set_key_pressed_for_test(KeyCode::ShiftLeft, true);
+        input.set_key_held_for_test(KeyCode::ShiftLeft, true);
         update_player_pose(&mut player, &input, (&chunks).into(), true);
         assert!(player.crouching);
         assert!(!player.swimming_pose);
@@ -1594,8 +1594,8 @@ mod tests {
         player.food = 20;
 
         let mut input = InputState::released();
-        input.set_key_pressed_for_test(KeyCode::KeyW, true);
-        input.set_key_pressed_for_test(KeyCode::ShiftLeft, true);
+        input.set_key_held_for_test(KeyCode::KeyW, true);
+        input.set_key_held_for_test(KeyCode::ShiftLeft, true);
         let anim = BlockEntityAnimStore::default();
 
         tick(&mut player, &input, &chunks, &anim, 1.0, false, None);
@@ -1657,7 +1657,7 @@ mod tests {
         );
 
         let mut input = InputState::released();
-        input.set_key_pressed_for_test(KeyCode::KeyW, true);
+        input.set_key_held_for_test(KeyCode::KeyW, true);
         let (slowed_forward, _) = movement_input(&input, is_moving_slowly(&player), 1.0);
         let (full_forward, _) = movement_input(&input, false, 1.0);
 
@@ -1785,7 +1785,7 @@ mod tests {
         );
 
         let mut descending = InputState::released();
-        descending.set_key_pressed_for_test(KeyCode::ShiftLeft, true);
+        descending.set_key_held_for_test(KeyCode::ShiftLeft, true);
         player.sprinting = true;
         update_sprint_state(&mut player, &descending, false, false, None);
         assert!(
@@ -1802,7 +1802,7 @@ mod tests {
         player.was_shift_pressed = true;
 
         let mut forward = InputState::released();
-        forward.set_key_pressed_for_test(KeyCode::KeyW, true);
+        forward.set_key_held_for_test(KeyCode::KeyW, true);
         update_sprint_state(&mut player, &forward, true, false, None);
         assert_eq!(
             player.sprint_toggle_timer, DEFAULT_SPRINT_WINDOW,
@@ -1814,7 +1814,7 @@ mod tests {
         player.was_shift_pressed = false;
         player.was_forward_pressed = true;
         let mut backward = InputState::released();
-        backward.set_key_pressed_for_test(KeyCode::KeyS, true);
+        backward.set_key_held_for_test(KeyCode::KeyS, true);
         update_sprint_state(&mut player, &backward, false, false, None);
         assert_eq!(player.sprint_toggle_timer, 0);
     }
@@ -1822,8 +1822,8 @@ mod tests {
     #[test]
     fn item_slowdown_blocks_start_but_does_not_cancel_existing_sprint() {
         let mut input = InputState::released();
-        input.set_key_pressed_for_test(KeyCode::KeyW, true);
-        input.set_key_pressed_for_test(KeyCode::ControlLeft, true);
+        input.set_key_held_for_test(KeyCode::KeyW, true);
+        input.set_key_held_for_test(KeyCode::ControlLeft, true);
 
         let mut player = LocalPlayer::new();
         player.food = 20;
@@ -1842,8 +1842,8 @@ mod tests {
     #[test]
     fn shallow_water_stops_existing_run_sprint_even_while_sprint_key_is_held() {
         let mut input = InputState::released();
-        input.set_key_pressed_for_test(KeyCode::KeyW, true);
-        input.set_key_pressed_for_test(KeyCode::ControlLeft, true);
+        input.set_key_held_for_test(KeyCode::KeyW, true);
+        input.set_key_held_for_test(KeyCode::ControlLeft, true);
 
         let mut player = LocalPlayer::new();
         player.sprinting = true;
@@ -2023,9 +2023,9 @@ mod tests {
     #[test]
     fn forward_and_backward_cancel_the_forward_impulse() {
         let mut input = InputState::released();
-        input.set_key_pressed_for_test(KeyCode::KeyW, true);
+        input.set_key_held_for_test(KeyCode::KeyW, true);
         assert!(has_forward_impulse(&input));
-        input.set_key_pressed_for_test(KeyCode::KeyS, true);
+        input.set_key_held_for_test(KeyCode::KeyS, true);
         assert!(!has_forward_impulse(&input));
     }
 
@@ -2039,7 +2039,7 @@ mod tests {
         player.may_fly = true;
         player.jump_trigger_time = 5;
         let mut input = InputState::released();
-        input.set_key_pressed_for_test(KeyCode::Space, true);
+        input.set_key_held_for_test(KeyCode::Space, true);
 
         tick(
             &mut player,

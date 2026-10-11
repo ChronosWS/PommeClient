@@ -131,7 +131,7 @@ fn keycode_translation(key: KeyCode) -> Option<(&'static str, &'static str)> {
 }
 
 pub struct InputState {
-    pressed: HashSet<KeyCode>,
+    held_keys: HashSet<KeyCode>,
     modifiers: Modifiers,
     mouse_delta: (f64, f64),
     cursor_captured: bool,
@@ -153,14 +153,14 @@ pub struct InputState {
     /// the carried slot, and middle click is `key.spectatorHotbar`.
     pub spectator: bool,
     /// Digit presses queued for the spectator menu, drained per tick like the
-    /// click counts (vanilla routes them in `handleKeybinds`).
+    /// action press counts (vanilla routes them in `handleKeybinds`).
     spectator_slot_presses: Vec<u8>,
     /// Keys pressed since the last `end_frame`, including OS key repeats:
     /// vanilla dispatches GLFW repeats to screens and debug chords.
-    just_pressed: HashSet<KeyCode>,
+    pending_key_presses: HashSet<KeyCode>,
     /// Per-action press counters mirroring vanilla `KeyMapping.click`, so a
     /// key repeating faster than the tick rate still fires once per press.
-    click_counts: HashMap<Action, u32>,
+    action_press_counts: HashMap<Action, u32>,
     /// Ordered key/char events for focused text fields, mirroring vanilla's
     /// `keyPressed` + `charTyped` callback pair. Drained once per frame by
     /// whichever screen owns the focused field.
@@ -171,14 +171,14 @@ pub struct InputState {
     // ended on the preceding frame (notably F3's release-triggered shortcut).
     binding_keys_down: HashSet<KeyCode>,
     binding_gamepad_buttons_down: HashSet<(gilrs::GamepadId, Button)>,
-    enter_pressed: bool,
-    escape_pressed: bool,
-    tab_pressed: bool,
-    f5_pressed: bool,
-    up_pressed: bool,
-    down_pressed: bool,
-    page_up_pressed: bool,
-    page_down_pressed: bool,
+    enter_press_pending: bool,
+    escape_press_pending: bool,
+    tab_press_pending: bool,
+    f5_press_pending: bool,
+    arrow_up_press_pending: bool,
+    arrow_down_press_pending: bool,
+    page_up_press_pending: bool,
+    page_down_press_pending: bool,
     gamepad_manager: Option<Gilrs>,
     weak_rumble_effect: Option<Effect>,
     strong_rumble_effect: Option<Effect>,
@@ -234,7 +234,7 @@ impl InputState {
         };
 
         Self {
-            pressed: HashSet::new(),
+            held_keys: HashSet::new(),
             modifiers: Modifiers::default(),
             mouse_delta: (0.0, 0.0),
             cursor_captured: true,
@@ -250,21 +250,21 @@ impl InputState {
             menu_capture: false,
             spectator: false,
             spectator_slot_presses: Vec::new(),
-            just_pressed: HashSet::new(),
-            click_counts: HashMap::new(),
+            pending_key_presses: HashSet::new(),
+            action_press_counts: HashMap::new(),
             text_events: Vec::new(),
             binding_capture: false,
             binding_presses: Vec::new(),
             binding_keys_down: HashSet::new(),
             binding_gamepad_buttons_down: HashSet::new(),
-            enter_pressed: false,
-            escape_pressed: false,
-            tab_pressed: false,
-            f5_pressed: false,
-            up_pressed: false,
-            down_pressed: false,
-            page_up_pressed: false,
-            page_down_pressed: false,
+            enter_press_pending: false,
+            escape_press_pending: false,
+            tab_press_pending: false,
+            f5_press_pending: false,
+            arrow_up_press_pending: false,
+            arrow_down_press_pending: false,
+            page_up_press_pending: false,
+            page_down_press_pending: false,
             gamepad_manager,
             weak_rumble_effect: weak_effect,
             strong_rumble_effect: strong_effect,
@@ -431,7 +431,7 @@ impl InputState {
         self.active_gamepad_id.map(|id| manager.gamepad(id))
     }
 
-    pub fn gamepad_button_down(&self, button: Button) -> bool {
+    pub fn is_gamepad_button_held(&self, button: Button) -> bool {
         if self
             .active_gamepad_id
             .is_some_and(|id| self.binding_gamepad_buttons_down.contains(&(id, button)))
@@ -546,46 +546,50 @@ impl InputState {
     pub fn performing_action(&self, action: Action) -> bool {
         match action {
             Action::Jump => {
-                self.default_key_pressed(action) || self.gamepad_button_down(Button::South)
+                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::South)
             }
             Action::Sneak => {
-                self.default_key_pressed(action) || self.gamepad_button_down(Button::LeftThumb)
+                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::LeftThumb)
             }
             Action::Sprint => {
-                self.default_key_pressed(action) || self.gamepad_button_down(Button::West)
+                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::West)
             }
-            Action::Destroy => self.left_held() || self.gamepad_button_down(Button::RightTrigger2),
-            Action::Use => self.right_held() || self.gamepad_button_down(Button::LeftTrigger2),
+            Action::Destroy => {
+                self.is_left_mouse_held() || self.is_gamepad_button_held(Button::RightTrigger2)
+            }
+            Action::Use => {
+                self.is_right_mouse_held() || self.is_gamepad_button_held(Button::LeftTrigger2)
+            }
             Action::ToggleInventory => {
                 self.action_just_pressed(Action::ToggleInventory)
-                    || self.gamepad_button_down(Button::North)
+                    || self.is_gamepad_button_held(Button::North)
             }
             Action::OpenMenu => {
-                self.default_key_pressed(action) || self.gamepad_button_down(Button::Start)
+                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::Start)
             }
             Action::ViewPlayerList => {
-                self.default_key_pressed(action) || self.gamepad_button_down(Button::Select)
+                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::Select)
             }
             Action::ChangePerspective => {
-                self.default_key_pressed(action) || self.gamepad_button_down(Button::DPadUp)
+                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadUp)
             }
             Action::OpenChat => {
-                self.default_key_pressed(action) || self.gamepad_button_down(Button::DPadRight)
+                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadRight)
             }
-            Action::OpenCommands => self.default_key_pressed(action),
+            Action::OpenCommands => self.is_default_key_held(action),
             // Controller-only; keyboard Escape closes via OpenMenu and the chat path.
-            Action::Close => self.gamepad_button_down(Button::East),
-            // Click-count driven (`consume_click`); held state only.
-            Action::DropItem | Action::SwapOffhand => self.default_key_pressed(action),
+            Action::Close => self.is_gamepad_button_held(Button::East),
+            // Action-press-count driven (`consume_action_press`); held state only.
+            Action::DropItem | Action::SwapOffhand => self.is_default_key_held(action),
             // Vanilla `key.spectatorHotbar` default: middle mouse.
             Action::SpectatorHotbar => self.middle_click.held,
         }
     }
 
-    fn default_key_pressed(&self, action: Action) -> bool {
+    fn is_default_key_held(&self, action: Action) -> bool {
         action
             .default_key()
-            .is_some_and(|key| self.key_pressed(key))
+            .is_some_and(|key| self.is_key_held(key))
     }
 
     pub fn action_just_pressed(&self, action: Action) -> bool {
@@ -635,33 +639,35 @@ impl InputState {
         self.gamepad_stick(gilrs::Axis::RightStickX, gilrs::Axis::RightStickY)
     }
 
-    pub fn key_pressed(&self, key: KeyCode) -> bool {
-        self.pressed.contains(&key)
+    pub fn is_key_held(&self, key: KeyCode) -> bool {
+        self.held_keys.contains(&key)
     }
 
     #[cfg(test)]
-    pub(crate) fn set_key_pressed_for_test(&mut self, key: KeyCode, pressed: bool) {
-        if pressed {
-            self.pressed.insert(key);
+    pub(crate) fn set_key_held_for_test(&mut self, key: KeyCode, held: bool) {
+        if held {
+            self.held_keys.insert(key);
         } else {
-            self.pressed.remove(&key);
+            self.held_keys.remove(&key);
         }
     }
 
     /// Pressed since the last `end_frame`, OS key repeats included (vanilla
     /// screens and debug chords receive GLFW repeat events).
-    pub fn key_just_pressed(&self, key: KeyCode) -> bool {
-        self.just_pressed.contains(&key)
+    pub fn has_pending_key_press(&self, key: KeyCode) -> bool {
+        self.pending_key_presses.contains(&key)
     }
 
     /// Hotbar digit pressed since the last `end_frame`, for container swaps.
-    pub fn hotbar_key_just_pressed(&self) -> Option<u8> {
-        self.just_pressed.iter().find_map(|&c| hotbar_slot(c))
+    pub fn has_pending_hotbar_key_press(&self) -> Option<u8> {
+        self.pending_key_presses
+            .iter()
+            .find_map(|&c| hotbar_slot(c))
     }
 
     /// Consume one queued press of `action`, vanilla `KeyMapping.consumeClick`.
-    pub fn consume_click(&mut self, action: Action) -> bool {
-        match self.click_counts.get_mut(&action) {
+    pub fn consume_action_press(&mut self, action: Action) -> bool {
+        match self.action_press_counts.get_mut(&action) {
             Some(count) if *count > 0 => {
                 *count -= 1;
                 true
@@ -670,8 +676,8 @@ impl InputState {
         }
     }
 
-    pub fn clear_click_counts(&mut self) {
-        self.click_counts.clear();
+    pub fn clear_action_press_counts(&mut self) {
+        self.action_press_counts.clear();
         self.spectator_slot_presses.clear();
     }
 
@@ -683,11 +689,11 @@ impl InputState {
     /// Frame-scoped input state; called once at the end of each redraw so a
     /// latch set outside its consumer's screen can't fire later.
     pub fn end_frame(&mut self) {
-        self.just_pressed.clear();
-        self.up_pressed = false;
-        self.down_pressed = false;
-        self.page_up_pressed = false;
-        self.page_down_pressed = false;
+        self.pending_key_presses.clear();
+        self.arrow_up_press_pending = false;
+        self.arrow_down_press_pending = false;
+        self.page_up_press_pending = false;
+        self.page_down_press_pending = false;
         self.text_events.clear();
     }
 
@@ -711,8 +717,8 @@ impl InputState {
             }
             match event.state {
                 ElementState::Pressed => {
-                    self.pressed.insert(code);
-                    self.just_pressed.insert(code);
+                    self.held_keys.insert(code);
+                    self.pending_key_presses.insert(code);
                     if !self.text_capture
                         && !self.menu_capture
                         && let Some(slot) = hotbar_slot(code)
@@ -730,10 +736,16 @@ impl InputState {
                             self.recent_actions.insert(Action::ToggleInventory, true);
                         }
                         KeyCode::KeyQ if !self.text_capture && !self.menu_capture => {
-                            *self.click_counts.entry(Action::DropItem).or_insert(0) += 1;
+                            *self
+                                .action_press_counts
+                                .entry(Action::DropItem)
+                                .or_insert(0) += 1;
                         }
                         KeyCode::KeyF if !self.text_capture && !self.menu_capture => {
-                            *self.click_counts.entry(Action::SwapOffhand).or_insert(0) += 1;
+                            *self
+                                .action_press_counts
+                                .entry(Action::SwapOffhand)
+                                .or_insert(0) += 1;
                         }
                         KeyCode::Escape => {
                             self.recent_actions.insert(Action::OpenMenu, true);
@@ -752,7 +764,7 @@ impl InputState {
                     }
                 }
                 ElementState::Released => {
-                    self.pressed.remove(&code);
+                    self.held_keys.remove(&code);
                 }
             }
         }
@@ -772,17 +784,17 @@ impl InputState {
         self.binding_presses.clear();
         if active {
             self.clear_just_pressed_actions();
-            self.clear_click_counts();
-            self.just_pressed.clear();
+            self.clear_action_press_counts();
+            self.pending_key_presses.clear();
             self.text_events.clear();
-            self.enter_pressed = false;
-            self.escape_pressed = false;
-            self.tab_pressed = false;
-            self.f5_pressed = false;
-            self.up_pressed = false;
-            self.down_pressed = false;
-            self.page_up_pressed = false;
-            self.page_down_pressed = false;
+            self.enter_press_pending = false;
+            self.escape_press_pending = false;
+            self.tab_press_pending = false;
+            self.f5_press_pending = false;
+            self.arrow_up_press_pending = false;
+            self.arrow_down_press_pending = false;
+            self.page_up_press_pending = false;
+            self.page_down_press_pending = false;
         }
     }
 
@@ -802,7 +814,7 @@ impl InputState {
             }
         } else {
             self.binding_keys_down.remove(&code);
-            self.pressed.remove(&code);
+            self.held_keys.remove(&code);
         }
     }
 
@@ -844,16 +856,16 @@ impl InputState {
 
         if let PhysicalKey::Code(code) = event.physical_key {
             match code {
-                KeyCode::Enter | KeyCode::NumpadEnter => self.enter_pressed = true,
-                KeyCode::Escape => self.escape_pressed = true,
-                KeyCode::Tab => self.tab_pressed = true,
-                KeyCode::F5 => self.f5_pressed = true,
+                KeyCode::Enter | KeyCode::NumpadEnter => self.enter_press_pending = true,
+                KeyCode::Escape => self.escape_press_pending = true,
+                KeyCode::Tab => self.tab_press_pending = true,
+                KeyCode::F5 => self.f5_press_pending = true,
                 // Chat history/scroll keys; latched here so OS key repeat
                 // works like vanilla.
-                KeyCode::ArrowUp => self.up_pressed = true,
-                KeyCode::ArrowDown => self.down_pressed = true,
-                KeyCode::PageUp => self.page_up_pressed = true,
-                KeyCode::PageDown => self.page_down_pressed = true,
+                KeyCode::ArrowUp => self.arrow_up_press_pending = true,
+                KeyCode::ArrowDown => self.arrow_down_press_pending = true,
+                KeyCode::PageUp => self.page_up_press_pending = true,
+                KeyCode::PageDown => self.page_down_press_pending = true,
                 _ => {}
             }
         }
@@ -889,44 +901,44 @@ impl InputState {
         self.menu_scroll += y;
     }
 
-    pub fn enter_pressed(&mut self) -> bool {
-        std::mem::take(&mut self.enter_pressed)
+    pub fn take_enter_press(&mut self) -> bool {
+        std::mem::take(&mut self.enter_press_pending)
     }
 
-    pub fn escape_pressed(&mut self) -> bool {
-        std::mem::take(&mut self.escape_pressed)
+    pub fn take_escape_press(&mut self) -> bool {
+        std::mem::take(&mut self.escape_press_pending)
     }
 
-    pub fn tab_pressed(&mut self) -> bool {
-        std::mem::take(&mut self.tab_pressed)
+    pub fn take_tab_press(&mut self) -> bool {
+        std::mem::take(&mut self.tab_press_pending)
     }
 
-    pub fn shift_held(&self) -> bool {
+    pub fn is_shift_held(&self) -> bool {
         self.modifiers.state().shift_key()
     }
 
-    pub fn ctrl_held(&self) -> bool {
+    pub fn is_ctrl_held(&self) -> bool {
         self.modifiers.state().control_key()
     }
 
-    pub fn f5_pressed(&mut self) -> bool {
-        std::mem::take(&mut self.f5_pressed)
+    pub fn take_f5_press(&mut self) -> bool {
+        std::mem::take(&mut self.f5_press_pending)
     }
 
-    pub fn up_pressed(&mut self) -> bool {
-        std::mem::take(&mut self.up_pressed)
+    pub fn take_arrow_up_press(&mut self) -> bool {
+        std::mem::take(&mut self.arrow_up_press_pending)
     }
 
-    pub fn down_pressed(&mut self) -> bool {
-        std::mem::take(&mut self.down_pressed)
+    pub fn take_arrow_down_press(&mut self) -> bool {
+        std::mem::take(&mut self.arrow_down_press_pending)
     }
 
-    pub fn page_up_pressed(&mut self) -> bool {
-        std::mem::take(&mut self.page_up_pressed)
+    pub fn take_page_up_press(&mut self) -> bool {
+        std::mem::take(&mut self.page_up_press_pending)
     }
 
-    pub fn page_down_pressed(&mut self) -> bool {
-        std::mem::take(&mut self.page_down_pressed)
+    pub fn take_page_down_press(&mut self) -> bool {
+        std::mem::take(&mut self.page_down_press_pending)
     }
 
     pub fn selected_slot(&self) -> u8 {
@@ -1001,7 +1013,7 @@ impl InputState {
                     self.middle_click.just_pressed = true;
                     if self.spectator && !self.menu_capture {
                         *self
-                            .click_counts
+                            .action_press_counts
                             .entry(Action::SpectatorHotbar)
                             .or_insert(0) += 1;
                     }
@@ -1013,23 +1025,23 @@ impl InputState {
         }
     }
 
-    pub fn left_just_pressed(&self) -> bool {
+    pub fn has_pending_left_mouse_press(&self) -> bool {
         self.left_click.just_pressed
     }
 
-    pub fn right_just_pressed(&self) -> bool {
+    pub fn has_pending_right_mouse_press(&self) -> bool {
         self.right_click.just_pressed
     }
 
-    pub fn left_held(&self) -> bool {
+    pub fn is_left_mouse_held(&self) -> bool {
         self.left_click.held
     }
 
-    pub fn right_held(&self) -> bool {
+    pub fn is_right_mouse_held(&self) -> bool {
         self.right_click.held
     }
 
-    pub fn middle_just_pressed(&self) -> bool {
+    pub fn has_pending_middle_mouse_press(&self) -> bool {
         self.middle_click.just_pressed
     }
 
@@ -1114,8 +1126,8 @@ mod binding_capture_tests {
         let presses = input.take_binding_presses();
         assert_eq!(presses.len(), 1);
         assert!(matches!(presses[0], InputKey::Keyboard(KeyCode::F3)));
-        assert!(!input.key_pressed(KeyCode::F3));
-        assert!(!input.key_just_pressed(KeyCode::F3));
+        assert!(!input.is_key_held(KeyCode::F3));
+        assert!(!input.has_pending_key_press(KeyCode::F3));
 
         input.set_binding_capture(false);
         assert!(input.binding_keys_down.contains(&KeyCode::F3));
@@ -1139,15 +1151,15 @@ mod binding_capture_tests {
         let presses = input.take_binding_presses();
         assert_eq!(presses.len(), 3);
         assert!(matches!(presses[2], InputKey::Mouse(MouseButton::Other(7))));
-        assert!(!input.left_just_pressed());
-        assert!(!input.left_held());
-        assert!(!input.middle_just_pressed());
+        assert!(!input.has_pending_left_mouse_press());
+        assert!(!input.is_left_mouse_held());
+        assert!(!input.has_pending_middle_mouse_press());
         assert!(input.recent_actions.is_empty());
 
         input.on_mouse_button(MouseButton::Right, ElementState::Pressed);
         input.set_binding_capture(false);
         assert!(input.take_binding_presses().is_empty());
         input.on_mouse_button(MouseButton::Left, ElementState::Pressed);
-        assert!(input.left_just_pressed());
+        assert!(input.has_pending_left_mouse_press());
     }
 }

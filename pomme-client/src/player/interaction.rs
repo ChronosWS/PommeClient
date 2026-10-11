@@ -452,8 +452,8 @@ impl InteractionState {
 
         // Vanilla checks `isUsingItem` once before the attack/use/pick loops,
         // so a use started above does not suppress a pick from the same tick.
-        if !using && input.middle_just_pressed() {
-            self.pick_block_or_entity(sender, input.ctrl_held());
+        if !using && input.has_pending_middle_mouse_press() {
+            self.pick_block_or_entity(sender, input.is_ctrl_held());
         }
 
         let attack_down = input.performing_action(input::Action::Destroy);

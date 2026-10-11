@@ -405,7 +405,7 @@ impl ApplicationHandler for App {
                     if let Some(Gfx { window, .. }) = app.gfx_mut()
                         && event.state.is_pressed()
                         && !event.repeat
-                        && !self.core.input.key_pressed(KeyCode::F3)
+                        && !self.core.input.is_key_held(KeyCode::F3)
                         && let PhysicalKey::Code(KeyCode::F11) = event.physical_key
                     {
                         let display_mode = self.core.display_mode.cycle();
@@ -417,7 +417,7 @@ impl ApplicationHandler for App {
                     if let Some(Gfx { renderer, .. }) = app.gfx_mut()
                         && event.state.is_pressed()
                         && !event.repeat
-                        && !self.core.input.key_pressed(KeyCode::F3)
+                        && !self.core.input.is_key_held(KeyCode::F3)
                         && let PhysicalKey::Code(KeyCode::F2) = event.physical_key
                     {
                         renderer.request_screenshot();
@@ -495,7 +495,7 @@ impl ApplicationHandler for App {
                                 && let PhysicalKey::Code(code) = event.physical_key
                             {
                                 if game.options_from_game {
-                                    let f3_held = self.core.input.key_pressed(KeyCode::F3);
+                                    let f3_held = self.core.input.is_key_held(KeyCode::F3);
                                     if !game.handle_debug_key(code, f3_held, &connection) {
                                         self.core.input.on_menu_key_event(&event);
                                     }
@@ -526,7 +526,7 @@ impl ApplicationHandler for App {
                                             }
                                         }
                                         _ => {
-                                            let f3_held = self.core.input.key_pressed(KeyCode::F3);
+                                            let f3_held = self.core.input.is_key_held(KeyCode::F3);
                                             if !game.handle_debug_key(code, f3_held, &connection) {
                                                 self.core.input.on_menu_key_event(&event);
                                             }
@@ -543,7 +543,7 @@ impl ApplicationHandler for App {
                                                 .apply_cursor_grab(&gfx.window, Some(&mut game));
                                         }
                                         _ => {
-                                            let f3_held = self.core.input.key_pressed(KeyCode::F3);
+                                            let f3_held = self.core.input.is_key_held(KeyCode::F3);
                                             if !game.handle_debug_key(code, f3_held, &connection) {
                                                 self.core.input.on_menu_key_event(&event);
                                             }
@@ -553,7 +553,7 @@ impl ApplicationHandler for App {
                                     // A container text field (anvil rename) has
                                     // focus; keys type into it. Escape still
                                     // closes via the OpenMenu action.
-                                    let f3_held = self.core.input.key_pressed(KeyCode::F3);
+                                    let f3_held = self.core.input.is_key_held(KeyCode::F3);
                                     if !game.handle_debug_key(code, f3_held, &connection) {
                                         self.core.input.on_menu_key_event(&event);
                                     }
@@ -562,7 +562,7 @@ impl ApplicationHandler for App {
                                         // F3+Esc pauses without opening the
                                         // menu (vanilla pauseGame(true)).
                                         KeyCode::Escape
-                                            if self.core.input.key_pressed(KeyCode::F3)
+                                            if self.core.input.is_key_held(KeyCode::F3)
                                                 && game.input_live() =>
                                         {
                                             game.paused = true;
@@ -585,7 +585,7 @@ impl ApplicationHandler for App {
                                             self.core.send_respawn(&connection, &mut game);
                                         }
                                         _ => {
-                                            let f3_held = self.core.input.key_pressed(KeyCode::F3);
+                                            let f3_held = self.core.input.is_key_held(KeyCode::F3);
                                             game.handle_debug_key(code, f3_held, &connection);
                                         }
                                     }

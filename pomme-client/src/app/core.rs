@@ -323,10 +323,10 @@ fn player_input_state(
     sprint_key_down: bool,
 ) -> PlayerInputState {
     PlayerInputState {
-        forward: input.key_pressed(KEY_FORWARD) || analog_move.y > STICK_MOVEMENT_THRESHOLD,
-        backward: input.key_pressed(KEY_BACK) || analog_move.y < -STICK_MOVEMENT_THRESHOLD,
-        left: input.key_pressed(KEY_LEFT) || analog_move.x > STICK_MOVEMENT_THRESHOLD,
-        right: input.key_pressed(KEY_RIGHT) || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
+        forward: input.is_key_held(KEY_FORWARD) || analog_move.y > STICK_MOVEMENT_THRESHOLD,
+        backward: input.is_key_held(KEY_BACK) || analog_move.y < -STICK_MOVEMENT_THRESHOLD,
+        left: input.is_key_held(KEY_LEFT) || analog_move.x > STICK_MOVEMENT_THRESHOLD,
+        right: input.is_key_held(KEY_RIGHT) || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
         jump: input.performing_action(Action::Jump),
         shift: input.performing_action(Action::Sneak),
         sprint: sprint_key_down,
@@ -515,7 +515,7 @@ pub struct AppCore {
 
 /// Folds the credits roll's keys into a `CREDITS_KEY_*` mask. Both control
 /// keys count separately in vanilla's `speedupModifiers`, so this can't go
-/// through `InputState::ctrl_held`, which folds them into one winit modifier
+/// through `InputState::is_ctrl_held`, which folds them into one winit modifier
 /// bit.
 fn credits_key_mask(mut is_set: impl FnMut(KeyCode) -> bool) -> u8 {
     [
@@ -660,21 +660,21 @@ impl AppCore {
                 ..MenuInput::default()
             };
         }
-        let credits_keys_down = credits_key_mask(|code| self.input.key_pressed(code));
-        let credits_keys_pressed = credits_key_mask(|code| self.input.key_just_pressed(code));
-        let dpad_dir = i32::from(self.input.gamepad_button_down(gilrs::Button::DPadRight))
-            - i32::from(self.input.gamepad_button_down(gilrs::Button::DPadLeft));
+        let credits_keys_down = credits_key_mask(|code| self.input.is_key_held(code));
+        let credits_keys_pressed = credits_key_mask(|code| self.input.has_pending_key_press(code));
+        let dpad_dir = i32::from(self.input.is_gamepad_button_held(gilrs::Button::DPadRight))
+            - i32::from(self.input.is_gamepad_button_held(gilrs::Button::DPadLeft));
         let gamepad_steps = self.menu_dpad.step(dpad_dir, dt);
         MenuInput {
             cursor: self.input.cursor_pos(),
-            clicked: self.input.left_just_pressed(),
-            mouse_held: self.input.left_held(),
+            clicked: self.input.has_pending_left_mouse_press(),
+            mouse_held: self.input.is_left_mouse_held(),
             events: self.input.drain_text_events(),
-            shift: self.input.shift_held(),
-            enter: self.input.enter_pressed(),
-            escape: self.input.escape_pressed(),
-            tab: self.input.tab_pressed(),
-            f5: self.input.f5_pressed(),
+            shift: self.input.is_shift_held(),
+            enter: self.input.take_enter_press(),
+            escape: self.input.take_escape_press(),
+            tab: self.input.take_tab_press(),
+            f5: self.input.take_f5_press(),
             gamepad_steps,
             scroll_delta: self.input.consume_menu_scroll(),
             dt,
@@ -2802,7 +2802,7 @@ impl AppCore {
         // loaded: no physics, no interaction, and no input, sprint or movement
         // packets while the level is still coming in.
         if !game.client_loaded {
-            self.input.clear_click_counts();
+            self.input.clear_action_press_counts();
             self.input.clear_just_pressed_actions();
             return;
         }
@@ -2810,7 +2810,7 @@ impl AppCore {
         // LocalPlayer.tickDeath removes the client player at tick 20; from then
         // on ClientLevel.tickEntities skips it entirely.
         if game.dead && game.player.death_animation_finished() {
-            self.input.clear_click_counts();
+            self.input.clear_action_press_counts();
             return;
         }
 
@@ -2870,7 +2870,7 @@ impl AppCore {
             self.send_position_packet(connection, game);
 
             // Q/F presses queued while dead must not fire on respawn.
-            self.input.clear_click_counts();
+            self.input.clear_action_press_counts();
             return;
         }
 
@@ -2883,8 +2883,8 @@ impl AppCore {
         // queued key presses each tick; spectators consume without acting.
         if input_live {
             let spectator = game.player.game_mode == 3;
-            while self.input.consume_click(Action::DropItem) {
-                let whole_stack = self.input.ctrl_held();
+            while self.input.consume_action_press(Action::DropItem) {
+                let whole_stack = self.input.is_ctrl_held();
                 if !spectator {
                     // Vanilla `LocalPlayer.drop` always sends the action packet;
                     // only the swing is gated on something actually dropping.
@@ -2898,7 +2898,7 @@ impl AppCore {
                     }
                 }
             }
-            while self.input.consume_click(Action::SwapOffhand) {
+            while self.input.consume_action_press(Action::SwapOffhand) {
                 if !spectator {
                     crate::player::interaction::send_swap_offhand(&connection.packet_tx);
                 }
@@ -2913,7 +2913,7 @@ impl AppCore {
                     );
                 }
             }
-            while self.input.consume_click(Action::SpectatorHotbar) {
+            while self.input.consume_action_press(Action::SpectatorHotbar) {
                 if spectator {
                     game.spectator.on_hotbar_action_key(
                         &game.tab_list,
@@ -2924,7 +2924,7 @@ impl AppCore {
             }
         }
         // A press queued while a menu or chat was open must not fire later.
-        self.input.clear_click_counts();
+        self.input.clear_action_press_counts();
 
         let neutral = InputState::released();
         let input = if input_live { &self.input } else { &neutral };
