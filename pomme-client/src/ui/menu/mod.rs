@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use winit::keyboard::KeyCode;
 
 use crate::app::core::DisplayMode;
+use crate::app::input::KeyBindings;
 use crate::audio::SoundCategory;
 use crate::renderer::CloudMode;
 use crate::renderer::pipelines::menu_overlay::{
@@ -29,6 +30,8 @@ use crate::ui::text_edit::{SystemClipboard, TextFieldState, TextInputEvent};
 
 #[derive(Serialize, Deserialize)]
 struct Settings {
+    #[serde(default)]
+    key_bindings: KeyBindings,
     gui_scale: u32,
     render_distance: u32,
     #[serde(default = "default_chunk_detail")]
@@ -178,6 +181,7 @@ fn default_volume() -> f32 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            key_bindings: KeyBindings::default(),
             gui_scale: 0,
             render_distance: 12,
             chunk_detail: 8,
@@ -537,6 +541,7 @@ fn atlas_dirty(count: usize, last: &mut usize, since: &mut Option<Instant>) -> b
 }
 
 pub struct MainMenu {
+    pub key_bindings: KeyBindings,
     username: String,
     version: String,
     screen: Screen,
@@ -692,6 +697,7 @@ impl MainMenu {
         let ping_results: PingResults = Default::default();
         let settings = load_settings(game_dir);
         Self {
+            key_bindings: settings.key_bindings,
             username,
             version,
             screen: Screen::Main,
@@ -882,6 +888,7 @@ impl MainMenu {
         self.settings_dirty = save_settings(
             &self.settings_dir,
             &Settings {
+                key_bindings: self.key_bindings.clone(),
                 gui_scale: self.gui_scale_setting,
                 render_distance: self.render_distance,
                 chunk_detail: self.chunk_detail,
