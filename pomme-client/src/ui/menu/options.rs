@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::input::{DisplayText, StringId};
 use crate::resource_pack::PackCompat;
 use crate::ui::common::BTN_H;
 use crate::ui::text::TextSpan;
@@ -385,76 +386,6 @@ impl MainMenu {
         input: &MenuInput,
         text_width_fn: common::TextWidthFn,
     ) -> MainMenuResult {
-        struct KeybindEntry {
-            label: String,
-            binding: String,
-        }
-        struct KeybindCategory {
-            label: String,
-            keybinds: Vec<KeybindEntry>,
-        }
-
-        let categories = vec![
-            KeybindCategory {
-                label: "Movement".into(),
-                keybinds: vec![
-                    KeybindEntry {
-                        label: "Jump".into(),
-                        binding: "Space".into(),
-                    },
-                    KeybindEntry {
-                        label: "Sneak".into(),
-                        binding: "Left Shift".into(),
-                    },
-                    KeybindEntry {
-                        label: "Sprint".into(),
-                        binding: "Left Control".into(),
-                    },
-                    KeybindEntry {
-                        label: "Strafe Left".into(),
-                        binding: "A".into(),
-                    },
-                    KeybindEntry {
-                        label: "Strafe Right".into(),
-                        binding: "D".into(),
-                    },
-                    KeybindEntry {
-                        label: "Walk Backward".into(),
-                        binding: "S".into(),
-                    },
-                    KeybindEntry {
-                        label: "Walk Forward".into(),
-                        binding: "W".into(),
-                    },
-                ],
-            },
-            KeybindCategory {
-                label: "Miscellaneous".into(),
-                keybinds: vec![
-                    KeybindEntry {
-                        label: "Advancements".into(),
-                        binding: "L".into(),
-                    },
-                    KeybindEntry {
-                        label: "Quick Actions".into(),
-                        binding: "G".into(),
-                    },
-                    KeybindEntry {
-                        label: "Take Screenshot".into(),
-                        binding: "F2".into(),
-                    },
-                    KeybindEntry {
-                        label: "Toggle Cinematic Camera".into(),
-                        binding: "Not Bound".into(),
-                    },
-                    KeybindEntry {
-                        label: "Toggle Fullscreen".into(),
-                        binding: "F11".into(),
-                    },
-                ],
-            },
-        ];
-
         // Early-out input handling
         if input.escape {
             // TODO: Hardcoded, not using the settings_back functionality for now
@@ -471,6 +402,9 @@ impl MainMenu {
         // The focus context
         self.focus_advance(input);
         let mut ctx = &mut self.make_focus_ctx(input);
+
+        let mut bindings: Vec<_> = self.key_bindings.iter().collect();
+        bindings.sort_by(|left, right| left.action.compare_ui(right.action));
 
         //
         // Draw the chrome (header with text plus space for footer)
@@ -506,7 +440,9 @@ impl MainMenu {
         let content_h = chrome.content_bottom - chrome.content_top; // The total visible area we can place content in
         let content_pad = 2.0 * gs;
         let mut total_height = 0.0;
-        for category in categories.iter() {
+        for category_bindings in
+            bindings.chunk_by(|left, right| left.action.category() == right.action.category())
+        {
             // Gap
             total_height = total_height + category_gap;
 
@@ -516,9 +452,7 @@ impl MainMenu {
             // Gap
             total_height = total_height + category_gap;
 
-            for _keybind in category.keybinds.iter() {
-                total_height = total_height + (BTN_H * gs);
-            }
+            total_height += category_bindings.len() as f32 * button_h;
         }
 
         let max_scroll_offset = (total_height - content_h).max(0.0); // The amount the content exceeds the visible area
@@ -553,13 +487,16 @@ impl MainMenu {
 
         //
         // Now do the actual drawing
-        for category in categories.iter() {
+        for category_bindings in
+            bindings.chunk_by(|left, right| left.action.category() == right.action.category())
+        {
+            let category = category_bindings[0].action.category();
             line_y = line_y + category_gap;
 
             //
             // Draw the category heading
             //
-            let mut heading = TextSpan::new(category.label.clone(), common::WHITE);
+            let mut heading = TextSpan::new(category.display_name().into_owned(), common::WHITE);
             heading.bold = true;
             heading.underline = true;
 
@@ -576,7 +513,20 @@ impl MainMenu {
             //
             // Draw the category keybinds
             //
-            for keybind in category.keybinds.iter() {
+            for entry in category_bindings {
+                // TODO: Design UI support for displaying and editing multiple
+                // bindings per action. For now, show only the first binding.
+                let binding = entry
+                    .inputs
+                    .first()
+                    .map(|input| input.display_name())
+                    .unwrap_or_else(|| {
+                        DisplayText {
+                            translation_id: Some(StringId::new("key.keyboard.unknown")),
+                            fallback: "Not Bound".into(),
+                        }
+                        .resolve()
+                    });
                 let text_y = line_y + (button_h - fs) / 2.0 + 1.0;
 
                 //
@@ -585,7 +535,7 @@ impl MainMenu {
                 elements.push(MenuElement::Text {
                     x: content_left,
                     y: text_y,
-                    text: keybind.label.clone(),
+                    text: entry.action.display_name().into_owned(),
                     scale: fs,
                     color: WHITE,
                     centered: false,
@@ -605,7 +555,7 @@ impl MainMenu {
                     binding_button_width,
                     BTN_H * gs,
                     gs,
-                    &keybind.binding,
+                    &binding,
                     true,
                 );
 

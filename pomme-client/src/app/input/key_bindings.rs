@@ -15,6 +15,13 @@ pub struct KeyBinding {
     input: InputKey,
 }
 
+/// Borrowed view of an action and all of its configured physical inputs.
+#[derive(Clone, Copy)]
+pub struct ActionBindingsRef<'a> {
+    pub action: &'a Action,
+    pub inputs: &'a [InputKey],
+}
+
 /// Persistent action-to-input mappings. The settings field `key_bindings`
 /// serializes as `"key_bindings": { "key.jump": ["key.keyboard.space", ...] }`.
 /// Missing actions use defaults; saved arrays replace those defaults, and an
@@ -93,9 +100,10 @@ impl<'de> Deserialize<'de> for KeyBindings {
 
 impl KeyBindings {
     /// Configured bindings; callers choose the UI's category and display order.
-    pub fn iter(&self) -> impl Iterator<Item = (&Action, &[InputKey])> {
-        self.0
-            .iter()
-            .map(|(action, inputs)| (action, inputs.as_slice()))
+    pub fn iter(&self) -> impl Iterator<Item = ActionBindingsRef<'_>> {
+        self.0.iter().map(|(action, inputs)| ActionBindingsRef {
+            action,
+            inputs: inputs.as_slice(),
+        })
     }
 }

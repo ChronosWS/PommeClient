@@ -57,7 +57,7 @@ pub use action_map::{
     ControllerEvent, GameContext, GameContextId, InputEvent, KeyEvent, MouseEvent,
 };
 pub use input_key::{InputIdError, InputKey};
-pub use key_bindings::{KeyBinding, KeyBindings};
+pub use key_bindings::{ActionBindingsRef, KeyBinding, KeyBindings};
 pub use metadata::{ActionId, BindingMetadata, DisplayText, StringId};
 
 /// Left-stick deflection past which a direction counts as a digital press.
