@@ -1,5 +1,7 @@
 use super::*;
 use crate::resource_pack::PackCompat;
+use crate::ui::common::BTN_H;
+use crate::ui::text::TextSpan;
 
 /// A row in a vanilla-style options list: 25px pitch, a 310px `Big` widget, or
 /// two 150px widgets per `Pair` (`PairLeft` for an odd trailing widget).
@@ -356,7 +358,6 @@ impl MainMenu {
             "Invert Mouse:",
             "Auto-Jump:",
             "Operator Items Tab:",
-            "Key Binds...",
             "Mouse Settings...",
             "Sneak:",
             "Sprint:",
@@ -375,6 +376,307 @@ impl MainMenu {
             &[],
             text_width_fn,
         )
+    }
+
+    pub(super) fn build_options_keybinds(
+        &mut self,
+        sw: f32,
+        sh: f32,
+        input: &MenuInput,
+        text_width_fn: common::TextWidthFn,
+    ) -> MainMenuResult {
+        struct KeybindEntry {
+            label: String,
+            binding: String,
+        }
+        struct KeybindCategory {
+            label: String,
+            keybinds: Vec<KeybindEntry>,
+        }
+
+        let categories = vec![
+            KeybindCategory {
+                label: "Movement".into(),
+                keybinds: vec![
+                    KeybindEntry {
+                        label: "Jump".into(),
+                        binding: "Space".into(),
+                    },
+                    KeybindEntry {
+                        label: "Sneak".into(),
+                        binding: "Left Shift".into(),
+                    },
+                    KeybindEntry {
+                        label: "Sprint".into(),
+                        binding: "Left Control".into(),
+                    },
+                    KeybindEntry {
+                        label: "Strafe Left".into(),
+                        binding: "A".into(),
+                    },
+                    KeybindEntry {
+                        label: "Strafe Right".into(),
+                        binding: "D".into(),
+                    },
+                    KeybindEntry {
+                        label: "Walk Backward".into(),
+                        binding: "S".into(),
+                    },
+                    KeybindEntry {
+                        label: "Walk Forward".into(),
+                        binding: "W".into(),
+                    },
+                ],
+            },
+            KeybindCategory {
+                label: "Miscellaneous".into(),
+                keybinds: vec![
+                    KeybindEntry {
+                        label: "Advancements".into(),
+                        binding: "L".into(),
+                    },
+                    KeybindEntry {
+                        label: "Quick Actions".into(),
+                        binding: "G".into(),
+                    },
+                    KeybindEntry {
+                        label: "Take Screenshot".into(),
+                        binding: "F2".into(),
+                    },
+                    KeybindEntry {
+                        label: "Toggle Cinematic Camera".into(),
+                        binding: "Not Bound".into(),
+                    },
+                    KeybindEntry {
+                        label: "Toggle Fullscreen".into(),
+                        binding: "F11".into(),
+                    },
+                ],
+            },
+        ];
+
+        // Early-out input handling
+        if input.escape {
+            // TODO: Hardcoded, not using the settings_back functionality for now
+            self.set_screen(Screen::OptionsControls);
+            return empty_result(1.0);
+        }
+
+        let gs = self.gui_scale(sw, sh);
+        let fs = common::FONT_SIZE * gs;
+        let mut any_hovered = false;
+        let mut any_clicked = false;
+        let mut elements = Vec::new();
+
+        // The focus context
+        self.focus_advance(input);
+        let mut ctx = &mut self.make_focus_ctx(input);
+
+        //
+        // Draw the chrome (header with text plus space for footer)
+        //
+        let chrome = push_screen_chrome(&mut elements, sw, sh, gs, "Key Binds");
+
+        //
+        // Draw the categories and items
+        //
+        let cx = sw / 2.0; // This is in screen coordinates already (premultiplied by gs)
+        let side_padding = 16.0 * gs;
+        let preferred_width = 310.0 * gs;
+
+        let available_width = (sw - 2.0 * side_padding).max(0.0);
+        let content_width = preferred_width.min(available_width);
+
+        let button_h = BTN_H * gs;
+        let content_left = (sw - content_width) / 2.0;
+        let content_right = content_left + content_width;
+
+        let binding_button_width = 75.0 * gs;
+        let reset_button_width = 50.0 * gs;
+        let button_padding_width = 5.0 * gs;
+        let buttons_left =
+            content_right - (binding_button_width + button_padding_width + binding_button_width);
+
+        let category_gap = 8.0 * gs;
+
+        //
+        // We need to know the vertical layout of the content before we can calculate
+        // the scrolling
+        //
+        let content_h = chrome.content_bottom - chrome.content_top; // The total visible area we can place content in
+        let content_pad = 2.0 * gs;
+        let mut total_height = 0.0;
+        for category in categories.iter() {
+            // Gap
+            total_height = total_height + category_gap;
+
+            // Category heading
+            total_height = total_height + fs;
+
+            // Gap
+            total_height = total_height + category_gap;
+
+            for _keybind in category.keybinds.iter() {
+                total_height = total_height + (BTN_H * gs);
+            }
+        }
+
+        let max_scroll_offset = (total_height - content_h).max(0.0); // The amount the content exceeds the visible area
+        if common::hit_test(input.cursor, [0.0, chrome.content_top, sw, content_h]) {
+            self.scroll_offset -= input.scroll_delta * 20.0 * gs;
+        }
+
+        self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll_offset);
+        let mut line_y = chrome.header_h - self.scroll_offset; // The offset biases our drawing to start above the header, which is outside the clip range
+
+        //
+        // Show the scrollbar, if needed
+        //
+        if max_scroll_offset > 0.0 {
+            push_list_scrollbar(
+                &mut elements,
+                content_right,
+                chrome.content_top,
+                content_h,
+                total_height,
+                self.scroll_offset,
+                gs,
+            );
+        }
+
+        elements.push(MenuElement::ScissorPush {
+            x: 0.0,
+            y: chrome.header_h + content_pad,
+            w: sw,
+            h: content_h,
+        });
+
+        //
+        // Now do the actual drawing
+        for category in categories.iter() {
+            line_y = line_y + category_gap;
+
+            //
+            // Draw the category heading
+            //
+            let mut heading = TextSpan::new(category.label.clone(), common::WHITE);
+            heading.bold = true;
+            heading.underline = true;
+
+            elements.push(MenuElement::TextSpans {
+                x: cx,
+                y: line_y,
+                spans: vec![heading],
+                scale: common::FONT_SIZE * gs,
+                centered: true,
+            });
+
+            line_y = line_y + fs + category_gap;
+
+            //
+            // Draw the category keybinds
+            //
+            for keybind in category.keybinds.iter() {
+                let text_y = line_y + (button_h - fs) / 2.0 + 1.0;
+
+                //
+                // Binding label
+                //
+                elements.push(MenuElement::Text {
+                    x: content_left,
+                    y: text_y,
+                    text: keybind.label.clone(),
+                    scale: fs,
+                    color: WHITE,
+                    centered: false,
+                });
+
+                //
+                // Binding Button
+                //
+                let binding_clicked = push_button_f(
+                    &mut elements,
+                    ctx,
+                    &mut any_hovered,
+                    input.cursor,
+                    input.clicked,
+                    buttons_left,
+                    line_y,
+                    binding_button_width,
+                    BTN_H * gs,
+                    gs,
+                    &keybind.binding,
+                    true,
+                );
+
+                //
+                // Reset Button
+                //
+                let reset_clicked = push_button_f(
+                    &mut elements,
+                    ctx,
+                    &mut any_hovered,
+                    input.cursor,
+                    input.clicked,
+                    buttons_left + binding_button_width + button_padding_width,
+                    line_y,
+                    reset_button_width,
+                    BTN_H * gs,
+                    gs,
+                    "Reset",
+                    false,
+                );
+
+                line_y = line_y + (BTN_H * gs);
+            }
+        }
+
+        elements.push(MenuElement::ScissorPop);
+
+        //
+        // Draw the footer
+        //
+        let cx = sw / 2.0;
+        let btn_w = 150.0 * gs;
+        let gap = BTN_GAP * gs;
+
+        let _reset_pressed = push_footer_button(
+            &mut elements,
+            &mut ctx,
+            &mut any_hovered,
+            input,
+            &chrome,
+            cx - btn_w - gap / 2.0,
+            btn_w,
+            gs,
+            "Reset Keys",
+        );
+
+        let done_pressed = push_footer_button(
+            &mut elements,
+            &mut ctx,
+            &mut any_hovered,
+            input,
+            &chrome,
+            cx + gap / 2.0,
+            btn_w,
+            gs,
+            "Done",
+        );
+
+        if done_pressed {
+            // TODO: Hardcoded, not using the settings_back functionality for now
+            self.set_screen(Screen::OptionsControls);
+            return empty_result(1.0);
+        }
+
+        MainMenuResult {
+            elements,
+            action: MenuAction::None,
+            cursor_pointer: any_hovered,
+            blur: 2.0,
+            clicked_button: any_clicked,
+        }
     }
 
     pub(super) fn build_options_chat(

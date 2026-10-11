@@ -791,6 +791,8 @@ pub(super) struct ChromeLayout {
 
 /// Draws the shared header/footer frame: a dimmed tiled background between two
 /// separators, with the title centered in the header.
+///
+/// Returns: A ChromeLayout describing the layout and computer user-region
 pub(super) fn push_screen_chrome(
     elements: &mut Vec<MenuElement>,
     sw: f32,

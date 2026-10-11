@@ -426,7 +426,7 @@ impl MenuInput {
 }
 
 /// Vanilla `HeaderAndFooterLayout.DEFAULT_HEADER_AND_FOOTER_HEIGHT`.
-const HEADER_FOOTER_H: f32 = 33.0;
+const HEADER_FOOTER_H: f32 = 31.0;
 const ENTRY_H: f32 = 36.0;
 /// Inset (GUI units) keeping server-list entry content off the raw row edges.
 const SERVER_ENTRY_PAD: f32 = 2.0;
@@ -1193,14 +1193,9 @@ impl MainMenu {
             Screen::OptionsControls => {
                 self.build_options_controls(screen_w, screen_h, input, &text_width_fn)
             }
-            Screen::OptionsKeybinds => self.build_options_stub(
-                screen_w,
-                screen_h,
-                input,
-                "Keybinds",
-                Screen::OptionsControls,
-                None,
-            ),
+            Screen::OptionsKeybinds => {
+                self.build_options_keybinds(screen_w, screen_h, input, &text_width_fn)
+            }
             Screen::OptionsLanguage => {
                 let back = self.settings_back.clone_screen();
                 self.build_options_stub(
