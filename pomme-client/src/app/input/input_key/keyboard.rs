@@ -7,7 +7,6 @@ use super::super::StringId;
 input_catalog! {
     input_type: KeyCode,
     input_variant: Keyboard,
-
     id_builder: keyboard_input_id,
     // KeyCode is non-exhaustive; future keys need a stable name here.
     metadata_fallback: { _ => None, },

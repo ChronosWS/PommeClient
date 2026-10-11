@@ -6,7 +6,6 @@ use gilrs::Button;
 input_catalog! {
     input_type: Button,
     input_variant: Controller,
-
     id_builder: gamepad_input_id,
     metadata_fallback: {},
     decode_fallback: |_| None,

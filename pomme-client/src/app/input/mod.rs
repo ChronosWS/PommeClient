@@ -35,12 +35,10 @@
 //! its rules.
 //!
 //! This does imply there is also a game context
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use gilrs::ff::{BaseEffect, Effect, EffectBuilder, Repeat, Replay};
 use gilrs::{Button, GamepadId, Gilrs};
-use serde::{Deserialize, Serialize};
 use winit::event::{ElementState, Modifiers, MouseButton};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
@@ -48,11 +46,13 @@ use crate::app::TICK_RATE_MS;
 use crate::app::phases::AppPhase;
 use crate::app::state_slot::StateSlot;
 
+pub mod action;
 pub mod action_map;
 pub mod input_key;
 pub mod key_bindings;
 mod metadata;
 
+pub use action::{Action, ActionCategory, ActionCategoryMetadata, ActionMetadata};
 pub use action_map::{
     ControllerEvent, GameContext, GameContextId, InputEvent, KeyEvent, MouseEvent,
 };
@@ -73,259 +73,10 @@ pub(crate) fn gamepad_movement_axes(analog: glam::Vec2) -> glam::Vec2 {
 /// an "instant".
 pub const SHORT_RUMBLE_TIME: u32 = 5;
 
-/// Category declaration order matches vanilla's category registration order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ActionCategory {
-    Movement,
-    Miscellaneous,
-    Multiplayer,
-    Gameplay,
-    Inventory,
-    Creative,
-    Spectator,
-    Debug,
-}
-
-impl ActionCategory {
-    pub const fn display_text(self) -> DisplayText<'static> {
-        match self {
-            Self::Movement => DisplayText {
-                translation_id: Some(StringId::new("key.category.minecraft.movement")),
-                fallback: Cow::Borrowed("Movement"),
-            },
-            Self::Miscellaneous => DisplayText {
-                translation_id: Some(StringId::new("key.category.minecraft.misc")),
-                fallback: Cow::Borrowed("Miscellaneous"),
-            },
-            Self::Multiplayer => DisplayText {
-                translation_id: Some(StringId::new("key.category.minecraft.multiplayer")),
-                fallback: Cow::Borrowed("Multiplayer"),
-            },
-            Self::Gameplay => DisplayText {
-                translation_id: Some(StringId::new("key.category.minecraft.gameplay")),
-                fallback: Cow::Borrowed("Gameplay"),
-            },
-            Self::Inventory => DisplayText {
-                translation_id: Some(StringId::new("key.category.minecraft.inventory")),
-                fallback: Cow::Borrowed("Inventory"),
-            },
-            Self::Creative => DisplayText {
-                translation_id: Some(StringId::new("key.category.minecraft.creative")),
-                fallback: Cow::Borrowed("Creative"),
-            },
-            Self::Spectator => DisplayText {
-                translation_id: Some(StringId::new("key.category.minecraft.spectator")),
-                fallback: Cow::Borrowed("Spectator"),
-            },
-            Self::Debug => DisplayText {
-                translation_id: Some(StringId::new("key.category.minecraft.debug")),
-                fallback: Cow::Borrowed("Debug"),
-            },
-        }
-    }
-
-    pub fn display_name(self) -> Cow<'static, str> {
-        self.display_text().resolve()
-    }
-}
-
-/// Persistent identity, display metadata, and UI ordering for a logical action.
-#[derive(Clone, Debug)]
-pub struct ActionMetadata {
-    pub id: ActionId,
-    pub display: DisplayText<'static>,
-    pub category: ActionCategory,
-    pub order: i32,
-}
-
-// Keep persistent IDs, display labels, categories, order, and serde names in
-// one catalog.
-macro_rules! actions {
-    ($($action:ident => {
-            id: ActionId::new($name:literal),
-            display: $display:expr,
-            category: $category:expr,
-            order: $order:expr $(,)?
-        }),* $(,)?) => {
-        // TODO: Reconcile Action catalog coverage, labels, and Pomme-specific
-        // menu/close categories with vanilla's configurable key mappings.
-        #[derive(Hash, PartialEq, Eq, Clone, Serialize, Deserialize)]
-        pub enum Action {
-            $(#[serde(rename = $name)] $action,)*
-        }
-
-        impl Action {
-            pub const fn metadata(&self) -> ActionMetadata {
-                match self {
-                    $(Self::$action => ActionMetadata {
-                        id: ActionId::new($name),
-                        display: $display,
-                        category: $category,
-                        order: $order,
-                    },)*
-                }
-            }
-
-            /// Stable identifier used in options.json and key mapping lookups.
-            pub const fn id(&self) -> ActionId {
-                match self {
-                    $(Self::$action => ActionId::new($name),)*
-                }
-            }
-
-            pub const fn name(&self) -> &'static str {
-                self.id().as_str()
-            }
-
-            pub fn display_text(&self) -> DisplayText<'static> {
-                self.metadata().display
-            }
-
-            /// Translated display label, or the catalog's English fallback.
-            pub fn display_name(&self) -> Cow<'static, str> {
-                self.display_text().resolve()
-            }
-
-            pub const fn category(&self) -> ActionCategory {
-                match self {
-                    $(Self::$action => $category,)*
-                }
-            }
-
-            /// Priority within the category; lower values sort first.
-            pub const fn order(&self) -> i32 {
-                match self {
-                    $(Self::$action => $order,)*
-                }
-            }
-
-            /// UI order: category, integer priority, then resolved display name.
-            /// Equal names compare equal so a stable sort preserves their input order.
-            pub fn compare_ui(&self, other: &Self) -> std::cmp::Ordering {
-                self.category().cmp(&other.category())
-                    .then_with(|| self.order().cmp(&other.order()))
-                    .then_with(|| self.display_name().cmp(&other.display_name()))
-            }
-        }
-    };
-}
-
-actions! {
-    Jump => {
-        id: ActionId::new("key.jump"),
-        display: DisplayText { translation_id: Some(StringId::new("key.jump")), fallback: Cow::Borrowed("Jump") },
-        category: ActionCategory::Movement,
-        order: 0,
-    },
-    Sneak => {
-        id: ActionId::new("key.sneak"),
-        display: DisplayText { translation_id: Some(StringId::new("key.sneak")), fallback: Cow::Borrowed("Sneak") },
-        category: ActionCategory::Movement,
-        order: 0,
-    },
-    Sprint => {
-        id: ActionId::new("key.sprint"),
-        display: DisplayText { translation_id: Some(StringId::new("key.sprint")), fallback: Cow::Borrowed("Sprint") },
-        category: ActionCategory::Movement,
-        order: 0,
-    },
-    Destroy => {
-        id: ActionId::new("key.attack"),
-        display: DisplayText { translation_id: Some(StringId::new("key.attack")), fallback: Cow::Borrowed("Attack/Destroy") },
-        category: ActionCategory::Gameplay,
-        order: 0,
-    },
-    Use => {
-        id: ActionId::new("key.use"),
-        display: DisplayText { translation_id: Some(StringId::new("key.use")), fallback: Cow::Borrowed("Use Item/Place Block") },
-        category: ActionCategory::Gameplay,
-        order: 0,
-    },
-    ToggleInventory => {
-        id: ActionId::new("key.inventory"),
-        display: DisplayText { translation_id: Some(StringId::new("key.inventory")), fallback: Cow::Borrowed("Open/Close Inventory") },
-        category: ActionCategory::Inventory,
-        order: 0,
-    },
-    OpenMenu => {
-        id: ActionId::new("key.menu"),
-        display: DisplayText { translation_id: None, fallback: Cow::Borrowed("Open Menu") },
-        category: ActionCategory::Miscellaneous,
-        order: 0,
-    },
-    ViewPlayerList => {
-        id: ActionId::new("key.playerlist"),
-        display: DisplayText { translation_id: Some(StringId::new("key.playerlist")), fallback: Cow::Borrowed("List Players") },
-        category: ActionCategory::Multiplayer,
-        order: 0,
-    },
-    ChangePerspective => {
-        id: ActionId::new("key.togglePerspective"),
-        display: DisplayText { translation_id: Some(StringId::new("key.togglePerspective")), fallback: Cow::Borrowed("Toggle Perspective") },
-        category: ActionCategory::Miscellaneous,
-        order: 0,
-    },
-    OpenChat => {
-        id: ActionId::new("key.chat"),
-        display: DisplayText { translation_id: Some(StringId::new("key.chat")), fallback: Cow::Borrowed("Open Chat") },
-        category: ActionCategory::Multiplayer,
-        order: 0,
-    },
-    OpenCommands => {
-        id: ActionId::new("key.command"),
-        display: DisplayText { translation_id: Some(StringId::new("key.command")), fallback: Cow::Borrowed("Open Command") },
-        category: ActionCategory::Multiplayer,
-        order: 0,
-    },
-    Close => {
-        id: ActionId::new("key.close"),
-        display: DisplayText { translation_id: None, fallback: Cow::Borrowed("Close") },
-        category: ActionCategory::Miscellaneous,
-        order: 0,
-    },
-    DropItem => {
-        id: ActionId::new("key.drop"),
-        display: DisplayText { translation_id: Some(StringId::new("key.drop")), fallback: Cow::Borrowed("Drop Selected Item") },
-        category: ActionCategory::Inventory,
-        order: 0,
-    },
-    SwapOffhand => {
-        id: ActionId::new("key.swapOffhand"),
-        display: DisplayText { translation_id: Some(StringId::new("key.swapOffhand")), fallback: Cow::Borrowed("Swap Item With Offhand") },
-        category: ActionCategory::Inventory,
-        order: 0,
-    },
-    SpectatorHotbar => {
-        id: ActionId::new("key.spectatorHotbar"),
-        display: DisplayText { translation_id: Some(StringId::new("key.spectatorHotbar")), fallback: Cow::Borrowed("Spectator Menu") },
-        category: ActionCategory::Spectator,
-        order: 0,
-    },
-}
-
 pub const KEY_FORWARD: KeyCode = KeyCode::KeyW;
 pub const KEY_LEFT: KeyCode = KeyCode::KeyA;
 pub const KEY_BACK: KeyCode = KeyCode::KeyS;
 pub const KEY_RIGHT: KeyCode = KeyCode::KeyD;
-
-impl Action {
-    pub const fn default_key(self) -> Option<KeyCode> {
-        match self {
-            Self::Jump => Some(KeyCode::Space),
-            Self::Sneak => Some(KeyCode::ShiftLeft),
-            Self::Sprint => Some(KeyCode::ControlLeft),
-            Self::ToggleInventory => Some(KeyCode::KeyE),
-            Self::OpenMenu => Some(KeyCode::Escape),
-            Self::ViewPlayerList => Some(KeyCode::Tab),
-            Self::ChangePerspective => Some(KeyCode::F5),
-            Self::OpenChat => Some(KeyCode::KeyT),
-            Self::OpenCommands => Some(KeyCode::Slash),
-            Self::DropItem => Some(KeyCode::KeyQ),
-            Self::SwapOffhand => Some(KeyCode::KeyF),
-            Self::Destroy | Self::Use | Self::Close | Self::SpectatorHotbar => None,
-        }
-    }
-}
 
 /// Label of key mapping `key`: Pomme's binding for the actions it has, else
 /// vanilla's default (`Options` key mappings). A lang key and its en_us
