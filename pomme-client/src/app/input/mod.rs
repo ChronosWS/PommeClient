@@ -5,7 +5,9 @@
 //! The Key Binds screen edits these settings using limited input capture;
 //! live gameplay still uses the existing hardcoded mappings.
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
+use action::collector::ActionCollector;
 use gilrs::ff::{BaseEffect, Effect, EffectBuilder, Repeat, Replay};
 use gilrs::{Button, GamepadId, Gilrs};
 use winit::event::{ElementState, Modifiers, MouseButton};
@@ -131,6 +133,7 @@ fn keycode_translation(key: KeyCode) -> Option<(&'static str, &'static str)> {
 }
 
 pub struct InputState {
+    pub action_events: ActionCollector,
     held_keys: HashSet<KeyCode>,
     modifiers: Modifiers,
     mouse_delta: (f64, f64),
@@ -234,6 +237,7 @@ impl InputState {
         };
 
         Self {
+            action_events: ActionCollector::new(),
             held_keys: HashSet::new(),
             modifiers: Modifiers::default(),
             mouse_delta: (0.0, 0.0),
@@ -273,14 +277,24 @@ impl InputState {
         }
     }
 
-    pub fn update(&mut self, phase: &mut StateSlot<AppPhase>) -> bool {
+    pub fn update(
+        &mut self,
+        phase: &mut StateSlot<AppPhase>,
+        frame_time: Instant,
+        bindings: &KeyBindings,
+    ) -> bool {
         let events: Vec<gilrs::Event> = match self.gamepad_manager.as_mut() {
             Some(manager) => std::iter::from_fn(|| manager.next_event()).collect(),
             None => Vec::new(),
         };
         for event in &events {
+            self.action_events
+                .on_gamepad_event(event, self.binding_capture);
             self.on_gamepad_event(event);
         }
+        // Collection only until consumers migrate; legacy handling remains
+        // authoritative.
+        self.action_events.dispatch(frame_time, bindings, &mut []);
 
         if self.binding_capture {
             return false;

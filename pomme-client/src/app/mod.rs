@@ -16,6 +16,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::app::core::AppCore;
+use crate::app::input::action::dispatcher::InputDeviceId;
 use crate::app::phases::connecting::{ConnectingUpdateResult, update_connecting};
 use crate::app::phases::in_game::{GameState, GameUpdateResult, update_game};
 use crate::app::phases::in_menu::{MenuUpdateResult, update_menu};
@@ -336,6 +337,10 @@ impl ApplicationHandler for App {
                 _ => false,
             };
         self.core.input.set_binding_capture(binding_capture);
+        self.core
+            .input
+            .action_events
+            .on_window_event(&event, binding_capture);
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
                 // A world saves on the way out, so the window stays up for it
@@ -715,12 +720,12 @@ impl ApplicationHandler for App {
 
                 // `dt` is clamped for physics; `raw_dt` is the unclamped interval the
                 // benchmarks need.
+                let frame_time = Instant::now();
                 let (dt, raw_dt) = if let Some(app_rt) = self.phase.gfx_mut() {
-                    let now = Instant::now();
-                    let raw_dt = now.duration_since(app_rt.last_frame).as_secs_f32();
+                    let raw_dt = frame_time.duration_since(app_rt.last_frame).as_secs_f32();
                     let dt = raw_dt.min(0.1);
 
-                    app_rt.last_frame = now;
+                    app_rt.last_frame = frame_time;
                     app_rt.fps_counter.update(dt);
 
                     (dt, raw_dt)
@@ -730,7 +735,9 @@ impl ApplicationHandler for App {
 
                 let core = &mut self.core;
 
-                let should_apply_cursor_grab = core.input.update(&mut self.phase);
+                let should_apply_cursor_grab =
+                    core.input
+                        .update(&mut self.phase, frame_time, &core.menu.key_bindings);
                 if should_apply_cursor_grab
                     && let AppPhase::InGame { gfx, game, .. } = self.phase.get_mut()
                 {
@@ -938,9 +945,15 @@ impl ApplicationHandler for App {
     fn device_event(
         &mut self,
         _event_loop: &ActiveEventLoop,
-        _device_id: DeviceId,
+        device_id: DeviceId,
         event: DeviceEvent,
     ) {
+        if matches!(event, DeviceEvent::Removed) {
+            self.core
+                .input
+                .action_events
+                .on_device_disconnected(InputDeviceId::Window(Some(device_id)));
+        }
         if let DeviceEvent::MouseMotion { delta } = event
             && self.core.input.is_cursor_captured()
             && matches!(self.phase.get(), AppPhase::InGame { game,.. } if !game.paused && !game.dead && !game.death_screen_open && !game.gui_open() && !game.chat.is_open())

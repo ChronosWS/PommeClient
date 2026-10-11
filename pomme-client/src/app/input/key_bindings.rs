@@ -113,6 +113,16 @@ impl KeyBindings {
         Action::ALL.iter().all(|&action| self.is_default(action))
     }
 
+    /// All actions bound to this input, including secondary bindings.
+    pub fn actions_for_input<'a>(
+        &'a self,
+        input: &'a InputKey,
+    ) -> impl Iterator<Item = &'a Action> {
+        self.0
+            .iter()
+            .filter_map(move |(action, inputs)| inputs.contains(input).then_some(action))
+    }
+
     /// Configured bindings; callers choose the UI's category and display order.
     pub fn iter(&self) -> impl Iterator<Item = ActionBindingsRef<'_>> {
         self.0.iter().map(|(&action, inputs)| ActionBindingsRef {
