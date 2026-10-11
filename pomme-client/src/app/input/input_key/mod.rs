@@ -8,9 +8,9 @@ use super::{BindingMetadata, DisplayText};
 
 #[macro_use]
 mod catalog;
-mod gamepad;
-mod keyboard;
-mod mouse;
+mod gamepad_catalog;
+mod keyboard_catalog;
+mod mouse_catalog;
 
 pub use catalog::{GAMEPAD_INPUT_ID_PREFIX, KEYBOARD_INPUT_ID_PREFIX, MOUSE_INPUT_ID_PREFIX};
 
@@ -59,9 +59,9 @@ impl InputKey {
     /// keyboard codes have no catalog entry.
     pub fn metadata(&self) -> Option<BindingMetadata<'static>> {
         match self {
-            Self::Keyboard(key) => keyboard::metadata_from_input(*key),
-            Self::Mouse(button) => mouse::metadata_from_input(*button),
-            Self::Controller(button) => gamepad::metadata_from_input(*button),
+            Self::Keyboard(key) => keyboard_catalog::metadata_from_input(*key),
+            Self::Mouse(button) => mouse_catalog::metadata_from_input(*button),
+            Self::Controller(button) => gamepad_catalog::metadata_from_input(*button),
         }
     }
 
@@ -69,9 +69,9 @@ impl InputKey {
     /// text.
     pub fn input_id(&self) -> Option<Cow<'static, str>> {
         match self {
-            Self::Keyboard(key) => keyboard::input_id_from_input(*key),
-            Self::Mouse(button) => mouse::input_id_from_input(*button),
-            Self::Controller(button) => gamepad::input_id_from_input(*button),
+            Self::Keyboard(key) => keyboard_catalog::input_id_from_input(*key),
+            Self::Mouse(button) => mouse_catalog::input_id_from_input(*button),
+            Self::Controller(button) => gamepad_catalog::input_id_from_input(*button),
         }
     }
 
@@ -83,14 +83,15 @@ impl InputKey {
             input_id: input_id.to_owned(),
         };
         if input_id.starts_with(MOUSE_INPUT_ID_PREFIX) {
-            return mouse::input_from_input_id(input_id).ok_or_else(|| unknown_binding("mouse"));
+            return mouse_catalog::input_from_input_id(input_id)
+                .ok_or_else(|| unknown_binding("mouse"));
         }
         if input_id.starts_with(GAMEPAD_INPUT_ID_PREFIX) {
-            return gamepad::input_from_input_id(input_id)
+            return gamepad_catalog::input_from_input_id(input_id)
                 .ok_or_else(|| unknown_binding("gamepad"));
         }
         if input_id.starts_with(KEYBOARD_INPUT_ID_PREFIX) {
-            return keyboard::input_from_input_id(input_id)
+            return keyboard_catalog::input_from_input_id(input_id)
                 .ok_or_else(|| unknown_binding("keyboard"));
         }
         Err(InputIdError::InvalidInputType {
