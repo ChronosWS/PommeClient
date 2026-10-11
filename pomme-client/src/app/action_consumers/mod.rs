@@ -1,12 +1,14 @@
 //! Application-owned action consumers and transitional legacy action
 //! processing.
 
+pub mod close;
 pub mod inventory;
 pub mod perspective;
 pub mod player_list;
 
 use std::time::Instant;
 
+use close::{CloseConsumer, CloseOutcome};
 use inventory::{InventoryConsumer, InventoryOutcome};
 use perspective::PerspectiveConsumer;
 use player_list::PlayerListConsumer;
@@ -32,6 +34,8 @@ pub fn process_actions(
     );
     let mut inventory_handler =
         |event: &ActionEvent, _: &ActionStates| inventory.handle_event(event);
+    let mut close = CloseConsumer::new(phase.get(), input.binding_capture_active());
+    let mut close_handler = |event: &ActionEvent, _: &ActionStates| close.handle_event(event);
     let mut perspective = PerspectiveConsumer::new(phase.get(), input.binding_capture_active());
     let mut perspective_handler =
         |event: &ActionEvent, _: &ActionStates| perspective.handle_event(event);
@@ -41,6 +45,7 @@ pub fn process_actions(
         bindings,
         &mut [
             &mut inventory_handler,
+            &mut close_handler,
             &mut perspective_handler,
             &mut player_list_handler,
         ],
@@ -101,22 +106,7 @@ pub fn process_actions(
 
                 input.clear_action(Action::OpenMenu);
             }
-            if input.action_just_pressed(Action::Close) && !game.dialog_open() {
-                if !game.dead
-                    && !game.death_screen_open
-                    && (game.inventory_open || game.open_container.is_some())
-                {
-                    game.close_menu();
-                    should_apply_cursor_grab = true;
-                }
-
-                // Same order as Escape: modal, then suggestions, then chat.
-                if game.chat.is_open() {
-                    should_apply_cursor_grab |= game.escape_chat();
-                }
-
-                input.clear_action(Action::Close);
-            }
+            should_apply_cursor_grab |= close.apply(game) == CloseOutcome::RefreshCursorGrab;
             if perspective.take_change_request() {
                 gfx.renderer.cycle_camera_mode();
             }

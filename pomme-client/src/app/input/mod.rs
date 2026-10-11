@@ -358,10 +358,6 @@ impl InputState {
                     self.recent_actions.insert(Action::OpenChat, true);
                 }
 
-                Button::East => {
-                    self.recent_actions.insert(Action::Close, true);
-                }
-
                 _ => {}
             },
             gilrs::EventType::ButtonReleased(button, _) => match button {
@@ -378,10 +374,6 @@ impl InputState {
 
                 Button::DPadRight => {
                     self.recent_actions.insert(Action::OpenChat, false);
-                }
-
-                Button::East => {
-                    self.recent_actions.insert(Action::Close, false);
                 }
 
                 _ => {}
@@ -420,8 +412,7 @@ impl InputState {
                 self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadRight)
             }
             Action::OpenCommands => self.is_default_key_held(action),
-            // Controller-only; keyboard Escape closes via OpenMenu and the chat path.
-            Action::Close => self.is_gamepad_button_held(Button::East),
+            Action::Close => self.is_action_held(action),
             // Action-press-count driven (`consume_action_press`); held state only.
             Action::DropItem | Action::SwapOffhand => self.is_default_key_held(action),
             // Vanilla `key.spectatorHotbar` default: middle mouse.
