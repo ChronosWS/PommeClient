@@ -350,10 +350,6 @@ impl InputState {
                     self.selected_slot = (self.selected_slot + 8) % 9;
                 }
 
-                Button::DPadRight => {
-                    self.recent_actions.insert(Action::OpenChat, true);
-                }
-
                 _ => {}
             },
             gilrs::EventType::ButtonReleased(button, _) => match button {
@@ -362,10 +358,6 @@ impl InputState {
                 }
                 Button::LeftTrigger2 => {
                     self.recent_actions.insert(Action::Use, false);
-                }
-
-                Button::DPadRight => {
-                    self.recent_actions.insert(Action::OpenChat, false);
                 }
 
                 _ => {}
@@ -398,9 +390,7 @@ impl InputState {
             Action::ChangePerspective => {
                 self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadUp)
             }
-            Action::OpenChat => {
-                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadRight)
-            }
+            Action::OpenChat => self.is_action_held(action),
             Action::OpenCommands => self.is_default_key_held(action),
             Action::Close => self.is_action_held(action),
             // Action-press-count driven (`consume_action_press`); held state only.
@@ -587,9 +577,6 @@ impl InputState {
                                 .or_insert(0) += 1;
                         }
 
-                        KeyCode::KeyT => {
-                            self.recent_actions.insert(Action::OpenChat, true);
-                        }
                         KeyCode::Slash => {
                             self.recent_actions.insert(Action::OpenCommands, true);
                         }

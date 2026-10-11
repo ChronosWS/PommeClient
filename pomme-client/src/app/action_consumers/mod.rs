@@ -3,6 +3,7 @@
 
 pub mod close;
 pub mod inventory;
+pub mod open_chat;
 pub mod open_menu;
 pub mod perspective;
 pub mod player_list;
@@ -11,6 +12,7 @@ use std::time::Instant;
 
 use close::{CloseConsumer, CloseOutcome};
 use inventory::{InventoryConsumer, InventoryOutcome};
+use open_chat::{OpenChatConsumer, OpenChatOutcome};
 use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
 use perspective::PerspectiveConsumer;
 use player_list::PlayerListConsumer;
@@ -44,6 +46,9 @@ pub fn process_actions(
     let mut perspective = PerspectiveConsumer::new(phase.get(), input.binding_capture_active());
     let mut perspective_handler =
         |event: &ActionEvent, _: &ActionStates| perspective.handle_event(event);
+    let mut open_chat = OpenChatConsumer::new(phase.get(), input.binding_capture_active());
+    let mut open_chat_handler =
+        |event: &ActionEvent, _: &ActionStates| open_chat.handle_event(event);
     let mut player_list_handler = PlayerListConsumer::handle_event;
     input.action_events.dispatch(
         frame_time,
@@ -53,6 +58,7 @@ pub fn process_actions(
             &mut open_menu_handler,
             &mut close_handler,
             &mut perspective_handler,
+            &mut open_chat_handler,
             &mut player_list_handler,
         ],
     );
@@ -78,23 +84,11 @@ pub fn process_actions(
             if perspective.take_change_request() {
                 gfx.renderer.cycle_camera_mode();
             }
-            if input.action_just_pressed(Action::OpenChat) {
-                if !game.paused
-                    && !game.death_screen_open
-                    && !game.gui_open()
-                    && !game.chat.is_open()
-                {
-                    game.chat.open(
-                        crate::ui::chat::ChatMethod::Message,
-                        game.command_tree.as_deref(),
-                    );
-                    // The frame flag is written at end of update; set it now
-                    // so keys later in this same event batch already type.
-                    input.text_capture = true;
-                    should_apply_cursor_grab = true;
-                }
-
-                input.clear_action(Action::OpenChat);
+            if open_chat.apply(game) == OpenChatOutcome::Opened {
+                // Update capture immediately for the rest of this frame;
+                // update_game also refreshes it after processing chat input.
+                input.text_capture = true;
+                should_apply_cursor_grab = true;
             }
             if input.action_just_pressed(Action::OpenCommands) {
                 if !game.paused
