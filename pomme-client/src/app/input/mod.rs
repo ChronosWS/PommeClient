@@ -391,7 +391,7 @@ impl InputState {
                 self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadUp)
             }
             Action::OpenChat => self.is_action_held(action),
-            Action::OpenCommands => self.is_default_key_held(action),
+            Action::OpenCommands => self.is_action_held(action),
             Action::Close => self.is_action_held(action),
             // Action-press-count driven (`consume_action_press`); held state only.
             Action::DropItem | Action::SwapOffhand => self.is_default_key_held(action),
@@ -426,12 +426,6 @@ impl InputState {
 
     pub fn action_just_pressed(&self, action: Action) -> bool {
         self.recent_actions.get(&action).copied().unwrap_or(false)
-    }
-
-    /// Drops a pending action so a handler that already consumed the
-    /// originating key press doesn't trigger it again.
-    pub fn clear_action(&mut self, action: Action) {
-        self.recent_actions.remove(&action);
     }
 
     pub fn clear_just_pressed_actions(&mut self) {
@@ -575,10 +569,6 @@ impl InputState {
                                 .action_press_counts
                                 .entry(Action::SwapOffhand)
                                 .or_insert(0) += 1;
-                        }
-
-                        KeyCode::Slash => {
-                            self.recent_actions.insert(Action::OpenCommands, true);
                         }
 
                         _ => {}

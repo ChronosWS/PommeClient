@@ -1,9 +1,9 @@
-//! Application-owned action consumers and transitional legacy action
-//! processing.
+//! Application-owned action consumers and frame dispatch.
 
 pub mod close;
 pub mod inventory;
 pub mod open_chat;
+pub mod open_commands;
 pub mod open_menu;
 pub mod perspective;
 pub mod player_list;
@@ -13,18 +13,18 @@ use std::time::Instant;
 use close::{CloseConsumer, CloseOutcome};
 use inventory::{InventoryConsumer, InventoryOutcome};
 use open_chat::{OpenChatConsumer, OpenChatOutcome};
+use open_commands::{OpenCommandsConsumer, OpenCommandsOutcome};
 use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
 use perspective::PerspectiveConsumer;
 use player_list::PlayerListConsumer;
 
 use super::input::action::dispatcher::{ActionEvent, ActionStates};
-use super::input::{Action, InputState, KeyBindings};
+use super::input::{InputState, KeyBindings};
 use super::phases::AppPhase;
 use super::state_slot::StateSlot;
 
-/// Dispatch settings-backed events, then retain the existing legacy action
-/// order until those consumers migrate. Returns whether cursor grab must be
-/// refreshed.
+/// Dispatch action events, then apply consumer requests in the existing
+/// application order. Returns whether cursor grab must be refreshed.
 pub fn process_actions(
     input: &mut InputState,
     phase: &mut StateSlot<AppPhase>,
@@ -49,6 +49,9 @@ pub fn process_actions(
     let mut open_chat = OpenChatConsumer::new(phase.get(), input.binding_capture_active());
     let mut open_chat_handler =
         |event: &ActionEvent, _: &ActionStates| open_chat.handle_event(event);
+    let mut open_commands = OpenCommandsConsumer::new(phase.get(), input.binding_capture_active());
+    let mut open_commands_handler =
+        |event: &ActionEvent, _: &ActionStates| open_commands.handle_event(event);
     let mut player_list_handler = PlayerListConsumer::handle_event;
     input.action_events.dispatch(
         frame_time,
@@ -59,6 +62,7 @@ pub fn process_actions(
             &mut close_handler,
             &mut perspective_handler,
             &mut open_chat_handler,
+            &mut open_commands_handler,
             &mut player_list_handler,
         ],
     );
@@ -90,21 +94,9 @@ pub fn process_actions(
                 input.text_capture = true;
                 should_apply_cursor_grab = true;
             }
-            if input.action_just_pressed(Action::OpenCommands) {
-                if !game.paused
-                    && !game.death_screen_open
-                    && !game.gui_open()
-                    && !game.chat.is_open()
-                {
-                    game.chat.open(
-                        crate::ui::chat::ChatMethod::Command,
-                        game.command_tree.as_deref(),
-                    );
-                    input.text_capture = true;
-                    should_apply_cursor_grab = true;
-                }
-
-                input.clear_action(Action::OpenCommands);
+            if open_commands.apply(game) == OpenCommandsOutcome::Opened {
+                input.text_capture = true;
+                should_apply_cursor_grab = true;
             }
         }
 
