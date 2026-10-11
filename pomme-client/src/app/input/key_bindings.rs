@@ -8,13 +8,6 @@ use winit::keyboard::KeyCode;
 use super::InputKey::{Controller, Keyboard, Mouse};
 use super::{Action, InputKey};
 
-/// One physical input associated with a logical action.
-#[derive(Serialize, Deserialize)]
-pub struct KeyBinding {
-    action: Action,
-    input: InputKey,
-}
-
 /// Borrowed view of an action and all of its configured physical inputs.
 #[derive(Clone, Copy)]
 pub struct ActionBindingsRef<'a> {

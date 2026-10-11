@@ -22,10 +22,6 @@ impl ActionId {
     pub const fn new(value: &'static str) -> Self {
         Self(value)
     }
-
-    pub const fn as_str(self) -> &'static str {
-        self.0
-    }
 }
 
 /// Display text explicitly separates translation identity from its fallback.

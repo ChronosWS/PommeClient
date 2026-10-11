@@ -15,14 +15,14 @@ pub struct ActionCategoryMetadata {
 }
 
 macro_rules! action_categories {
-    ($($category:ident => {
+    ($($(#[$category_attr:meta])* $category:ident => {
         translation_id: $translation_id:expr,
         fallback: $fallback:literal,
         ui_order: $ui_order:expr $(,)?
     }),* $(,)?) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum ActionCategory {
-            $($category,)*
+            $($(#[$category_attr])* $category,)*
         }
 
         impl ActionCategory {
@@ -81,6 +81,8 @@ action_categories! {
         fallback: "Inventory",
         ui_order: 4,
     },
+    // TODO: Remove this allowance once the remaining Creative key bindings are added.
+    #[allow(dead_code)]
     Creative => {
         translation_id: Some(StringId::new("key.category.minecraft.creative")),
         fallback: "Creative",
@@ -91,6 +93,8 @@ action_categories! {
         fallback: "Spectator",
         ui_order: 6,
     },
+    // TODO: Remove this allowance once the remaining Debug key bindings are added.
+    #[allow(dead_code)]
     Debug => {
         translation_id: Some(StringId::new("key.category.minecraft.debug")),
         fallback: "Debug",
@@ -101,8 +105,12 @@ action_categories! {
 /// Persistent identity, display metadata, and UI ordering for a logical action.
 #[derive(Clone, Debug)]
 pub struct ActionMetadata {
+    // TODO: Revisit this allowance when input-system refactoring uses action IDs.
+    #[allow(dead_code)]
     pub id: ActionId,
     pub display: DisplayText<'static>,
+    // TODO: Revisit this allowance when input-system refactoring consumes metadata categories.
+    #[allow(dead_code)]
     pub category: ActionCategory,
     pub ui_order: i32,
 }
@@ -140,15 +148,14 @@ macro_rules! actions {
             }
 
             /// Stable identifier used in options.json and key mapping lookups.
+            // TODO: Revisit this allowance when input-system refactoring uses action IDs.
+            #[allow(dead_code)]
             pub const fn id(&self) -> ActionId {
                 match self {
                     $(Self::$action => ActionId::new($name),)*
                 }
             }
 
-            pub const fn name(&self) -> &'static str {
-                self.id().as_str()
-            }
 
             pub fn display_text(&self) -> DisplayText<'static> {
                 self.metadata().display

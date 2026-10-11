@@ -21,9 +21,9 @@ pub mod input_key;
 pub mod key_bindings;
 mod metadata;
 
-pub use action::{Action, ActionCategory, ActionCategoryMetadata, ActionMetadata};
-pub use input_key::{InputIdError, InputKey};
-pub use key_bindings::{ActionBindingsRef, KeyBinding, KeyBindings};
+pub use action::Action;
+pub use input_key::InputKey;
+pub use key_bindings::KeyBindings;
 pub use metadata::{ActionId, BindingMetadata, DisplayText, StringId};
 
 /// Left-stick deflection past which a direction counts as a digital press.
@@ -1070,6 +1070,56 @@ impl InputState {
     }
 }
 
+fn hotbar_slot(code: KeyCode) -> Option<u8> {
+    match code {
+        KeyCode::Digit1 => Some(0),
+        KeyCode::Digit2 => Some(1),
+        KeyCode::Digit3 => Some(2),
+        KeyCode::Digit4 => Some(3),
+        KeyCode::Digit5 => Some(4),
+        KeyCode::Digit6 => Some(5),
+        KeyCode::Digit7 => Some(6),
+        KeyCode::Digit8 => Some(7),
+        KeyCode::Digit9 => Some(8),
+        _ => None,
+    }
+}
+
+/// Build a single-motor force-feedback effect targeting the FF-capable gamepads
+/// connected right now. Rumble is best-effort: returns `None` if no controller
+/// supports it or the effect can't be created.
+///
+/// TODO: the effect is bound to the gamepads present when this runs (startup);
+/// a controller connected later won't rumble until this is rebuilt on hotplug.
+fn build_rumble_effect(
+    manager: &mut Gilrs,
+    kind: gilrs::ff::BaseEffectType,
+    duration: gilrs::ff::Ticks,
+) -> Option<Effect> {
+    let ff_supported = manager
+        .gamepads()
+        .filter_map(|(id, gp)| gp.is_ff_supported().then_some(id))
+        .collect::<Vec<_>>();
+    if ff_supported.is_empty() {
+        return None;
+    }
+
+    EffectBuilder::new()
+        .add_effect(BaseEffect {
+            kind,
+            scheduling: Replay {
+                play_for: duration,
+                ..Default::default()
+            },
+            envelope: Default::default(),
+        })
+        .repeat(Repeat::For(duration))
+        .gamepads(&ff_supported)
+        .finish(manager)
+        .map_err(|e| tracing::warn!("Failed to create rumble effect: {e}"))
+        .ok()
+}
+
 #[cfg(test)]
 mod binding_capture_tests {
     use super::*;
@@ -1119,54 +1169,4 @@ mod binding_capture_tests {
         input.on_mouse_button(MouseButton::Left, ElementState::Pressed);
         assert!(input.left_just_pressed());
     }
-}
-
-fn hotbar_slot(code: KeyCode) -> Option<u8> {
-    match code {
-        KeyCode::Digit1 => Some(0),
-        KeyCode::Digit2 => Some(1),
-        KeyCode::Digit3 => Some(2),
-        KeyCode::Digit4 => Some(3),
-        KeyCode::Digit5 => Some(4),
-        KeyCode::Digit6 => Some(5),
-        KeyCode::Digit7 => Some(6),
-        KeyCode::Digit8 => Some(7),
-        KeyCode::Digit9 => Some(8),
-        _ => None,
-    }
-}
-
-/// Build a single-motor force-feedback effect targeting the FF-capable gamepads
-/// connected right now. Rumble is best-effort: returns `None` if no controller
-/// supports it or the effect can't be created.
-///
-/// TODO: the effect is bound to the gamepads present when this runs (startup);
-/// a controller connected later won't rumble until this is rebuilt on hotplug.
-fn build_rumble_effect(
-    manager: &mut Gilrs,
-    kind: gilrs::ff::BaseEffectType,
-    duration: gilrs::ff::Ticks,
-) -> Option<Effect> {
-    let ff_supported = manager
-        .gamepads()
-        .filter_map(|(id, gp)| gp.is_ff_supported().then_some(id))
-        .collect::<Vec<_>>();
-    if ff_supported.is_empty() {
-        return None;
-    }
-
-    EffectBuilder::new()
-        .add_effect(BaseEffect {
-            kind,
-            scheduling: Replay {
-                play_for: duration,
-                ..Default::default()
-            },
-            envelope: Default::default(),
-        })
-        .repeat(Repeat::For(duration))
-        .gamepads(&ff_supported)
-        .finish(manager)
-        .map_err(|e| tracing::warn!("Failed to create rumble effect: {e}"))
-        .ok()
 }

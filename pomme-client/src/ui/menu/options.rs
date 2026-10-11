@@ -384,7 +384,7 @@ impl MainMenu {
         sw: f32,
         sh: f32,
         input: &MenuInput,
-        text_width_fn: common::TextWidthFn,
+        _text_width_fn: common::TextWidthFn,
     ) -> MainMenuResult {
         let capturing = input.binding_capture || self.action_binding.is_some();
         if let Some(action) = self.action_binding.as_ref()
@@ -426,7 +426,7 @@ impl MainMenu {
 
         // The focus context
         self.focus_advance(input);
-        let mut ctx = &mut self.make_focus_ctx(input);
+        let ctx = &mut self.make_focus_ctx(input);
 
         let mut bindings: Vec<_> = self.key_bindings.iter().collect();
         bindings.sort_by(|left, right| left.action.compare_ui(right.action));
@@ -469,13 +469,13 @@ impl MainMenu {
             bindings.chunk_by(|left, right| left.action.category() == right.action.category())
         {
             // Gap
-            total_height = total_height + category_gap;
+            total_height += category_gap;
 
             // Category heading
-            total_height = total_height + fs;
+            total_height += fs;
 
             // Gap
-            total_height = total_height + category_gap;
+            total_height += category_gap;
 
             total_height += category_bindings.len() as f32 * button_h;
         }
@@ -516,7 +516,7 @@ impl MainMenu {
             bindings.chunk_by(|left, right| left.action.category() == right.action.category())
         {
             let category = category_bindings[0].action.category();
-            line_y = line_y + category_gap;
+            line_y += category_gap;
 
             //
             // Draw the category heading
@@ -608,7 +608,7 @@ impl MainMenu {
                 //
                 // Reset Button
                 //
-                let reset_clicked = push_button_f(
+                let _reset_clicked = push_button_f(
                     &mut elements,
                     ctx,
                     &mut any_hovered,
@@ -623,7 +623,7 @@ impl MainMenu {
                     false,
                 );
 
-                line_y = line_y + (BTN_H * gs);
+                line_y += BTN_H * gs;
             }
         }
 
@@ -638,7 +638,7 @@ impl MainMenu {
 
         let _reset_pressed = push_footer_button(
             &mut elements,
-            &mut ctx,
+            ctx,
             &mut any_hovered,
             input,
             &chrome,
@@ -650,7 +650,7 @@ impl MainMenu {
 
         let done_pressed = push_footer_button(
             &mut elements,
-            &mut ctx,
+            ctx,
             &mut any_hovered,
             input,
             &chrome,
