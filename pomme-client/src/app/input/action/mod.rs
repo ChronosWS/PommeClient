@@ -8,6 +8,10 @@ use super::{ActionId, DisplayText, InputKey, StringId};
 use super::InputKey::Keyboard;
 
 mod catalog;
+// TODO: Remove this allowance when live input sources and consumers are
+// connected.
+#[allow(dead_code)]
+pub mod dispatcher;
 
 pub use catalog::{Action, ActionCategory};
 

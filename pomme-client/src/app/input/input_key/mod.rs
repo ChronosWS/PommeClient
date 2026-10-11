@@ -17,7 +17,7 @@ pub use catalog::{GAMEPAD_INPUT_ID_PREFIX, KEYBOARD_INPUT_ID_PREFIX, MOUSE_INPUT
 /// Represent the binding name for a physical input.
 /// Bindings serialize as stable `key.keyboard.*`, `key.mouse.*`, and
 /// `key.gamepad.*` strings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InputKey {
     Keyboard(KeyCode),
     Mouse(MouseButton),
