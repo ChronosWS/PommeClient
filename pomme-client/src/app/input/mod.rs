@@ -3,19 +3,18 @@
 //! Key bindings serialize action IDs to arrays of physical input IDs, for
 //! example `"key.jump": ["key.keyboard.space", "key.gamepad.south"]`.
 //! The Key Binds screen edits these settings using limited input capture;
-//! live gameplay still uses the existing hardcoded mappings.
+//! Perspective changes and the player list use these bindings; other gameplay
+//! input still uses the existing hardcoded mappings.
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use action::collector::ActionCollector;
+use action::dispatcher::ActionStates;
 use gilrs::ff::{BaseEffect, Effect, EffectBuilder, Repeat, Replay};
 use gilrs::{Button, GamepadId, Gilrs};
 use winit::event::{ElementState, Modifiers, MouseButton};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::app::TICK_RATE_MS;
-use crate::app::phases::AppPhase;
-use crate::app::state_slot::StateSlot;
 
 pub mod action;
 
@@ -277,12 +276,7 @@ impl InputState {
         }
     }
 
-    pub fn update(
-        &mut self,
-        phase: &mut StateSlot<AppPhase>,
-        frame_time: Instant,
-        bindings: &KeyBindings,
-    ) -> bool {
+    pub fn collect_gamepad_events(&mut self) {
         let events: Vec<gilrs::Event> = match self.gamepad_manager.as_mut() {
             Some(manager) => std::iter::from_fn(|| manager.next_event()).collect(),
             None => Vec::new(),
@@ -292,152 +286,6 @@ impl InputState {
                 .on_gamepad_event(event, self.binding_capture);
             self.on_gamepad_event(event);
         }
-        // Collection only until consumers migrate; legacy handling remains
-        // authoritative.
-        self.action_events.dispatch(frame_time, bindings, &mut []);
-
-        if self.binding_capture {
-            return false;
-        }
-
-        let mut should_apply_cursor_grab = false;
-
-        phase.transition(|mut app| {
-            if let AppPhase::InGame {
-                gfx,
-                connection: _connection,
-                game,
-                ..
-            } = &mut app
-            {
-                // A dialog (or the confirm screen over it) is a screen, and
-                // vanilla runs no key mapping while one is up.
-                if self.action_just_pressed(Action::ToggleInventory) && !game.dialog_open() {
-                    if game.creative_inventory_open {
-                        game.close_creative_inventory();
-                        should_apply_cursor_grab = true;
-                    } else if game.open_container.is_some() {
-                        game.close_menu();
-                        should_apply_cursor_grab = true;
-                    } else if !game.paused
-                        && !game.dead
-                        && !game.death_screen_open
-                        && game.player.game_mode != 3
-                        && !game.chat.is_open()
-                        && game.game_mode_switcher.is_none()
-                    {
-                        if crate::player::is_creative(game.player.game_mode) {
-                            game.creative_inventory_open = true;
-                        } else {
-                            game.inventory_open = !game.inventory_open;
-                        }
-                        should_apply_cursor_grab = true;
-                    }
-
-                    self.recent_actions.remove(&Action::ToggleInventory);
-                }
-                if self.action_just_pressed(Action::OpenMenu) && !game.dialog_open() {
-                    if game.chat.is_open() {
-                        // ChatScreen consumes Escape before the game-level
-                        // pause action: link confirmation, then suggestions,
-                        // then the chat screen itself.
-                        should_apply_cursor_grab = game.escape_chat();
-                    } else if game.game_mode_switcher.is_some() {
-                        // Esc cancels the F3+F4 switcher without applying.
-                        game.game_mode_switcher = None;
-                        should_apply_cursor_grab = true;
-                    } else if game.chunk_load_bench.is_some() {
-                        // Cancel a running benchmark instead of opening the menu;
-                        // update_game restores the render distance next frame.
-                        game.chunk_load_abort = true;
-                        should_apply_cursor_grab = true;
-                    } else if !game.dead && !game.death_screen_open && !game.options_from_game {
-                        use crate::ui::pause::PauseScreen;
-                        if game.inventory_open || game.open_container.is_some() {
-                            game.close_menu();
-                        } else if game.paused {
-                            // Step back through the benchmark sub-screens; close
-                            // the menu from the main screen.
-                            match game.pause_screen {
-                                PauseScreen::ChunkLoader => {
-                                    game.pause_screen = PauseScreen::Benchmark
-                                }
-                                PauseScreen::Benchmark => game.pause_screen = PauseScreen::Main,
-                                PauseScreen::Main | PauseScreen::Hidden => game.paused = false,
-                            }
-                        } else {
-                            game.paused = true;
-                            game.pause_screen = PauseScreen::Main;
-                        }
-
-                        should_apply_cursor_grab = true;
-                    }
-
-                    self.recent_actions.remove(&Action::OpenMenu);
-                }
-                if self.action_just_pressed(Action::Close) && !game.dialog_open() {
-                    if !game.dead
-                        && !game.death_screen_open
-                        && (game.inventory_open || game.open_container.is_some())
-                    {
-                        game.close_menu();
-                        should_apply_cursor_grab = true;
-                    }
-
-                    // Same order as Escape: modal, then suggestions, then chat.
-                    if game.chat.is_open() {
-                        should_apply_cursor_grab |= game.escape_chat();
-                    }
-
-                    self.recent_actions.remove(&Action::Close);
-                }
-                if self.action_just_pressed(Action::ChangePerspective) {
-                    if !game.death_screen_open {
-                        gfx.renderer.cycle_camera_mode();
-                    }
-
-                    self.recent_actions.remove(&Action::ChangePerspective);
-                }
-                if self.action_just_pressed(Action::OpenChat) {
-                    if !game.paused
-                        && !game.death_screen_open
-                        && !game.gui_open()
-                        && !game.chat.is_open()
-                    {
-                        game.chat.open(
-                            crate::ui::chat::ChatMethod::Message,
-                            game.command_tree.as_deref(),
-                        );
-                        // The frame flag is written at end of update; set it now
-                        // so keys later in this same event batch already type.
-                        self.text_capture = true;
-                        should_apply_cursor_grab = true;
-                    }
-
-                    self.recent_actions.remove(&Action::OpenChat);
-                }
-                if self.action_just_pressed(Action::OpenCommands) {
-                    if !game.paused
-                        && !game.death_screen_open
-                        && !game.gui_open()
-                        && !game.chat.is_open()
-                    {
-                        game.chat.open(
-                            crate::ui::chat::ChatMethod::Command,
-                            game.command_tree.as_deref(),
-                        );
-                        self.text_capture = true;
-                        should_apply_cursor_grab = true;
-                    }
-
-                    self.recent_actions.remove(&Action::OpenCommands);
-                }
-            }
-
-            app
-        });
-
-        should_apply_cursor_grab
     }
 
     pub fn get_active_gamepad(&self) -> Option<gilrs::Gamepad<'_>> {
@@ -509,10 +357,6 @@ impl InputState {
                     self.recent_actions.insert(Action::OpenMenu, true);
                 }
 
-                Button::DPadUp => {
-                    self.recent_actions.insert(Action::ChangePerspective, true);
-                }
-
                 Button::DPadRight => {
                     self.recent_actions.insert(Action::OpenChat, true);
                 }
@@ -536,10 +380,6 @@ impl InputState {
 
                 Button::Start => {
                     self.recent_actions.insert(Action::OpenMenu, false);
-                }
-
-                Button::DPadUp => {
-                    self.recent_actions.insert(Action::ChangePerspective, false);
                 }
 
                 Button::DPadRight => {
@@ -581,9 +421,7 @@ impl InputState {
             Action::OpenMenu => {
                 self.is_default_key_held(action) || self.is_gamepad_button_held(Button::Start)
             }
-            Action::ViewPlayerList => {
-                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::Select)
-            }
+            Action::ViewPlayerList => self.is_action_held(action),
             Action::ChangePerspective => {
                 self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadUp)
             }
@@ -598,6 +436,16 @@ impl InputState {
             // Vanilla `key.spectatorHotbar` default: middle mouse.
             Action::SpectatorHotbar => self.middle_click.held,
         }
+    }
+
+    pub fn action_states(&self) -> &ActionStates {
+        self.action_events.dispatcher().action_states()
+    }
+
+    /// Aggregate held state resolved from configured bindings at frame
+    /// dispatch.
+    pub fn is_action_held(&self, action: Action) -> bool {
+        self.action_states().contains_key(&action)
     }
 
     fn is_default_key_held(&self, action: Action) -> bool {
@@ -764,9 +612,7 @@ impl InputState {
                         KeyCode::Escape => {
                             self.recent_actions.insert(Action::OpenMenu, true);
                         }
-                        KeyCode::F5 => {
-                            self.recent_actions.insert(Action::ChangePerspective, true);
-                        }
+
                         KeyCode::KeyT => {
                             self.recent_actions.insert(Action::OpenChat, true);
                         }
@@ -1125,6 +971,165 @@ fn build_rumble_effect(
         .finish(manager)
         .map_err(|e| tracing::warn!("Failed to create rumble effect: {e}"))
         .ok()
+}
+
+#[cfg(test)]
+mod player_list_tests {
+    use std::time::Instant;
+
+    use action::dispatcher::InputDeviceId;
+    use winit::event::{DeviceId, WindowEvent};
+
+    use super::*;
+
+    fn mouse(input: &mut InputState, button: MouseButton, state: ElementState, capturing: bool) {
+        input.action_events.on_window_event(
+            &WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state,
+                button,
+            },
+            capturing,
+        );
+    }
+
+    fn dispatch(input: &mut InputState, bindings: &KeyBindings) {
+        input
+            .action_events
+            .dispatch(Instant::now(), bindings, &mut []);
+    }
+
+    #[test]
+    fn player_list_uses_resolved_bindings_without_hardcoded_tab_fallback() {
+        let mut input = InputState::released();
+        let mut bindings = KeyBindings::default();
+        bindings.set(
+            Action::ViewPlayerList,
+            vec![InputKey::Mouse(MouseButton::Other(4))],
+        );
+        input.held_keys.insert(KeyCode::Tab);
+        assert!(!input.is_action_held(Action::ViewPlayerList));
+        assert!(!input.performing_action(Action::ViewPlayerList));
+        mouse(
+            &mut input,
+            MouseButton::Other(4),
+            ElementState::Pressed,
+            false,
+        );
+        assert!(!input.is_action_held(Action::ViewPlayerList));
+        dispatch(&mut input, &bindings);
+        assert!(input.is_action_held(Action::ViewPlayerList));
+        assert!(input.performing_action(Action::ViewPlayerList));
+        dispatch(&mut input, &bindings);
+        assert!(input.is_action_held(Action::ViewPlayerList));
+        mouse(
+            &mut input,
+            MouseButton::Other(4),
+            ElementState::Released,
+            false,
+        );
+        dispatch(&mut input, &bindings);
+        assert!(!input.is_action_held(Action::ViewPlayerList));
+    }
+
+    #[test]
+    fn player_list_remains_held_until_last_binding_releases() {
+        let mut input = InputState::released();
+        let mut bindings = KeyBindings::default();
+        bindings.set(
+            Action::ViewPlayerList,
+            vec![
+                InputKey::Mouse(MouseButton::Left),
+                InputKey::Mouse(MouseButton::Right),
+            ],
+        );
+        mouse(&mut input, MouseButton::Left, ElementState::Pressed, false);
+        mouse(&mut input, MouseButton::Right, ElementState::Pressed, false);
+        dispatch(&mut input, &bindings);
+        assert!(input.is_action_held(Action::ViewPlayerList));
+        mouse(&mut input, MouseButton::Left, ElementState::Released, false);
+        dispatch(&mut input, &bindings);
+        assert!(input.is_action_held(Action::ViewPlayerList));
+        mouse(
+            &mut input,
+            MouseButton::Right,
+            ElementState::Released,
+            false,
+        );
+        dispatch(&mut input, &bindings);
+        assert!(!input.is_action_held(Action::ViewPlayerList));
+    }
+
+    #[test]
+    fn player_list_unbound_and_captured_inputs_do_not_activate() {
+        let mut input = InputState::released();
+        let mut bindings = KeyBindings::default();
+        bindings.set(Action::ViewPlayerList, vec![]);
+        input.held_keys.insert(KeyCode::Tab);
+        dispatch(&mut input, &bindings);
+        assert!(!input.performing_action(Action::ViewPlayerList));
+        bindings.set(
+            Action::ViewPlayerList,
+            vec![InputKey::Mouse(MouseButton::Other(4))],
+        );
+        mouse(
+            &mut input,
+            MouseButton::Other(4),
+            ElementState::Pressed,
+            true,
+        );
+        dispatch(&mut input, &bindings);
+        assert!(!input.is_action_held(Action::ViewPlayerList));
+        mouse(
+            &mut input,
+            MouseButton::Other(4),
+            ElementState::Released,
+            false,
+        );
+        mouse(
+            &mut input,
+            MouseButton::Other(4),
+            ElementState::Pressed,
+            false,
+        );
+        dispatch(&mut input, &bindings);
+        assert!(input.is_action_held(Action::ViewPlayerList));
+    }
+
+    #[test]
+    fn focus_loss_and_device_disconnection_end_player_list_holds() {
+        let mut input = InputState::released();
+        let mut bindings = KeyBindings::default();
+        bindings.set(
+            Action::ViewPlayerList,
+            vec![InputKey::Mouse(MouseButton::Other(4))],
+        );
+        mouse(
+            &mut input,
+            MouseButton::Other(4),
+            ElementState::Pressed,
+            false,
+        );
+        dispatch(&mut input, &bindings);
+        input
+            .action_events
+            .on_window_event(&WindowEvent::Focused(false), false);
+        dispatch(&mut input, &bindings);
+        assert!(!input.is_action_held(Action::ViewPlayerList));
+        mouse(
+            &mut input,
+            MouseButton::Other(4),
+            ElementState::Pressed,
+            false,
+        );
+        dispatch(&mut input, &bindings);
+        assert!(input.is_action_held(Action::ViewPlayerList));
+        input
+            .action_events
+            .on_device_disconnected(InputDeviceId::Window(Some(DeviceId::dummy())));
+        dispatch(&mut input, &bindings);
+        assert!(!input.is_action_held(Action::ViewPlayerList));
+    }
 }
 
 #[cfg(test)]

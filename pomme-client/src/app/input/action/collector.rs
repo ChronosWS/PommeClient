@@ -24,8 +24,6 @@ impl ActionCollector {
         Self::default()
     }
 
-    // TODO: Use this view when consumers migrate to settings-backed action state.
-    #[allow(dead_code)]
     pub fn dispatcher(&self) -> &ActionDispatcher {
         &self.dispatcher
     }

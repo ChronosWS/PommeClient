@@ -1,3 +1,4 @@
+mod action_consumers;
 pub mod core;
 pub mod input;
 pub mod level_load;
@@ -735,9 +736,13 @@ impl ApplicationHandler for App {
 
                 let core = &mut self.core;
 
-                let should_apply_cursor_grab =
-                    core.input
-                        .update(&mut self.phase, frame_time, &core.menu.key_bindings);
+                core.input.collect_gamepad_events();
+                let should_apply_cursor_grab = action_consumers::process_actions(
+                    &mut core.input,
+                    &mut self.phase,
+                    frame_time,
+                    &core.menu.key_bindings,
+                );
                 if should_apply_cursor_grab
                     && let AppPhase::InGame { gfx, game, .. } = self.phase.get_mut()
                 {

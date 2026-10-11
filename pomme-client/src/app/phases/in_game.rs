@@ -10,6 +10,7 @@ use azalea_protocol::packets::game::{
 use azalea_registry::builtin::{BlockEntityKind, EntityKind};
 use glam::FloatExt as _;
 
+use crate::app::action_consumers::player_list::PlayerListConsumer;
 use crate::app::core::{AppCore, PlayerInputState};
 use crate::app::level_load::LevelLoadTracker;
 use crate::app::phases::Gfx;
@@ -2667,14 +2668,7 @@ pub fn update_game(
         hud::build_sleep_overlay(&mut elements, sw, sh, game.player.sleep_counter);
     }
 
-    if core.input.performing_action(input::Action::ViewPlayerList)
-        && !game.hide_gui
-        && !game.paused
-        && !game.gui_open()
-        && !game.chat.is_open()
-        && !game.dead
-        && !game.death_screen_open
-    {
+    if PlayerListConsumer::is_visible(core.input.action_states(), game) {
         let r = &gfx.renderer;
         crate::ui::player_tab::build_player_tab_overlay(
             &mut elements,
