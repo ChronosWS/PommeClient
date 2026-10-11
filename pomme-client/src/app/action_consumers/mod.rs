@@ -1,11 +1,13 @@
 //! Application-owned action consumers and transitional legacy action
 //! processing.
 
+pub mod inventory;
 pub mod perspective;
 pub mod player_list;
 
 use std::time::Instant;
 
+use inventory::{InventoryConsumer, InventoryOutcome};
 use perspective::PerspectiveConsumer;
 use player_list::PlayerListConsumer;
 
@@ -23,6 +25,13 @@ pub fn process_actions(
     frame_time: Instant,
     bindings: &KeyBindings,
 ) -> bool {
+    let mut inventory = InventoryConsumer::new(
+        phase.get(),
+        input.binding_capture_active(),
+        input.text_capture,
+    );
+    let mut inventory_handler =
+        |event: &ActionEvent, _: &ActionStates| inventory.handle_event(event);
     let mut perspective = PerspectiveConsumer::new(phase.get(), input.binding_capture_active());
     let mut perspective_handler =
         |event: &ActionEvent, _: &ActionStates| perspective.handle_event(event);
@@ -30,7 +39,11 @@ pub fn process_actions(
     input.action_events.dispatch(
         frame_time,
         bindings,
-        &mut [&mut perspective_handler, &mut player_list_handler],
+        &mut [
+            &mut inventory_handler,
+            &mut perspective_handler,
+            &mut player_list_handler,
+        ],
     );
 
     if input.binding_capture_active() {
@@ -47,32 +60,10 @@ pub fn process_actions(
             ..
         } = &mut app
         {
+            should_apply_cursor_grab |=
+                inventory.apply(game) == InventoryOutcome::RefreshCursorGrab;
             // A dialog (or the confirm screen over it) is a screen, and
             // vanilla runs no key mapping while one is up.
-            if input.action_just_pressed(Action::ToggleInventory) && !game.dialog_open() {
-                if game.creative_inventory_open {
-                    game.close_creative_inventory();
-                    should_apply_cursor_grab = true;
-                } else if game.open_container.is_some() {
-                    game.close_menu();
-                    should_apply_cursor_grab = true;
-                } else if !game.paused
-                    && !game.dead
-                    && !game.death_screen_open
-                    && game.player.game_mode != 3
-                    && !game.chat.is_open()
-                    && game.game_mode_switcher.is_none()
-                {
-                    if crate::player::is_creative(game.player.game_mode) {
-                        game.creative_inventory_open = true;
-                    } else {
-                        game.inventory_open = !game.inventory_open;
-                    }
-                    should_apply_cursor_grab = true;
-                }
-
-                input.clear_action(Action::ToggleInventory);
-            }
             if input.action_just_pressed(Action::OpenMenu) && !game.dialog_open() {
                 if game.chat.is_open() {
                     // ChatScreen consumes Escape before the game-level

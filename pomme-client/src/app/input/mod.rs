@@ -3,8 +3,8 @@
 //! Key bindings serialize action IDs to arrays of physical input IDs, for
 //! example `"key.jump": ["key.keyboard.space", "key.gamepad.south"]`.
 //! The Key Binds screen edits these settings using limited input capture;
-//! Perspective changes and the player list use these bindings; other gameplay
-//! input still uses the existing hardcoded mappings.
+//! Perspective, inventory, and player-list actions use these bindings; other
+//! gameplay input still uses the existing hardcoded mappings.
 use std::collections::{HashMap, HashSet};
 
 use action::collector::ActionCollector;
@@ -349,9 +349,6 @@ impl InputState {
                 Button::LeftTrigger if !self.spectator && !self.menu_capture => {
                     self.selected_slot = (self.selected_slot + 8) % 9;
                 }
-                Button::North => {
-                    self.recent_actions.insert(Action::ToggleInventory, true);
-                }
 
                 Button::Start => {
                     self.recent_actions.insert(Action::OpenMenu, true);
@@ -373,9 +370,6 @@ impl InputState {
                 }
                 Button::LeftTrigger2 => {
                     self.recent_actions.insert(Action::Use, false);
-                }
-                Button::North => {
-                    self.recent_actions.insert(Action::ToggleInventory, false);
                 }
 
                 Button::Start => {
@@ -414,10 +408,7 @@ impl InputState {
             Action::Use => {
                 self.is_right_mouse_held() || self.is_gamepad_button_held(Button::LeftTrigger2)
             }
-            Action::ToggleInventory => {
-                self.action_just_pressed(Action::ToggleInventory)
-                    || self.is_gamepad_button_held(Button::North)
-            }
+            Action::ToggleInventory => self.is_action_held(action),
             Action::OpenMenu => {
                 self.is_default_key_held(action) || self.is_gamepad_button_held(Button::Start)
             }
@@ -594,9 +585,6 @@ impl InputState {
                         }
                     }
                     match code {
-                        KeyCode::KeyE if !self.text_capture => {
-                            self.recent_actions.insert(Action::ToggleInventory, true);
-                        }
                         KeyCode::KeyQ if !self.text_capture && !self.menu_capture => {
                             *self
                                 .action_press_counts
