@@ -14,7 +14,7 @@ use winit::window::{CursorGrabMode, Fullscreen, Window};
 
 use crate::app::action_consumers::ActionConsumers;
 use crate::app::input::{
-    Action, InputState, KEY_BACK, KEY_FORWARD, KEY_LEFT, KEY_RIGHT, STICK_MOVEMENT_THRESHOLD,
+    InputState, KEY_BACK, KEY_FORWARD, KEY_LEFT, KEY_RIGHT, STICK_MOVEMENT_THRESHOLD,
 };
 use crate::app::level_load::ReadyInputs;
 use crate::app::phases::in_game::GameState;
@@ -323,7 +323,7 @@ fn player_input_state(
     jump_held: bool,
     sneak_held: bool,
     analog_move: glam::Vec2,
-    sprint_key_down: bool,
+    sprint_held: bool,
 ) -> PlayerInputState {
     PlayerInputState {
         forward: input.is_key_held(KEY_FORWARD) || analog_move.y > STICK_MOVEMENT_THRESHOLD,
@@ -332,7 +332,7 @@ fn player_input_state(
         right: input.is_key_held(KEY_RIGHT) || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
         jump: jump_held,
         shift: sneak_held,
-        sprint: sprint_key_down,
+        sprint: sprint_held,
     }
 }
 
@@ -2873,7 +2873,7 @@ impl AppCore {
 
             let neutral = InputState::released();
             Self::send_abilities_packet(connection, game);
-            Self::send_input_packet(&neutral, false, false, connection, game);
+            Self::send_input_packet(&neutral, false, false, false, connection, game);
             self.send_sprint_command(connection, game);
             self.send_position_packet(connection, game);
 
@@ -2925,6 +2925,7 @@ impl AppCore {
         // into the vehicle check.
         let jump_held = self.action_consumers.jump.do_tick(game);
         let sneak_held = self.action_consumers.sneak.do_tick(game);
+        let sprint_held = self.action_consumers.sprint.do_tick(game);
         if game.riding_jumpable_vehicle() {
             let p = &mut game.player;
             if p.jump_riding_ticks < 0 {
@@ -3054,6 +3055,7 @@ impl AppCore {
             input,
             jump_held,
             sneak_held,
+            sprint_held,
             &game.chunk_store,
             &game.block_entity_anim,
             game.interaction.use_speed_multiplier(),
@@ -3075,7 +3077,7 @@ impl AppCore {
             .tick_player_state(input.is_cursor_captured(), held_stack.as_ref());
 
         Self::send_abilities_packet(connection, game);
-        Self::send_input_packet(input, jump_held, sneak_held, connection, game);
+        Self::send_input_packet(input, jump_held, sneak_held, sprint_held, connection, game);
         self.send_sprint_command(connection, game);
         self.send_position_packet(connection, game);
         if !dirty.is_empty() {
@@ -3134,6 +3136,7 @@ impl AppCore {
         input: &InputState,
         jump_held: bool,
         sneak_held: bool,
+        sprint_held: bool,
         connection: &ConnectionHandle,
         game: &mut GameState,
     ) {
@@ -3143,13 +3146,7 @@ impl AppCore {
             .get_gamepad_movement_axes()
             .unwrap_or(glam::Vec2::ZERO);
 
-        let current = player_input_state(
-            input,
-            jump_held,
-            sneak_held,
-            analog_move,
-            input.performing_action(Action::Sprint),
-        );
+        let current = player_input_state(input, jump_held, sneak_held, analog_move, sprint_held);
 
         if current != game.last_sent_input {
             sender.send(ServerboundGamePacket::PlayerInput(
@@ -3765,7 +3762,7 @@ mod tests {
     }
 
     #[test]
-    fn player_input_packet_uses_physical_sprint_key_state() {
+    fn player_input_packet_uses_explicit_sprint_hold() {
         let input = InputState::released();
         let pressed = serverbound_player_input(&player_input_state(
             &input,

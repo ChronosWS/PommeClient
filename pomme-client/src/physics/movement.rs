@@ -81,6 +81,7 @@ pub fn tick(
     input: &InputState,
     raw_jump_held: bool,
     sneak_held: bool,
+    sprint_held: bool,
     chunk_store: &ChunkStore,
     block_entity_anim: &BlockEntityAnimStore,
     use_speed_multiplier: f32,
@@ -121,6 +122,7 @@ pub fn tick(
         player,
         input,
         sneak_held,
+        sprint_held,
         forward_pressed,
         slow_due_to_using_item,
         vehicle,
@@ -266,7 +268,7 @@ pub fn tick_dead(
     // remains authoritative until Player.updatePlayerPose runs at tick end.
     let neutral = InputState::released();
     let vehicle = is_passenger.then_some(Vehicle { jumpable: false });
-    update_sprint_state(player, &neutral, false, false, false, vehicle);
+    update_sprint_state(player, &neutral, false, false, false, false, vehicle);
     player.update_water_state(chunk_store, is_passenger);
     player.tick_eye_height();
 
@@ -656,6 +658,7 @@ fn update_sprint_state(
     player: &mut LocalPlayer,
     input: &InputState,
     sneak_held: bool,
+    sprint_held: bool,
     forward_pressed: bool,
     slow_due_to_using_item: bool,
     vehicle: Option<Vehicle>,
@@ -698,7 +701,7 @@ fn update_sprint_state(
                 player.sprint_toggle_timer = DEFAULT_SPRINT_WINDOW;
             }
         }
-        if input.performing_action(input::Action::Sprint) {
+        if sprint_held {
             player.sprinting = true;
         }
     }
@@ -1469,6 +1472,7 @@ mod tests {
             &shift_input,
             false,
             true,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1478,6 +1482,7 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
+            false,
             false,
             false,
             &chunks,
@@ -1502,6 +1507,7 @@ mod tests {
             &shift_input,
             false,
             true,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1516,6 +1522,7 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
+            false,
             false,
             false,
             &chunks,
@@ -1538,6 +1545,7 @@ mod tests {
             &plain_input,
             false,
             false,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1553,6 +1561,7 @@ mod tests {
         tick(
             &mut shifted,
             &plain_input,
+            false,
             false,
             false,
             &chunks,
@@ -1585,6 +1594,7 @@ mod tests {
             &input,
             false,
             true,
+            false,
             &chunks,
             &anim,
             1.0,
@@ -1594,6 +1604,7 @@ mod tests {
         tick(
             &mut released,
             &input,
+            false,
             false,
             false,
             &chunks,
@@ -1630,6 +1641,7 @@ mod tests {
             &input,
             false,
             true,
+            false,
             &chunks,
             &anim,
             1.0,
@@ -1726,6 +1738,7 @@ mod tests {
             &input,
             false,
             true,
+            false,
             &chunks,
             &anim,
             1.0,
@@ -1921,21 +1934,21 @@ mod tests {
 
         let released = InputState::released();
         player.on_ground = true;
-        update_sprint_state(&mut player, &released, false, false, false, None);
+        update_sprint_state(&mut player, &released, false, false, false, false, None);
         assert!(
             player.sprinting,
             "vanilla swim sprint ignores hard-wall collision and may persist without forward input on ground"
         );
 
         player.on_ground = false;
-        update_sprint_state(&mut player, &released, false, false, false, None);
+        update_sprint_state(&mut player, &released, false, false, false, false, None);
         assert!(
             !player.sprinting,
             "airborne swim sprint stops when forward input is lost"
         );
 
         player.sprinting = true;
-        update_sprint_state(&mut player, &released, true, false, false, None);
+        update_sprint_state(&mut player, &released, true, false, false, false, None);
         assert!(
             player.sprinting,
             "descending is the vanilla exception to the no-forward swim-sprint stop"
@@ -1951,7 +1964,7 @@ mod tests {
 
         let mut forward = InputState::released();
         forward.set_key_held_for_test(KeyCode::KeyW, true);
-        update_sprint_state(&mut player, &forward, false, true, false, None);
+        update_sprint_state(&mut player, &forward, false, false, true, false, None);
         assert_eq!(
             player.sprint_toggle_timer, DEFAULT_SPRINT_WINDOW,
             "previous shift clears the old window before the new forward edge arms a fresh one"
@@ -1961,7 +1974,7 @@ mod tests {
         player.sprint_toggle_timer = 4;
         player.was_shift_pressed = false;
         player.was_forward_pressed = true;
-        update_sprint_state(&mut player, &forward, true, true, false, None);
+        update_sprint_state(&mut player, &forward, true, false, true, false, None);
         assert_eq!(
             player.sprint_toggle_timer, 3,
             "current Sneak must not clear the window until it becomes previous-tick input"
@@ -1970,24 +1983,56 @@ mod tests {
         player.sprint_toggle_timer = 4;
         let mut backward = InputState::released();
         backward.set_key_held_for_test(KeyCode::KeyS, true);
-        update_sprint_state(&mut player, &backward, false, false, false, None);
+        update_sprint_state(&mut player, &backward, false, false, false, false, None);
         assert_eq!(player.sprint_toggle_timer, 0);
+    }
+
+    #[test]
+    fn explicit_sprint_hold_starts_without_raw_control_and_release_does_not_stop_run() {
+        let mut input = InputState::released();
+        input.set_key_held_for_test(KeyCode::KeyW, true);
+        let mut player = LocalPlayer::new();
+        player.food = 20;
+        player.was_forward_pressed = true;
+
+        update_sprint_state(&mut player, &input, false, true, true, false, None);
+        assert!(player.sprinting);
+        update_sprint_state(&mut player, &input, false, false, true, false, None);
+        assert!(
+            player.sprinting,
+            "releasing Sprint alone does not stop a run"
+        );
+
+        player.sprinting = false;
+        input.set_key_held_for_test(KeyCode::ControlLeft, true);
+        update_sprint_state(&mut player, &input, false, false, true, false, None);
+        assert!(
+            !player.sprinting,
+            "raw Control must not bypass the consumer"
+        );
+
+        player.was_forward_pressed = false;
+        player.sprint_toggle_timer = 2;
+        update_sprint_state(&mut player, &input, false, false, true, false, None);
+        assert!(
+            player.sprinting,
+            "double-tap forward still starts sprint without a Sprint hold"
+        );
     }
 
     #[test]
     fn item_slowdown_blocks_start_but_does_not_cancel_existing_sprint() {
         let mut input = InputState::released();
         input.set_key_held_for_test(KeyCode::KeyW, true);
-        input.set_key_held_for_test(KeyCode::ControlLeft, true);
 
         let mut player = LocalPlayer::new();
         player.food = 20;
-        update_sprint_state(&mut player, &input, false, true, true, None);
+        update_sprint_state(&mut player, &input, false, true, true, true, None);
         assert!(!player.sprinting, "item slowdown blocks canStartSprinting");
 
         player.sprinting = true;
         player.was_forward_pressed = true;
-        update_sprint_state(&mut player, &input, false, true, true, None);
+        update_sprint_state(&mut player, &input, false, true, true, true, None);
         assert!(
             player.sprinting,
             "vanilla shouldStopRunSprinting does not cancel an already-active sprint solely for item slowdown"
@@ -1998,7 +2043,6 @@ mod tests {
     fn shallow_water_stops_existing_run_sprint_even_while_sprint_key_is_held() {
         let mut input = InputState::released();
         input.set_key_held_for_test(KeyCode::KeyW, true);
-        input.set_key_held_for_test(KeyCode::ControlLeft, true);
 
         let mut player = LocalPlayer::new();
         player.sprinting = true;
@@ -2007,7 +2051,7 @@ mod tests {
         player.under_water = false;
         player.food = 20;
 
-        update_sprint_state(&mut player, &input, false, true, false, None);
+        update_sprint_state(&mut player, &input, false, true, true, false, None);
 
         assert!(
             !player.sprinting,
@@ -2024,7 +2068,7 @@ mod tests {
         player.horizontal_collision = true;
         player.minor_horizontal_collision = false;
 
-        update_sprint_state(&mut player, &input, false, true, false, None);
+        update_sprint_state(&mut player, &input, false, false, true, false, None);
         assert!(
             !player.sprinting,
             "vanilla shouldStopRunSprinting consumes the prior hard wall collision"
@@ -2032,7 +2076,7 @@ mod tests {
 
         player.sprinting = true;
         player.minor_horizontal_collision = true;
-        update_sprint_state(&mut player, &input, false, true, false, None);
+        update_sprint_state(&mut player, &input, false, false, true, false, None);
         assert!(
             player.sprinting,
             "minorHorizontalCollision is the vanilla wall-sprint exemption"
@@ -2107,6 +2151,7 @@ mod tests {
             &mut player,
             &InputState::released(),
             true,
+            false,
             false,
             &chunks,
             &BlockEntityAnimStore::default(),
@@ -2201,6 +2246,7 @@ mod tests {
             &input,
             true,
             false,
+            false,
             &chunks,
             &anim,
             1.0,
@@ -2216,6 +2262,7 @@ mod tests {
             &input,
             true,
             false,
+            false,
             &chunks,
             &anim,
             1.0,
@@ -2230,6 +2277,7 @@ mod tests {
             &input,
             false,
             false,
+            false,
             &chunks,
             &anim,
             1.0,
@@ -2241,6 +2289,7 @@ mod tests {
             &mut player,
             &input,
             true,
+            false,
             false,
             &chunks,
             &anim,
@@ -2269,6 +2318,7 @@ mod tests {
             &input,
             true,
             false,
+            false,
             &chunks,
             &anim,
             1.0,
@@ -2287,6 +2337,7 @@ mod tests {
                 &mut player,
                 &input,
                 true,
+                false,
                 false,
                 &chunks,
                 &anim,
@@ -2308,6 +2359,7 @@ mod tests {
             &input,
             false,
             false,
+            false,
             &chunks,
             &anim,
             1.0,
@@ -2322,6 +2374,7 @@ mod tests {
             &mut player,
             &input,
             true,
+            false,
             false,
             &chunks,
             &anim,
@@ -2345,6 +2398,7 @@ mod tests {
             &mut player,
             &InputState::released(),
             true,
+            false,
             false,
             &chunks,
             &BlockEntityAnimStore::default(),
@@ -2376,6 +2430,7 @@ mod tests {
             &input,
             true,
             false,
+            false,
             &chunks,
             &BlockEntityAnimStore::default(),
             1.0,
@@ -2402,6 +2457,7 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
+            false,
             false,
             false,
             &chunks,

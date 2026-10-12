@@ -11,6 +11,7 @@ pub mod perspective;
 pub mod player_list;
 pub mod sneak;
 pub mod spectator_hotbar;
+pub mod sprint;
 pub mod swap_offhand;
 
 use std::time::Instant;
@@ -26,6 +27,7 @@ use perspective::PerspectiveConsumer;
 use player_list::PlayerListConsumer;
 use sneak::SneakConsumer;
 use spectator_hotbar::SpectatorHotbarConsumer;
+use sprint::SprintConsumer;
 use swap_offhand::SwapOffhandConsumer;
 
 use super::input::action::dispatcher::{ActionEvent, ActionStates};
@@ -40,6 +42,7 @@ use super::state_slot::StateSlot;
 pub struct ActionConsumers {
     pub(super) jump: JumpConsumer,
     pub(super) sneak: SneakConsumer,
+    pub(super) sprint: SprintConsumer,
     pub(super) drop_item: DropItemConsumer,
     pub(super) swap_offhand: SwapOffhandConsumer,
     pub(super) spectator_hotbar: SpectatorHotbarConsumer,
@@ -51,6 +54,7 @@ impl ActionConsumers {
     pub fn clear_pending_gameplay(&mut self) {
         self.jump.clear();
         self.sneak.clear();
+        self.sprint.clear();
         self.drop_item.clear();
         self.swap_offhand.clear();
         self.spectator_hotbar.clear();
@@ -74,6 +78,10 @@ impl ActionConsumers {
         };
         let mut sneak_handler = |event: &ActionEvent, _: &ActionStates| {
             self.sneak.handle_event(event, phase.get(), binding_capture)
+        };
+        let mut sprint_handler = |event: &ActionEvent, _: &ActionStates| {
+            self.sprint
+                .handle_event(event, phase.get(), binding_capture)
         };
         let mut drop_handler = |event: &ActionEvent, _: &ActionStates| {
             self.drop_item.handle_event(
@@ -138,6 +146,7 @@ impl ActionConsumers {
                 &mut player_list_handler,
                 &mut jump_handler,
                 &mut sneak_handler,
+                &mut sprint_handler,
                 &mut drop_handler,
                 &mut swap_handler,
                 &mut spectator_hotbar_handler,
@@ -148,6 +157,8 @@ impl ActionConsumers {
             self.jump
                 .do_frame(input.action_states(), phase.get(), binding_capture);
             self.sneak
+                .do_frame(input.action_states(), phase.get(), binding_capture);
+            self.sprint
                 .do_frame(input.action_states(), phase.get(), binding_capture);
             self.drop_item.do_frame(phase.get(), binding_capture);
             self.swap_offhand.do_frame(phase.get(), binding_capture);
@@ -191,6 +202,8 @@ impl ActionConsumers {
         self.jump
             .do_frame(input.action_states(), phase.get(), binding_capture);
         self.sneak
+            .do_frame(input.action_states(), phase.get(), binding_capture);
+        self.sprint
             .do_frame(input.action_states(), phase.get(), binding_capture);
         self.drop_item.do_frame(phase.get(), binding_capture);
         self.swap_offhand.do_frame(phase.get(), binding_capture);

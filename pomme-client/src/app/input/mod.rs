@@ -369,9 +369,7 @@ impl InputState {
         match action {
             Action::Jump => self.is_action_held(action),
             Action::Sneak => self.is_action_held(action),
-            Action::Sprint => {
-                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::West)
-            }
+            Action::Sprint => self.is_action_held(action),
             Action::Destroy => {
                 self.is_left_mouse_held() || self.is_gamepad_button_held(Button::RightTrigger2)
             }
