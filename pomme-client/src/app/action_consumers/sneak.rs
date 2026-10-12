@@ -138,7 +138,7 @@ mod tests {
             InputKey::Controller(Button::North),
         ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::Sneak, vec![input.clone()]);
+            bindings.set(Action::Sneak, vec![input]);
             let mut consumer = SneakConsumer::default();
             let mut dispatcher = ActionDispatcher::new();
             dispatcher.on_press(source(InputKey::Keyboard(KeyCode::ShiftLeft)));

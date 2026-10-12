@@ -157,7 +157,7 @@ mod tests {
             InputKey::Controller(Button::Select),
         ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::DropItem, vec![input.clone()]);
+            bindings.set(Action::DropItem, vec![input]);
             let mut consumer = DropItemConsumer::default();
             let mut dispatcher = ActionDispatcher::new();
             let source = source(input);

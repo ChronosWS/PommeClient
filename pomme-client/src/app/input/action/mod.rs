@@ -4,8 +4,8 @@ use std::borrow::Cow;
 
 use winit::keyboard::KeyCode;
 
-use super::{ActionId, DisplayText, InputKey, StringId};
 use super::InputKey::Keyboard;
+use super::{ActionId, DisplayText, InputKey, StringId};
 
 mod catalog;
 pub mod collector;
@@ -75,4 +75,3 @@ impl Action {
             .then_with(|| self.display_name().cmp(&other.display_name()))
     }
 }
-

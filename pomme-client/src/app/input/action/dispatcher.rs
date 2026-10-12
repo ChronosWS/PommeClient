@@ -171,7 +171,7 @@ impl ActionDispatcher {
         for action in resolve_bindings(&source.input) {
             let state = self
                 .action_states
-                .entry(action.clone())
+                .entry(action)
                 .or_insert_with(|| ActionState {
                     started_at: timestamp,
                     active_sources: HashSet::new(),
@@ -198,7 +198,7 @@ impl ActionDispatcher {
         for (action, state) in &self.action_states {
             if state.active_sources.contains(source) {
                 events.push(ActionEvent {
-                    action: action.clone(),
+                    action: *action,
                     source: source.clone(),
                     kind: ActionEventKind::Repeat,
                     timestamp,
@@ -229,7 +229,7 @@ impl ActionDispatcher {
                 HoldTransition::Unchanged
             };
             events.push(ActionEvent {
-                action: action.clone(),
+                action: *action,
                 source: source.clone(),
                 kind: ActionEventKind::Release(reason),
                 timestamp,
@@ -487,7 +487,7 @@ mod tests {
             let actions: HashSet<_> = events
                 .iter()
                 .filter(|event| event.kind == kind)
-                .map(|event| event.action.clone())
+                .map(|event| event.action)
                 .collect();
             assert_eq!(actions, HashSet::from([Action::Jump, Action::Use]));
         }
@@ -582,11 +582,11 @@ mod tests {
         dispatcher.on_press(keyboard());
         let calls = RefCell::new(Vec::new());
         let mut global = |event: &ActionEvent, _: &ActionStates| {
-            calls.borrow_mut().push((0, event.action.clone()));
+            calls.borrow_mut().push((0, event.action));
             EventDisposition::Pass
         };
         let mut menu = |event: &ActionEvent, _: &ActionStates| {
-            calls.borrow_mut().push((1, event.action.clone()));
+            calls.borrow_mut().push((1, event.action));
             if event.action == Action::Jump {
                 EventDisposition::Consume
             } else {
@@ -594,7 +594,7 @@ mod tests {
             }
         };
         let mut gameplay = |event: &ActionEvent, _: &ActionStates| {
-            calls.borrow_mut().push((2, event.action.clone()));
+            calls.borrow_mut().push((2, event.action));
             EventDisposition::Pass
         };
         let time = Instant::now();
@@ -638,7 +638,7 @@ mod tests {
         };
         let mut menu = |event: &ActionEvent, _: &ActionStates| {
             if menu_open.get() {
-                menu_seen.push(event.action.clone());
+                menu_seen.push(event.action);
                 EventDisposition::Consume
             } else {
                 EventDisposition::Pass

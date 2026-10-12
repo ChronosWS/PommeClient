@@ -153,7 +153,7 @@ mod tests {
             InputKey::Controller(Button::Select),
         ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::SpectatorHotbar, vec![input.clone()]);
+            bindings.set(Action::SpectatorHotbar, vec![input]);
             let mut consumer = SpectatorHotbarConsumer::default();
             let mut dispatcher = ActionDispatcher::new();
             let source = source(input);

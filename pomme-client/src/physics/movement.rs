@@ -75,6 +75,7 @@ pub struct Vehicle {
     pub jumpable: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn tick(
     player: &mut LocalPlayer,
     input: &InputState,
@@ -219,6 +220,7 @@ fn apply_living_immobility(
 /// Vanilla `LivingEntity.travel`: fluid travel only when fluids affect the
 /// player (not while flying).
 // TODO: lava travel.
+#[allow(clippy::too_many_arguments)]
 fn travel(
     player: &mut LocalPlayer,
     jump_held: bool,
@@ -403,6 +405,7 @@ pub(crate) fn on_climbable(player: &LocalPlayer, chunk_store: &ChunkStore) -> bo
     on_climbable_state(player, chunk_store).is_some()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick_land(
     player: &mut LocalPlayer,
     jump_held: bool,
@@ -477,6 +480,7 @@ fn water_falling_adjusted_y(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick_water(
     player: &mut LocalPlayer,
     jump_held: bool,

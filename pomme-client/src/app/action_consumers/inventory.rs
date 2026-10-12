@@ -140,7 +140,7 @@ mod tests {
             InputKey::Controller(Button::Select),
         ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::ToggleInventory, vec![input.clone()]);
+            bindings.set(Action::ToggleInventory, vec![input]);
             let mut dispatcher = ActionDispatcher::new();
             dispatcher.on_press(source(input));
             let (requested, passed) = dispatch(&mut dispatcher, &bindings, true, false);
@@ -194,7 +194,7 @@ mod tests {
 
         for input in [key, button, source(InputKey::Mouse(MouseButton::Other(4)))] {
             let mut bindings = bindings.clone();
-            bindings.set(Action::ToggleInventory, vec![input.input.clone()]);
+            bindings.set(Action::ToggleInventory, vec![input.input]);
             dispatcher.on_press(input.clone());
             assert!(dispatch(&mut dispatcher, &bindings, true, false).0);
             dispatcher.on_repeat(&input);
@@ -217,7 +217,7 @@ mod tests {
         ] {
             let keyboard = matches!(input, InputKey::Keyboard(_));
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::ToggleInventory, vec![input.clone()]);
+            bindings.set(Action::ToggleInventory, vec![input]);
             let mut dispatcher = ActionDispatcher::new();
             let input = source(input);
             dispatcher.on_press(input.clone());

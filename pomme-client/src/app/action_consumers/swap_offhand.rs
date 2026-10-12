@@ -147,7 +147,7 @@ mod tests {
             InputKey::Controller(Button::Select),
         ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::SwapOffhand, vec![input.clone()]);
+            bindings.set(Action::SwapOffhand, vec![input]);
             let mut consumer = SwapOffhandConsumer::default();
             let mut dispatcher = ActionDispatcher::new();
             let source = source(input);

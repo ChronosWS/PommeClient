@@ -136,7 +136,7 @@ mod tests {
             InputKey::Controller(Button::Select),
         ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::OpenChat, vec![input.clone()]);
+            bindings.set(Action::OpenChat, vec![input]);
             let mut dispatcher = ActionDispatcher::new();
             dispatcher.on_press(source(input));
             let (requested, passed) = dispatch(&mut dispatcher, &bindings, true);
@@ -169,7 +169,7 @@ mod tests {
         ];
         bindings.set(
             Action::OpenChat,
-            inputs.iter().map(|source| source.input.clone()).collect(),
+            inputs.iter().map(|source| source.input).collect(),
         );
         let mut dispatcher = ActionDispatcher::new();
         for input in &inputs {

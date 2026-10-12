@@ -156,7 +156,7 @@ mod tests {
             InputKey::Controller(Button::Select),
         ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::Close, vec![input.clone()]);
+            bindings.set(Action::Close, vec![input]);
             let mut dispatcher = ActionDispatcher::new();
             dispatcher.on_press(source(input));
             let (requested, passed) = dispatch(&mut dispatcher, &bindings, true);
@@ -183,7 +183,7 @@ mod tests {
         let mut bindings = KeyBindings::default();
         let key = source(InputKey::Keyboard(KeyCode::KeyC));
         let button = source(InputKey::Controller(Button::East));
-        bindings.set(Action::Close, vec![key.input.clone(), button.input.clone()]);
+        bindings.set(Action::Close, vec![key.input, button.input]);
         let mut dispatcher = ActionDispatcher::new();
         dispatcher.on_press(key.clone());
         dispatcher.on_release(&key);

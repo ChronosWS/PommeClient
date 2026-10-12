@@ -186,8 +186,8 @@ mod tests {
         let mut collector = ActionCollector::new();
         let mut bindings = KeyBindings::default();
         let escape = source(InputKey::Keyboard(KeyCode::KeyM));
-        bindings.set(Action::OpenMenu, vec![escape.input.clone()]);
-        bindings.set(Action::ChangePerspective, vec![escape.input.clone()]);
+        bindings.set(Action::OpenMenu, vec![escape.input]);
+        bindings.set(Action::ChangePerspective, vec![escape.input]);
         collector.handle_input(escape.clone(), ElementState::Pressed, false, false);
         collector.consume_latest_action(Action::OpenMenu);
         let events = dispatch_events(&mut collector, Instant::now(), &bindings);
@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].timestamp, start);
         bindings.set(Action::Jump, vec![]);
-        bindings.set(Action::Sneak, vec![key.input.clone()]);
+        bindings.set(Action::Sneak, vec![key.input]);
         let next = start + Duration::from_millis(20);
         collector.handle_input(key.clone(), ElementState::Pressed, true, false);
         collector.handle_input(key.clone(), ElementState::Released, false, false);

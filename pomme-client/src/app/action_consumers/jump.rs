@@ -136,7 +136,7 @@ mod tests {
             InputKey::Controller(Button::North),
         ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::Jump, vec![input.clone()]);
+            bindings.set(Action::Jump, vec![input]);
             let mut consumer = JumpConsumer::default();
             let mut dispatcher = ActionDispatcher::new();
             dispatcher.on_press(source(InputKey::Keyboard(KeyCode::Space)));
