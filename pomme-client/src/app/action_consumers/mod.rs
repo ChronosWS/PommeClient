@@ -7,6 +7,7 @@ pub mod open_commands;
 pub mod open_menu;
 pub mod perspective;
 pub mod player_list;
+pub mod swap_offhand;
 
 use std::time::Instant;
 
@@ -17,19 +18,27 @@ use open_commands::{OpenCommandsConsumer, OpenCommandsOutcome};
 use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
 use perspective::PerspectiveConsumer;
 use player_list::PlayerListConsumer;
+use swap_offhand::SwapOffhandConsumer;
 
 use super::input::action::dispatcher::{ActionEvent, ActionStates};
-use super::input::{InputState, KeyBindings};
+use super::input::{InputKey, InputState, KeyBindings};
 use super::phases::AppPhase;
 use super::state_slot::StateSlot;
 
-/// Application-owned action coordination. Current frame-local consumers are
-/// constructed during processing; tick-driven consumers will retain their
-/// pending requests here rather than on InputState or GameState.
+/// Application-owned action coordination. Frame-local consumers are constructed
+/// during processing; tick-driven consumers retain pending requests here.
 #[derive(Default)]
-pub struct ActionConsumers {}
+pub struct ActionConsumers {
+    pub(super) swap_offhand: SwapOffhandConsumer,
+}
 
 impl ActionConsumers {
+    /// Discard tick work when the game session ends or gameplay cannot apply
+    /// it.
+    pub fn clear_pending_gameplay(&mut self) {
+        self.swap_offhand.clear();
+    }
+
     /// Dispatch action events, then apply consumer requests in the existing
     /// application order. Phase context is borrowed only for this call.
     /// Returns whether cursor grab must be refreshed.
@@ -40,6 +49,17 @@ impl ActionConsumers {
         frame_time: Instant,
         bindings: &KeyBindings,
     ) -> bool {
+        let swap_enabled =
+            !input.binding_capture_active() && matches!(phase.get(), AppPhase::InGame { .. });
+        if !swap_enabled {
+            self.clear_pending_gameplay();
+        }
+        let keyboard_swap_enabled = !input.text_capture && !input.menu_capture;
+        let mut swap_handler = |event: &ActionEvent, _: &ActionStates| {
+            let enabled = swap_enabled
+                && (!matches!(event.source.input, InputKey::Keyboard(_)) || keyboard_swap_enabled);
+            self.swap_offhand.handle_event(event, enabled)
+        };
         let mut inventory = InventoryConsumer::new(
             phase.get(),
             input.binding_capture_active(),
@@ -74,6 +94,7 @@ impl ActionConsumers {
                 &mut open_chat_handler,
                 &mut open_commands_handler,
                 &mut player_list_handler,
+                &mut swap_handler,
             ],
         );
 
@@ -114,6 +135,67 @@ impl ActionConsumers {
             app
         });
 
+        // Clear even on frames without a tick, including when a frame-local
+        // consumer just opened a screen. Such requests must not fire on return.
+        if !matches!(phase.get(), AppPhase::InGame { game, .. }
+            if game.client_loaded && !game.dead && game.input_live() && game.chunk_load_bench.is_none())
+        {
+            self.clear_pending_gameplay();
+        }
+
         should_apply_cursor_grab
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use winit::keyboard::KeyCode;
+
+    use super::*;
+    use crate::app::input::Action;
+    use crate::app::input::action::dispatcher::{
+        ActionEventKind, HoldTransition, InputDeviceId, InputSource,
+    };
+
+    fn request_swap(consumers: &mut ActionConsumers) {
+        consumers.swap_offhand.handle_event(
+            &ActionEvent {
+                action: Action::SwapOffhand,
+                source: InputSource {
+                    device: InputDeviceId::Window(None),
+                    input: InputKey::Keyboard(KeyCode::KeyF),
+                },
+                kind: ActionEventKind::Press,
+                timestamp: Instant::now(),
+                hold_transition: HoldTransition::Started,
+            },
+            true,
+        );
+    }
+
+    #[test]
+    fn clearing_gameplay_requests_discards_pending_swaps() {
+        let mut consumers = ActionConsumers::default();
+        request_swap(&mut consumers);
+        consumers.clear_pending_gameplay();
+        assert_eq!(consumers.swap_offhand.take_requests(), 0);
+    }
+
+    #[test]
+    fn processing_outside_game_discards_requests_without_needing_a_tick() {
+        let mut consumers = ActionConsumers::default();
+        request_swap(&mut consumers);
+        let mut input = InputState::released();
+        let mut phase = StateSlot::new(AppPhase::Setup {
+            quick_access_multiplayer: None,
+            pending_skin_uuid: None,
+        });
+        assert!(!consumers.process_actions(
+            &mut input,
+            &mut phase,
+            Instant::now(),
+            &KeyBindings::default(),
+        ));
+        assert_eq!(consumers.swap_offhand.take_requests(), 0);
     }
 }

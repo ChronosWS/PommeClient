@@ -749,6 +749,7 @@ impl AppCore {
     /// Every return from a world or server, before the title screen shows.
     /// Vanilla builds a fresh `TitleScreen` here, which rolls a new splash.
     pub fn return_to_menu(&mut self, gfx: &mut Gfx) {
+        self.action_consumers.clear_pending_gameplay();
         self.clear_server_resource_packs(&mut gfx.renderer);
         gfx.renderer.clear_chunk_meshes();
         if let Some(p) = &mut self.presence {
@@ -2805,6 +2806,7 @@ impl AppCore {
         // loaded: no physics, no interaction, and no input, sprint or movement
         // packets while the level is still coming in.
         if !game.client_loaded {
+            self.action_consumers.clear_pending_gameplay();
             self.input.clear_action_press_counts();
             self.input.clear_just_pressed_actions();
             return;
@@ -2813,6 +2815,7 @@ impl AppCore {
         // LocalPlayer.tickDeath removes the client player at tick 20; from then
         // on ClientLevel.tickEntities skips it entirely.
         if game.dead && game.player.death_animation_finished() {
+            self.action_consumers.clear_pending_gameplay();
             self.input.clear_action_press_counts();
             return;
         }
@@ -2872,7 +2875,8 @@ impl AppCore {
             self.send_sprint_command(connection, game);
             self.send_position_packet(connection, game);
 
-            // Q/F presses queued while dead must not fire on respawn.
+            // Drop/swap requests queued while dead must not fire on respawn.
+            self.action_consumers.clear_pending_gameplay();
             self.input.clear_action_press_counts();
             return;
         }
@@ -2901,7 +2905,7 @@ impl AppCore {
                     }
                 }
             }
-            while self.input.consume_action_press(Action::SwapOffhand) {
+            for _ in 0..self.action_consumers.swap_offhand.take_requests() {
                 if !spectator {
                     crate::player::interaction::send_swap_offhand(&connection.packet_tx);
                 }
@@ -2927,6 +2931,7 @@ impl AppCore {
             }
         }
         // A press queued while a menu or chat was open must not fire later.
+        self.action_consumers.clear_pending_gameplay();
         self.input.clear_action_press_counts();
 
         let neutral = InputState::released();

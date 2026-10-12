@@ -394,7 +394,8 @@ impl InputState {
             Action::OpenCommands => self.is_action_held(action),
             Action::Close => self.is_action_held(action),
             // Action-press-count driven (`consume_action_press`); held state only.
-            Action::DropItem | Action::SwapOffhand => self.is_default_key_held(action),
+            Action::DropItem => self.is_default_key_held(action),
+            Action::SwapOffhand => self.is_action_held(action),
             // Vanilla `key.spectatorHotbar` default: middle mouse.
             Action::SpectatorHotbar => self.middle_click.held,
         }
@@ -562,12 +563,6 @@ impl InputState {
                             *self
                                 .action_press_counts
                                 .entry(Action::DropItem)
-                                .or_insert(0) += 1;
-                        }
-                        KeyCode::KeyF if !self.text_capture && !self.menu_capture => {
-                            *self
-                                .action_press_counts
-                                .entry(Action::SwapOffhand)
                                 .or_insert(0) += 1;
                         }
 
