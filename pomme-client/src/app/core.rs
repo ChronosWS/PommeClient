@@ -651,9 +651,9 @@ impl AppCore {
     pub fn build_menu_input(&mut self, dt: f32) -> MenuInput {
         if self.input.binding_capture_active() {
             self.menu_dpad.step(0, dt);
-            self.input.consume_menu_scroll();
             return MenuInput {
                 cursor: self.input.cursor_pos(),
+                scroll_delta: self.input.consume_menu_scroll(),
                 dt,
                 binding_capture: true,
                 binding_presses: self.input.take_binding_presses(),

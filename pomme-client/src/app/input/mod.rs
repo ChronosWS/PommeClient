@@ -24,7 +24,7 @@ mod metadata;
 pub use action::Action;
 pub use input_key::InputKey;
 pub use key_bindings::KeyBindings;
-pub use metadata::{ActionId, BindingMetadata, DisplayText, StringId};
+pub use metadata::{ActionId, BindingMetadata, DisplayText, NOT_BOUND, StringId};
 
 /// Left-stick deflection past which a direction counts as a digital press.
 pub const STICK_MOVEMENT_THRESHOLD: f32 = 0.25;
@@ -451,25 +451,6 @@ impl InputState {
     pub fn on_gamepad_event(&mut self, event: &gilrs::Event) {
         self.active_gamepad_id = Some(event.id);
 
-        if self.binding_capture {
-            tracing::info!(
-                gamepad_id = ?event.id,
-                gilrs_event = ?event.event,
-                "Gamepad event during key binding capture"
-            );
-            if let Some(gamepad) = self.get_active_gamepad() {
-                tracing::info!(
-                    name = gamepad.name(),
-                    os_name = gamepad.os_name(),
-                    uuid = ?gamepad.uuid(),
-                    mapping_source = ?gamepad.mapping_source(),
-                    left_trigger_code = ?gamepad.button_code(Button::LeftTrigger2),
-                    right_trigger_code = ?gamepad.button_code(Button::RightTrigger2),
-                    "Gamepad mapping during key binding capture"
-                );
-            }
-        }
-
         if let gilrs::EventType::ButtonReleased(button, _) = event.event {
             self.binding_gamepad_buttons_down
                 .remove(&(event.id, button));
@@ -724,7 +705,7 @@ impl InputState {
 
     pub fn on_key_event(&mut self, event: &winit::event::KeyEvent) {
         if let PhysicalKey::Code(code) = event.physical_key {
-            if self.binding_capture || self.binding_keys_down.contains(&code) {
+            if self.captures_key_event(event) {
                 self.capture_keyboard_input(code, event.state, event.repeat);
                 return;
             }

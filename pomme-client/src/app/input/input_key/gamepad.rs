@@ -7,7 +7,8 @@ input_catalog! {
     input_type: Button,
     input_variant: Controller,
     id_builder: gamepad_input_id,
-    metadata_fallback: {},
+    // Unknown can't tell unmapped buttons apart, so it isn't bindable.
+    metadata_fallback: { Button::Unknown => None, },
     decode_fallback: |_| None,
     entries: {
         South => {
@@ -104,11 +105,6 @@ input_catalog! {
             serialized_suffix: "dpad.right",
             translation_id: None,
             fallback: "D-Pad Right",
-        },
-        Unknown => {
-            serialized_suffix: "unknown",
-            translation_id: None,
-            fallback: "Unknown",
         },
     }
 }

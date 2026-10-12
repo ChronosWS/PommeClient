@@ -436,7 +436,7 @@ impl MenuInput {
 }
 
 /// Vanilla `HeaderAndFooterLayout.DEFAULT_HEADER_AND_FOOTER_HEIGHT`.
-const HEADER_FOOTER_H: f32 = 31.0;
+const HEADER_FOOTER_H: f32 = 33.0;
 const ENTRY_H: f32 = 36.0;
 /// Inset (GUI units) keeping server-list entry content off the raw row edges.
 const SERVER_ENTRY_PAD: f32 = 2.0;
@@ -833,6 +833,13 @@ impl MainMenu {
 
     fn set_screen(&mut self, screen: Screen) {
         self.flush_settings();
+        // Vanilla opens Key Binds with a fresh list and returns to Controls's
+        // own; neither should inherit the other's offset.
+        if matches!(screen, Screen::OptionsKeybinds)
+            || matches!(self.screen, Screen::OptionsKeybinds)
+        {
+            self.scroll_offset = 0.0;
+        }
         self.screen = screen;
         self.end_binding_capture();
         self.focused_field = None;

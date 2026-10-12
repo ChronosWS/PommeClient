@@ -9,12 +9,14 @@ input_catalog! {
     input_variant: Mouse,
     id_builder: mouse_input_id,
     metadata_fallback: {
-        // Preserve winit's extra-button value without assuming SDL numbering.
+        // TODO: Map Other(n) onto vanilla's GLFW-numbered key.mouse.6-8.
+        // winit's number is platform-specific (raw X11/evdev codes, macOS
+        // button numbers), so it keeps its own id for now.
         MouseButton::Other(number) => Some(BindingMetadata {
             serialized_id: Cow::Owned(format!("{}{number}", mouse_input_id!("other."))),
             display: DisplayText {
                 translation_id: None,
-                fallback: Cow::Owned(format!("Mouse Button {number}")),
+                fallback: Cow::Owned(format!("Button {number}")),
             },
         }),
     },
@@ -41,15 +43,17 @@ input_catalog! {
             translation_id: Some(StringId::new("key.mouse.middle")),
             fallback: "Middle Button",
         },
+        // GLFW buttons 4 and 5; vanilla labels them with the "key.mouse"
+        // ("Button %s") format.
         Back => {
-            serialized_suffix: "back",
+            serialized_suffix: "4",
             translation_id: None,
-            fallback: "Back Button",
+            fallback: "Button 4",
         },
         Forward => {
-            serialized_suffix: "forward",
+            serialized_suffix: "5",
             translation_id: None,
-            fallback: "Forward Button",
+            fallback: "Button 5",
         },
     }
 }

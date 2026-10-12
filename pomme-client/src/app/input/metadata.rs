@@ -22,6 +22,10 @@ impl ActionId {
     pub const fn new(value: &'static str) -> Self {
         Self(value)
     }
+
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
 }
 
 /// Display text explicitly separates translation identity from its fallback.
@@ -30,6 +34,12 @@ pub struct DisplayText<'a> {
     pub translation_id: Option<StringId<'a>>,
     pub fallback: Cow<'a, str>,
 }
+
+/// Vanilla `InputConstants.UNKNOWN`'s label.
+pub const NOT_BOUND: DisplayText<'static> = DisplayText {
+    translation_id: Some(StringId::new("key.keyboard.unknown")),
+    fallback: Cow::Borrowed("Not Bound"),
+};
 
 impl<'a> DisplayText<'a> {
     pub fn resolve(self) -> Cow<'a, str> {

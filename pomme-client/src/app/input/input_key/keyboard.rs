@@ -2,8 +2,8 @@ use winit::keyboard::KeyCode;
 
 use super::super::StringId;
 
-// Common keys use Minecraft-style names. Additional winit physical keys have
-// explicit dotted extensions; these tokens describe positions, not typed text.
+// Ids and labels follow 26.2 `InputConstants`/en_us; keys 26.2 lacks use
+// 26.3's scancode names. These tokens describe positions, not typed text.
 input_catalog! {
     input_type: KeyCode,
     input_variant: Keyboard,
@@ -15,27 +15,27 @@ input_catalog! {
         Backquote => {
             serialized_suffix: "grave.accent",
             translation_id: Some(StringId::new("key.keyboard.grave.accent")),
-            fallback: "Grave Accent",
+            fallback: "`",
         },
         Backslash => {
             serialized_suffix: "backslash",
             translation_id: Some(StringId::new("key.keyboard.backslash")),
-            fallback: "Backslash",
+            fallback: "\\",
         },
         BracketLeft => {
             serialized_suffix: "left.bracket",
             translation_id: Some(StringId::new("key.keyboard.left.bracket")),
-            fallback: "Left Bracket",
+            fallback: "[",
         },
         BracketRight => {
             serialized_suffix: "right.bracket",
             translation_id: Some(StringId::new("key.keyboard.right.bracket")),
-            fallback: "Right Bracket",
+            fallback: "]",
         },
         Comma => {
             serialized_suffix: "comma",
             translation_id: Some(StringId::new("key.keyboard.comma")),
-            fallback: "Comma",
+            fallback: ",",
         },
         Digit0 => {
             serialized_suffix: "0",
@@ -90,12 +90,12 @@ input_catalog! {
         Equal => {
             serialized_suffix: "equal",
             translation_id: Some(StringId::new("key.keyboard.equal")),
-            fallback: "Equal",
+            fallback: "=",
         },
         IntlBackslash => {
-            serialized_suffix: "intl.backslash",
-            translation_id: None,
-            fallback: "International Backslash",
+            serialized_suffix: "world.1",
+            translation_id: Some(StringId::new("key.keyboard.world.1")),
+            fallback: "World 1",
         },
         IntlRo => {
             serialized_suffix: "intl.ro",
@@ -240,27 +240,27 @@ input_catalog! {
         Minus => {
             serialized_suffix: "minus",
             translation_id: Some(StringId::new("key.keyboard.minus")),
-            fallback: "Minus",
+            fallback: "-",
         },
         Period => {
             serialized_suffix: "period",
             translation_id: Some(StringId::new("key.keyboard.period")),
-            fallback: "Period",
+            fallback: ".",
         },
         Quote => {
             serialized_suffix: "apostrophe",
             translation_id: Some(StringId::new("key.keyboard.apostrophe")),
-            fallback: "Apostrophe",
+            fallback: "'",
         },
         Semicolon => {
             serialized_suffix: "semicolon",
             translation_id: Some(StringId::new("key.keyboard.semicolon")),
-            fallback: "Semicolon",
+            fallback: ";",
         },
         Slash => {
             serialized_suffix: "slash",
             translation_id: Some(StringId::new("key.keyboard.slash")),
-            fallback: "Slash",
+            fallback: "/",
         },
         AltLeft => {
             serialized_suffix: "left.alt",
@@ -305,12 +305,12 @@ input_catalog! {
         SuperLeft => {
             serialized_suffix: "left.win",
             translation_id: Some(StringId::new("key.keyboard.left.win")),
-            fallback: "Left Super",
+            fallback: "Left Win",
         },
         SuperRight => {
             serialized_suffix: "right.win",
             translation_id: Some(StringId::new("key.keyboard.right.win")),
-            fallback: "Right Super",
+            fallback: "Right Win",
         },
         ShiftLeft => {
             serialized_suffix: "left.shift",
@@ -343,29 +343,29 @@ input_catalog! {
             fallback: "Kana Mode",
         },
         Lang1 => {
-            serialized_suffix: "lang.1",
+            serialized_suffix: "lang1",
             translation_id: Some(StringId::new("key.keyboard.lang1")),
-            fallback: "Lang 1",
+            fallback: "Language 1",
         },
         Lang2 => {
-            serialized_suffix: "lang.2",
+            serialized_suffix: "lang2",
             translation_id: Some(StringId::new("key.keyboard.lang2")),
-            fallback: "Lang 2",
+            fallback: "Language 2",
         },
         Lang3 => {
-            serialized_suffix: "lang.3",
+            serialized_suffix: "lang3",
             translation_id: Some(StringId::new("key.keyboard.lang3")),
-            fallback: "Lang 3",
+            fallback: "Language 3",
         },
         Lang4 => {
-            serialized_suffix: "lang.4",
+            serialized_suffix: "lang4",
             translation_id: Some(StringId::new("key.keyboard.lang4")),
-            fallback: "Lang 4",
+            fallback: "Language 4",
         },
         Lang5 => {
-            serialized_suffix: "lang.5",
+            serialized_suffix: "lang5",
             translation_id: Some(StringId::new("key.keyboard.lang5")),
-            fallback: "Lang 5",
+            fallback: "Language 5",
         },
         NonConvert => {
             serialized_suffix: "non.convert",
@@ -485,7 +485,7 @@ input_catalog! {
         NumpadAdd => {
             serialized_suffix: "keypad.add",
             translation_id: Some(StringId::new("key.keyboard.keypad.add")),
-            fallback: "Keypad Add",
+            fallback: "Keypad +",
         },
         NumpadBackspace => {
             serialized_suffix: "keypad.backspace",
@@ -505,7 +505,7 @@ input_catalog! {
         NumpadComma => {
             serialized_suffix: "keypad.comma",
             translation_id: Some(StringId::new("key.keyboard.keypad.comma")),
-            fallback: "Keypad Comma",
+            fallback: "Keypad ,",
         },
         NumpadDecimal => {
             serialized_suffix: "keypad.decimal",
@@ -515,7 +515,7 @@ input_catalog! {
         NumpadDivide => {
             serialized_suffix: "keypad.divide",
             translation_id: Some(StringId::new("key.keyboard.keypad.divide")),
-            fallback: "Keypad Divide",
+            fallback: "Keypad /",
         },
         NumpadEnter => {
             serialized_suffix: "keypad.enter",
@@ -525,52 +525,52 @@ input_catalog! {
         NumpadEqual => {
             serialized_suffix: "keypad.equal",
             translation_id: Some(StringId::new("key.keyboard.keypad.equal")),
-            fallback: "Keypad Equal",
+            fallback: "Keypad =",
         },
         NumpadHash => {
             serialized_suffix: "keypad.hash",
             translation_id: Some(StringId::new("key.keyboard.keypad.hash")),
-            fallback: "Keypad Hash",
+            fallback: "Keypad #",
         },
         NumpadMemoryAdd => {
             serialized_suffix: "keypad.memory.add",
             translation_id: Some(StringId::new("key.keyboard.keypad.memory.add")),
-            fallback: "Keypad Memory Add",
+            fallback: "Keypad M+",
         },
         NumpadMemoryClear => {
             serialized_suffix: "keypad.memory.clear",
             translation_id: Some(StringId::new("key.keyboard.keypad.memory.clear")),
-            fallback: "Keypad Memory Clear",
+            fallback: "Keypad MC",
         },
         NumpadMemoryRecall => {
             serialized_suffix: "keypad.memory.recall",
             translation_id: Some(StringId::new("key.keyboard.keypad.memory.recall")),
-            fallback: "Keypad Memory Recall",
+            fallback: "Keypad MR",
         },
         NumpadMemoryStore => {
             serialized_suffix: "keypad.memory.store",
             translation_id: Some(StringId::new("key.keyboard.keypad.memory.store")),
-            fallback: "Keypad Memory Store",
+            fallback: "Keypad MS",
         },
         NumpadMemorySubtract => {
             serialized_suffix: "keypad.memory.subtract",
             translation_id: Some(StringId::new("key.keyboard.keypad.memory.subtract")),
-            fallback: "Keypad Memory Subtract",
+            fallback: "Keypad M-",
         },
         NumpadMultiply => {
             serialized_suffix: "keypad.multiply",
             translation_id: Some(StringId::new("key.keyboard.keypad.multiply")),
-            fallback: "Keypad Multiply",
+            fallback: "Keypad *",
         },
         NumpadParenLeft => {
-            serialized_suffix: "keypad.left.paren",
+            serialized_suffix: "keypad.left.parenthesis",
             translation_id: Some(StringId::new("key.keyboard.keypad.left.parenthesis")),
-            fallback: "Keypad Left Paren",
+            fallback: "Keypad (",
         },
         NumpadParenRight => {
-            serialized_suffix: "keypad.right.paren",
+            serialized_suffix: "keypad.right.parenthesis",
             translation_id: Some(StringId::new("key.keyboard.keypad.right.parenthesis")),
-            fallback: "Keypad Right Paren",
+            fallback: "Keypad )",
         },
         NumpadStar => {
             serialized_suffix: "keypad.star",
@@ -580,7 +580,7 @@ input_catalog! {
         NumpadSubtract => {
             serialized_suffix: "keypad.subtract",
             translation_id: Some(StringId::new("key.keyboard.keypad.subtract")),
-            fallback: "Keypad Subtract",
+            fallback: "Keypad -",
         },
         Escape => {
             serialized_suffix: "escape",
@@ -613,42 +613,42 @@ input_catalog! {
             fallback: "Pause",
         },
         BrowserBack => {
-            serialized_suffix: "browser.back",
+            serialized_suffix: "ac.back",
             translation_id: Some(StringId::new("key.keyboard.ac.back")),
-            fallback: "Browser Back",
+            fallback: "AC Back",
         },
         BrowserFavorites => {
-            serialized_suffix: "browser.favorites",
+            serialized_suffix: "ac.bookmarks",
             translation_id: Some(StringId::new("key.keyboard.ac.bookmarks")),
-            fallback: "Browser Favorites",
+            fallback: "AC Favorites",
         },
         BrowserForward => {
-            serialized_suffix: "browser.forward",
+            serialized_suffix: "ac.forward",
             translation_id: Some(StringId::new("key.keyboard.ac.forward")),
-            fallback: "Browser Forward",
+            fallback: "AC Forward",
         },
         BrowserHome => {
-            serialized_suffix: "browser.home",
+            serialized_suffix: "ac.home",
             translation_id: Some(StringId::new("key.keyboard.ac.home")),
-            fallback: "Browser Home",
+            fallback: "AC Home",
         },
         BrowserRefresh => {
-            serialized_suffix: "browser.refresh",
+            serialized_suffix: "ac.refresh",
             translation_id: Some(StringId::new("key.keyboard.ac.refresh")),
-            fallback: "Browser Refresh",
+            fallback: "AC Refresh",
         },
         BrowserSearch => {
-            serialized_suffix: "browser.search",
+            serialized_suffix: "ac.search",
             translation_id: Some(StringId::new("key.keyboard.ac.search")),
-            fallback: "Browser Search",
+            fallback: "AC Search",
         },
         BrowserStop => {
-            serialized_suffix: "browser.stop",
+            serialized_suffix: "ac.stop",
             translation_id: Some(StringId::new("key.keyboard.ac.stop")),
-            fallback: "Browser Stop",
+            fallback: "AC Stop",
         },
         Eject => {
-            serialized_suffix: "eject",
+            serialized_suffix: "media.eject",
             translation_id: Some(StringId::new("key.keyboard.media.eject")),
             fallback: "Eject",
         },
@@ -670,7 +670,7 @@ input_catalog! {
         MediaPlayPause => {
             serialized_suffix: "media.play.pause",
             translation_id: Some(StringId::new("key.keyboard.media.play.pause")),
-            fallback: "Media Play Pause",
+            fallback: "Play/Pause",
         },
         MediaSelect => {
             serialized_suffix: "media.select",
@@ -683,14 +683,14 @@ input_catalog! {
             fallback: "Media Stop",
         },
         MediaTrackNext => {
-            serialized_suffix: "media.track.next",
+            serialized_suffix: "media.next.track",
             translation_id: Some(StringId::new("key.keyboard.media.next.track")),
-            fallback: "Media Track Next",
+            fallback: "Next Track",
         },
         MediaTrackPrevious => {
-            serialized_suffix: "media.track.previous",
+            serialized_suffix: "media.previous.track",
             translation_id: Some(StringId::new("key.keyboard.media.previous.track")),
-            fallback: "Media Track Previous",
+            fallback: "Previous Track",
         },
         Power => {
             serialized_suffix: "power",
@@ -703,24 +703,24 @@ input_catalog! {
             fallback: "Sleep",
         },
         AudioVolumeDown => {
-            serialized_suffix: "audio.volume.down",
+            serialized_suffix: "volume.down",
             translation_id: Some(StringId::new("key.keyboard.volume.down")),
-            fallback: "Audio Volume Down",
+            fallback: "Volume Down",
         },
         AudioVolumeMute => {
-            serialized_suffix: "audio.volume.mute",
+            serialized_suffix: "mute",
             translation_id: Some(StringId::new("key.keyboard.mute")),
-            fallback: "Audio Volume Mute",
+            fallback: "Mute",
         },
         AudioVolumeUp => {
-            serialized_suffix: "audio.volume.up",
+            serialized_suffix: "volume.up",
             translation_id: Some(StringId::new("key.keyboard.volume.up")),
-            fallback: "Audio Volume Up",
+            fallback: "Volume Up",
         },
         WakeUp => {
-            serialized_suffix: "wake.up",
+            serialized_suffix: "wake",
             translation_id: Some(StringId::new("key.keyboard.wake")),
-            fallback: "Wake Up",
+            fallback: "Wake",
         },
         Meta => {
             serialized_suffix: "meta",

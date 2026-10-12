@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 use gilrs::Button;
-use serde::{Deserialize, Serialize};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
@@ -18,7 +17,7 @@ pub use catalog::{GAMEPAD_INPUT_ID_PREFIX, KEYBOARD_INPUT_ID_PREFIX, MOUSE_INPUT
 /// Represent the binding name for a physical input.
 /// Bindings serialize as stable `key.keyboard.*`, `key.mouse.*`, and
 /// `key.gamepad.*` strings.
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputKey {
     Keyboard(KeyCode),
     Mouse(MouseButton),
@@ -103,37 +102,11 @@ impl InputKey {
     /// Keyboard names do not reflect the active OS keyboard layout.
     pub fn display_text(&self) -> DisplayText<'static> {
         self.metadata()
-            .map(|metadata| metadata.display)
-            .unwrap_or(DisplayText {
-                translation_id: None,
-                fallback: Cow::Borrowed("Unknown Key"),
-            })
+            .map_or(super::NOT_BOUND, |metadata| metadata.display)
     }
 
     /// Translated physical-input label, or its English fallback.
     pub fn display_name(&self) -> Cow<'static, str> {
         self.display_text().resolve()
-    }
-}
-
-impl Serialize for InputKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let input_id = self
-            .input_id()
-            .ok_or_else(|| serde::ser::Error::custom("unsupported keyboard key code"))?;
-        serializer.serialize_str(&input_id)
-    }
-}
-
-impl<'de> Deserialize<'de> for InputKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let input_id = String::deserialize(deserializer)?;
-        Self::from_input_id(&input_id).map_err(serde::de::Error::custom)
     }
 }
