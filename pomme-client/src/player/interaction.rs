@@ -74,6 +74,13 @@ pub enum HitResult {
     Entity(EntityHitResult),
 }
 
+/// Accepted attack press latch and hold sampled at the gameplay tick.
+#[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
+pub struct DestroyInput {
+    pub just_pressed: bool,
+    pub held: bool,
+}
+
 /// Last server-known state for a locally-predicted block change, matching
 /// vanilla `BlockStatePredictionHandler.ServerVerifiedState`.
 struct ServerVerifiedState {
@@ -359,6 +366,7 @@ impl InteractionState {
         &mut self,
         input: &InputState,
         sneak_held: bool,
+        destroy_input: DestroyInput,
         chunks: &ChunkStore,
         sender: &PacketSender,
         audio: &AudioEngine,
@@ -397,7 +405,7 @@ impl InteractionState {
         // use, and `continueAttack` early-returns on `isUsingItem`.
         let using = self.using_item.is_some();
 
-        if !using && input.action_just_pressed(input::Action::Destroy) {
+        if !using && destroy_input.just_pressed {
             self.start_attack(
                 chunks,
                 sender,
@@ -457,7 +465,7 @@ impl InteractionState {
             self.pick_block_or_entity(sender, input.is_ctrl_held());
         }
 
-        let attack_down = input.performing_action(input::Action::Destroy);
+        let attack_down = destroy_input.held;
         if !attack_down {
             self.miss_time = 0;
         }

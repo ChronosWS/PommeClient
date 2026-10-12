@@ -334,9 +334,6 @@ impl InputState {
 
         match event.event {
             gilrs::EventType::ButtonPressed(button, _) => match button {
-                Button::RightTrigger2 => {
-                    self.recent_actions.insert(Action::Destroy, true);
-                }
                 // TODO: gamepad spectator-menu support (vanilla has none).
                 Button::RightTrigger if !self.spectator && !self.menu_capture => {
                     self.selected_slot = (self.selected_slot + 1) % 9;
@@ -350,16 +347,9 @@ impl InputState {
 
                 _ => {}
             },
-            gilrs::EventType::ButtonReleased(button, _) => match button {
-                Button::RightTrigger2 => {
-                    self.recent_actions.insert(Action::Destroy, false);
-                }
-                Button::LeftTrigger2 => {
-                    self.recent_actions.insert(Action::Use, false);
-                }
-
-                _ => {}
-            },
+            gilrs::EventType::ButtonReleased(Button::LeftTrigger2, _) => {
+                self.recent_actions.insert(Action::Use, false);
+            }
 
             _ => {}
         }
@@ -370,9 +360,7 @@ impl InputState {
             Action::Jump => self.is_action_held(action),
             Action::Sneak => self.is_action_held(action),
             Action::Sprint => self.is_action_held(action),
-            Action::Destroy => {
-                self.is_left_mouse_held() || self.is_gamepad_button_held(Button::RightTrigger2)
-            }
+            Action::Destroy => self.is_action_held(action),
             Action::Use => {
                 self.is_right_mouse_held() || self.is_gamepad_button_held(Button::LeftTrigger2)
             }
@@ -765,10 +753,8 @@ impl InputState {
                 self.left_click.held = was_pressed;
                 if was_pressed {
                     self.left_click.just_pressed = true;
-                    self.recent_actions.insert(Action::Destroy, true);
                 } else {
                     self.left_click.just_released = true;
-                    self.recent_actions.insert(Action::Destroy, false);
                 }
             }
             MouseButton::Right => {

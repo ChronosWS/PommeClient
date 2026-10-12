@@ -1,6 +1,7 @@
 //! Application-owned action consumers and frame dispatch.
 
 pub mod close;
+pub mod destroy;
 pub mod drop_item;
 pub mod inventory;
 pub mod jump;
@@ -17,6 +18,7 @@ pub mod swap_offhand;
 use std::time::Instant;
 
 use close::{CloseConsumer, CloseOutcome};
+use destroy::DestroyConsumer;
 use drop_item::DropItemConsumer;
 use inventory::{InventoryConsumer, InventoryOutcome};
 use jump::JumpConsumer;
@@ -40,6 +42,7 @@ use super::state_slot::StateSlot;
 /// requests here.
 #[derive(Default)]
 pub struct ActionConsumers {
+    pub(super) destroy: DestroyConsumer,
     pub(super) jump: JumpConsumer,
     pub(super) sneak: SneakConsumer,
     pub(super) sprint: SprintConsumer,
@@ -52,6 +55,7 @@ impl ActionConsumers {
     /// Discard tick work when the game session ends or gameplay cannot apply
     /// it.
     pub fn clear_pending_gameplay(&mut self) {
+        self.destroy.clear();
         self.jump.clear();
         self.sneak.clear();
         self.sprint.clear();
@@ -73,6 +77,10 @@ impl ActionConsumers {
         let binding_capture = input.binding_capture_active();
         let text_capture = input.text_capture;
         let menu_capture = input.menu_capture;
+        let mut destroy_handler = |event: &ActionEvent, _: &ActionStates| {
+            self.destroy
+                .handle_event(event, phase.get(), binding_capture)
+        };
         let mut jump_handler = |event: &ActionEvent, _: &ActionStates| {
             self.jump.handle_event(event, phase.get(), binding_capture)
         };
@@ -147,6 +155,7 @@ impl ActionConsumers {
                 &mut jump_handler,
                 &mut sneak_handler,
                 &mut sprint_handler,
+                &mut destroy_handler,
                 &mut drop_handler,
                 &mut swap_handler,
                 &mut spectator_hotbar_handler,
@@ -154,6 +163,8 @@ impl ActionConsumers {
         );
 
         if binding_capture {
+            self.destroy
+                .do_frame(input.action_states(), phase.get(), binding_capture);
             self.jump
                 .do_frame(input.action_states(), phase.get(), binding_capture);
             self.sneak
@@ -199,6 +210,8 @@ impl ActionConsumers {
             app
         });
 
+        self.destroy
+            .do_frame(input.action_states(), phase.get(), binding_capture);
         self.jump
             .do_frame(input.action_states(), phase.get(), binding_capture);
         self.sneak
