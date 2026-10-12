@@ -3,6 +3,7 @@
 pub mod close;
 pub mod destroy;
 pub mod drop_item;
+pub mod hotbar_slot;
 pub mod inventory;
 pub mod jump;
 pub mod open_chat;
@@ -22,6 +23,7 @@ use std::time::Instant;
 use close::{CloseConsumer, CloseOutcome};
 use destroy::DestroyConsumer;
 use drop_item::DropItemConsumer;
+use hotbar_slot::HotbarSlotConsumer;
 use inventory::{InventoryConsumer, InventoryOutcome};
 use jump::JumpConsumer;
 use open_chat::{OpenChatConsumer, OpenChatOutcome};
@@ -46,6 +48,7 @@ use super::state_slot::StateSlot;
 /// requests here.
 #[derive(Default)]
 pub struct ActionConsumers {
+    pub(super) hotbar_slot: HotbarSlotConsumer,
     pub(super) destroy: DestroyConsumer,
     pub(super) use_item: UseConsumer,
     pub(super) pick_block: PickBlockConsumer,
@@ -61,6 +64,7 @@ impl ActionConsumers {
     /// Discard tick work when the game session ends or gameplay cannot apply
     /// it.
     pub fn clear_pending_gameplay(&mut self) {
+        self.hotbar_slot.clear();
         self.destroy.clear();
         self.use_item.clear();
         self.pick_block.clear();
@@ -157,6 +161,8 @@ impl ActionConsumers {
         let mut open_commands_handler =
             |event: &ActionEvent, _: &ActionStates| open_commands.handle_event(event);
         let mut player_list_handler = PlayerListConsumer::handle_event;
+        let mut hotbar_handler =
+            |event: &ActionEvent, _: &ActionStates| HotbarSlotConsumer::handle_event(event);
         input.action_events.dispatch(
             frame_time,
             bindings,
@@ -168,6 +174,7 @@ impl ActionConsumers {
                 &mut open_chat_handler,
                 &mut open_commands_handler,
                 &mut player_list_handler,
+                &mut hotbar_handler,
                 &mut jump_handler,
                 &mut sneak_handler,
                 &mut sprint_handler,
@@ -181,6 +188,7 @@ impl ActionConsumers {
         );
 
         if binding_capture {
+            self.hotbar_slot.do_frame(binding_capture);
             self.destroy
                 .do_frame(input.action_states(), phase.get(), binding_capture);
             self.use_item
@@ -231,6 +239,7 @@ impl ActionConsumers {
             app
         });
 
+        self.hotbar_slot.do_frame(binding_capture);
         self.destroy
             .do_frame(input.action_states(), phase.get(), binding_capture);
         self.use_item

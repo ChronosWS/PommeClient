@@ -3001,7 +3001,7 @@ pub fn update_game(
             right_held: core.input.is_right_mouse_held(),
             shift: core.input.is_shift_held(),
             hotbar_swap: keys_live
-                .then(|| core.input.has_pending_hotbar_key_press())
+                .then(|| core.action_consumers.hotbar_slot.container_slot())
                 .flatten(),
             swap_offhand: keys_live
                 && core
@@ -3258,6 +3258,9 @@ pub fn update_game(
         let middle_clicked = core.input.has_pending_middle_mouse_press();
         let right_clicked = core.input.has_pending_right_mouse_press();
         let scroll_delta = core.input.consume_menu_scroll();
+        let hotbar_swap = core.action_consumers.hotbar_slot.container_slot();
+        let hotbar_swap_key =
+            hotbar_swap.and_then(|slot| core.action_consumers.hotbar_slot.container_key(slot));
         // `typed`/`backspace` come from the frame's single drain up top; a
         // second drain here would always read empty.
         let action = crate::ui::creative_inventory::build_creative_inventory(
@@ -3273,7 +3276,8 @@ pub fn update_game(
             &text_events,
             core.input
                 .has_pending_key_press(winit::keyboard::KeyCode::KeyT),
-            core.input.has_pending_hotbar_key_press(),
+            hotbar_swap,
+            hotbar_swap_key,
             core.input
                 .has_pending_key_press(winit::keyboard::KeyCode::KeyF),
             &game.player.inventory,

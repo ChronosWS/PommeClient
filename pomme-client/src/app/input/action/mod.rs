@@ -36,6 +36,21 @@ pub struct ActionMetadata {
 }
 
 impl Action {
+    pub fn hotbar_slot(self) -> Option<u8> {
+        match self {
+            Self::Hotbar1 => Some(0),
+            Self::Hotbar2 => Some(1),
+            Self::Hotbar3 => Some(2),
+            Self::Hotbar4 => Some(3),
+            Self::Hotbar5 => Some(4),
+            Self::Hotbar6 => Some(5),
+            Self::Hotbar7 => Some(6),
+            Self::Hotbar8 => Some(7),
+            Self::Hotbar9 => Some(8),
+            _ => None,
+        }
+    }
+
     /// Stable identifier used in options.json and key mapping lookups.
     pub fn id(self) -> ActionId {
         self.metadata().id

@@ -79,15 +79,15 @@ pub fn keybind_label(key: &str) -> Option<(&'static str, &'static str)> {
         "key.toggleSpectatorShaderEffects" => ("key.keyboard.f4", "F4"),
         "key.saveToolbarActivator" => ("key.keyboard.c", "C"),
         "key.loadToolbarActivator" => ("key.keyboard.x", "X"),
-        "key.hotbar.1" => ("key.keyboard.1", "1"),
-        "key.hotbar.2" => ("key.keyboard.2", "2"),
-        "key.hotbar.3" => ("key.keyboard.3", "3"),
-        "key.hotbar.4" => ("key.keyboard.4", "4"),
-        "key.hotbar.5" => ("key.keyboard.5", "5"),
-        "key.hotbar.6" => ("key.keyboard.6", "6"),
-        "key.hotbar.7" => ("key.keyboard.7", "7"),
-        "key.hotbar.8" => ("key.keyboard.8", "8"),
-        "key.hotbar.9" => ("key.keyboard.9", "9"),
+        "key.hotbar.1" => action_label(Action::Hotbar1)?,
+        "key.hotbar.2" => action_label(Action::Hotbar2)?,
+        "key.hotbar.3" => action_label(Action::Hotbar3)?,
+        "key.hotbar.4" => action_label(Action::Hotbar4)?,
+        "key.hotbar.5" => action_label(Action::Hotbar5)?,
+        "key.hotbar.6" => action_label(Action::Hotbar6)?,
+        "key.hotbar.7" => action_label(Action::Hotbar7)?,
+        "key.hotbar.8" => action_label(Action::Hotbar8)?,
+        "key.hotbar.9" => action_label(Action::Hotbar9)?,
         "key.debug.overlay" | "key.debug.modifier" => ("key.keyboard.f3", "F3"),
         "key.debug.crash" | "key.debug.copyLocation" => ("key.keyboard.c", "C"),
         "key.debug.reloadChunk" => ("key.keyboard.a", "A"),
@@ -128,6 +128,15 @@ fn keycode_translation(key: KeyCode) -> Option<(&'static str, &'static str)> {
         KeyCode::Tab => Some(("key.keyboard.tab", "Tab")),
         KeyCode::Slash => Some(("key.keyboard.slash", "/")),
         KeyCode::F5 => Some(("key.keyboard.f5", "F5")),
+        KeyCode::Digit1 => Some(("key.keyboard.1", "1")),
+        KeyCode::Digit2 => Some(("key.keyboard.2", "2")),
+        KeyCode::Digit3 => Some(("key.keyboard.3", "3")),
+        KeyCode::Digit4 => Some(("key.keyboard.4", "4")),
+        KeyCode::Digit5 => Some(("key.keyboard.5", "5")),
+        KeyCode::Digit6 => Some(("key.keyboard.6", "6")),
+        KeyCode::Digit7 => Some(("key.keyboard.7", "7")),
+        KeyCode::Digit8 => Some(("key.keyboard.8", "8")),
+        KeyCode::Digit9 => Some(("key.keyboard.9", "9")),
         _ => None,
     }
 }
@@ -155,9 +164,6 @@ pub struct InputState {
     /// The player is a spectator: digits drive the spectator menu instead of
     /// the carried slot.
     pub spectator: bool,
-    /// Digit presses queued for the spectator menu, drained per tick
-    /// (vanilla routes them in `handleKeybinds`).
-    spectator_slot_presses: Vec<u8>,
     /// Keys pressed since the last `end_frame`, including OS key repeats:
     /// vanilla dispatches GLFW repeats to screens and debug chords.
     pending_key_presses: HashSet<KeyCode>,
@@ -250,7 +256,6 @@ impl InputState {
             text_capture: false,
             menu_capture: false,
             spectator: false,
-            spectator_slot_presses: Vec::new(),
             pending_key_presses: HashSet::new(),
 
             text_events: Vec::new(),
@@ -273,7 +278,7 @@ impl InputState {
         }
     }
 
-    pub fn collect_gamepad_events(&mut self) {
+    pub fn collect_gamepad_events(&mut self, mut on_action_event: impl FnMut(&mut Self)) {
         let events: Vec<gilrs::Event> = match self.gamepad_manager.as_mut() {
             Some(manager) => std::iter::from_fn(|| manager.next_event()).collect(),
             None => Vec::new(),
@@ -281,6 +286,7 @@ impl InputState {
         for event in &events {
             self.action_events
                 .on_gamepad_event(event, self.binding_capture);
+            on_action_event(self);
             self.on_gamepad_event(event);
         }
     }
@@ -413,22 +419,6 @@ impl InputState {
         self.pending_key_presses.contains(&key)
     }
 
-    /// Hotbar digit pressed since the last `end_frame`, for container swaps.
-    pub fn has_pending_hotbar_key_press(&self) -> Option<u8> {
-        self.pending_key_presses
-            .iter()
-            .find_map(|&c| hotbar_slot(c))
-    }
-
-    pub fn clear_spectator_slot_presses(&mut self) {
-        self.spectator_slot_presses.clear();
-    }
-
-    /// Digit presses queued for the spectator menu since the last tick.
-    pub fn take_spectator_slot_presses(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.spectator_slot_presses)
-    }
-
     /// Frame-scoped input state; called once at the end of each redraw so a
     /// latch set outside its consumer's screen can't fire later.
     pub fn end_frame(&mut self) {
@@ -462,18 +452,6 @@ impl InputState {
                 ElementState::Pressed => {
                     self.held_keys.insert(code);
                     self.pending_key_presses.insert(code);
-                    if !self.text_capture
-                        && !self.menu_capture
-                        && let Some(slot) = hotbar_slot(code)
-                    {
-                        // Vanilla handleKeybinds: spectator digits drive the
-                        // spectator menu and never touch the carried slot.
-                        if self.spectator {
-                            self.spectator_slot_presses.push(slot);
-                        } else {
-                            self.selected_slot = slot;
-                        }
-                    }
                 }
                 ElementState::Released => {
                     self.held_keys.remove(&code);
@@ -496,7 +474,6 @@ impl InputState {
         self.binding_presses.clear();
         if active {
             self.clear_just_pressed_actions();
-            self.clear_spectator_slot_presses();
             self.pending_key_presses.clear();
             self.text_events.clear();
             self.enter_press_pending = false;
@@ -765,21 +742,6 @@ impl InputState {
     }
 }
 
-fn hotbar_slot(code: KeyCode) -> Option<u8> {
-    match code {
-        KeyCode::Digit1 => Some(0),
-        KeyCode::Digit2 => Some(1),
-        KeyCode::Digit3 => Some(2),
-        KeyCode::Digit4 => Some(3),
-        KeyCode::Digit5 => Some(4),
-        KeyCode::Digit6 => Some(5),
-        KeyCode::Digit7 => Some(6),
-        KeyCode::Digit8 => Some(7),
-        KeyCode::Digit9 => Some(8),
-        _ => None,
-    }
-}
-
 /// Build a single-motor force-feedback effect targeting the FF-capable gamepads
 /// connected right now. Rumble is best-effort: returns `None` if no controller
 /// supports it or the effect can't be created.
@@ -969,31 +931,6 @@ mod player_list_tests {
             .on_device_disconnected(InputDeviceId::Window(Some(DeviceId::dummy())));
         dispatch(&mut input, &bindings);
         assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
-    }
-}
-
-#[cfg(test)]
-mod spectator_digit_tests {
-    use super::*;
-
-    #[test]
-    fn digit_requests_survive_frame_end_and_drain_once() {
-        let mut input = InputState::released();
-        input.spectator_slot_presses.extend([0, 8]);
-        input.end_frame();
-        assert_eq!(input.take_spectator_slot_presses(), vec![0, 8]);
-        assert!(input.take_spectator_slot_presses().is_empty());
-    }
-
-    #[test]
-    fn explicit_clearing_and_binding_capture_discard_digit_requests() {
-        let mut input = InputState::released();
-        input.spectator_slot_presses.push(0);
-        input.clear_spectator_slot_presses();
-        assert!(input.take_spectator_slot_presses().is_empty());
-        input.spectator_slot_presses.push(8);
-        input.set_binding_capture(true);
-        assert!(input.take_spectator_slot_presses().is_empty());
     }
 }
 

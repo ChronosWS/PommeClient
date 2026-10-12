@@ -2809,7 +2809,6 @@ impl AppCore {
         // packets while the level is still coming in.
         if !game.client_loaded {
             self.action_consumers.clear_pending_gameplay();
-            self.input.clear_spectator_slot_presses();
             self.input.clear_just_pressed_actions();
             return;
         }
@@ -2818,7 +2817,6 @@ impl AppCore {
         // on ClientLevel.tickEntities skips it entirely.
         if game.dead && game.player.death_animation_finished() {
             self.action_consumers.clear_pending_gameplay();
-            self.input.clear_spectator_slot_presses();
             return;
         }
 
@@ -2879,7 +2877,6 @@ impl AppCore {
 
             // Gameplay requests queued while dead must not fire on respawn.
             self.action_consumers.clear_pending_gameplay();
-            self.input.clear_spectator_slot_presses();
             return;
         }
 
@@ -2888,32 +2885,20 @@ impl AppCore {
         // same fixed origin.
         let input_live = game.input_live() && game.chunk_load_bench.is_none();
 
-        // Preserve handleKeybinds order: drop, swap, spectator digits, then
+        // Preserve handleKeybinds order: drop, swap, slots, then
         // the spectator-menu action.
-        let spectator = game.player.game_mode == 3;
         self.action_consumers
             .drop_item
             .do_tick(game, &self.input, &connection.packet_tx);
         self.action_consumers
             .swap_offhand
             .do_tick(game, &connection.packet_tx);
-        if input_live {
-            for slot in self.input.take_spectator_slot_presses() {
-                if spectator {
-                    game.spectator.on_hotbar_selected(
-                        slot,
-                        &game.tab_list,
-                        &game.scoreboard,
-                        &connection.packet_tx,
-                    );
-                }
-            }
-        }
+        self.action_consumers
+            .hotbar_slot
+            .do_tick(game, &connection.packet_tx);
         self.action_consumers
             .spectator_hotbar
             .do_tick(game, &connection.packet_tx);
-        // A digit queued while a menu or chat was open must not fire later.
-        self.input.clear_spectator_slot_presses();
 
         let neutral = InputState::released();
         let input = if input_live { &self.input } else { &neutral };

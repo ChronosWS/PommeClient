@@ -364,6 +364,38 @@ pub fn player_preview(
     })
 }
 
+fn hotbar_shortcut_char(
+    key: winit::keyboard::KeyCode,
+    events: &[crate::ui::text_edit::TextInputEvent],
+) -> Option<char> {
+    use winit::keyboard::KeyCode;
+
+    use crate::ui::text_edit::TextInputEvent;
+
+    // Preserve the existing digit suppression, including shifted digit keys.
+    match key {
+        KeyCode::Digit1 => return Some('1'),
+        KeyCode::Digit2 => return Some('2'),
+        KeyCode::Digit3 => return Some('3'),
+        KeyCode::Digit4 => return Some('4'),
+        KeyCode::Digit5 => return Some('5'),
+        KeyCode::Digit6 => return Some('6'),
+        KeyCode::Digit7 => return Some('7'),
+        KeyCode::Digit8 => return Some('8'),
+        KeyCode::Digit9 => return Some('9'),
+        _ => {}
+    }
+    let mut matching_key = false;
+    for event in events {
+        match event {
+            TextInputEvent::Key { code, .. } => matching_key = *code == key,
+            TextInputEvent::Char(c) if matching_key => return Some(*c),
+            _ => {}
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_creative_inventory(
     elements: &mut Vec<MenuElement>,
@@ -378,6 +410,7 @@ pub fn build_creative_inventory(
     events: &[crate::ui::text_edit::TextInputEvent],
     chat_key: bool,
     hotbar_swap: Option<u8>,
+    hotbar_swap_key: Option<winit::keyboard::KeyCode>,
     swap_offhand: bool,
     inventory: &Inventory,
     gs: f32,
@@ -394,7 +427,7 @@ pub fn build_creative_inventory(
     }
 
     // Hovered-slot hotbar swap (vanilla checkHotbarKeyPressed / the creative
-    // slotClicked SWAP branch). The search tab only swaps on digits; F types.
+    // slotClicked SWAP branch). The search tab only uses slot bindings; F types.
     let swap_target: Option<u16> = if state.cursor_item.is_present() {
         None
     } else {
@@ -663,9 +696,9 @@ pub fn build_creative_inventory(
     }
 
     if state.tab.captures_typing() && !jumped_to_search {
-        // A digit consumed by a swap must not type (vanilla ignoreTextInput).
-        let skip_digit = swap_consumed_digit
-            .then(|| hotbar_swap.map(|i| char::from(b'1' + i)))
+        // A key consumed by a swap must not type (vanilla ignoreTextInput).
+        let skip_char = swap_consumed_digit
+            .then(|| hotbar_swap_key.and_then(|key| hotbar_shortcut_char(key, events)))
             .flatten();
         let mut clipboard = crate::ui::text_edit::SystemClipboard;
         let inner_w = SEARCH_BOX_W * scale;
@@ -673,7 +706,7 @@ pub fn build_creative_inventory(
         let wf = |t: &str| text_width_fn(t, fs);
         for ev in events {
             if let crate::ui::text_edit::TextInputEvent::Char(c) = ev
-                && Some(*c) == skip_digit
+                && Some(*c) == skip_char
             {
                 continue;
             }
@@ -1535,6 +1568,34 @@ fn search_items_cached() -> &'static [ItemKind] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotbar_shortcut_suppresses_the_bound_keys_character_not_the_slot_digit() {
+        use winit::keyboard::KeyCode;
+
+        use crate::ui::text_edit::{KeyMods, TextInputEvent};
+
+        let key_event = |code| TextInputEvent::Key {
+            code,
+            mods: KeyMods {
+                shift: false,
+                ctrl: false,
+                alt: false,
+                super_key: false,
+            },
+        };
+        let events = [
+            key_event(KeyCode::KeyK),
+            TextInputEvent::Char('k'),
+            key_event(KeyCode::KeyJ),
+            TextInputEvent::Char('j'),
+        ];
+        assert_eq!(hotbar_shortcut_char(KeyCode::KeyJ, &events), Some('j'));
+        assert_eq!(hotbar_shortcut_char(KeyCode::KeyL, &events), None);
+        assert_eq!(hotbar_shortcut_char(KeyCode::F1, &events), None);
+        assert_eq!(hotbar_shortcut_char(KeyCode::Digit1, &events), Some('1'));
+        assert_eq!(hotbar_shortcut_char(KeyCode::Digit9, &events), Some('9'));
+    }
 
     #[test]
     fn survival_inventory_tab_requests_vanilla_player_preview() {
