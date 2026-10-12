@@ -358,6 +358,7 @@ impl InteractionState {
     pub fn tick_actions(
         &mut self,
         input: &InputState,
+        sneak_held: bool,
         chunks: &ChunkStore,
         sender: &PacketSender,
         audio: &AudioEngine,
@@ -426,7 +427,7 @@ impl InteractionState {
         } else if input.action_just_pressed(input::Action::Use)
             || (input.performing_action(input::Action::Use) && self.use_delay == 0)
         {
-            let sneaking = input.performing_action(input::Action::Sneak);
+            let sneaking = sneak_held;
             let suppress_block_use = sneaking && !hands_empty;
             let success = self.start_use_item(
                 sender,

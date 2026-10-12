@@ -79,6 +79,7 @@ pub fn tick(
     player: &mut LocalPlayer,
     input: &InputState,
     raw_jump_held: bool,
+    sneak_held: bool,
     chunk_store: &ChunkStore,
     block_entity_anim: &BlockEntityAnimStore,
     use_speed_multiplier: f32,
@@ -118,6 +119,7 @@ pub fn tick(
     update_sprint_state(
         player,
         input,
+        sneak_held,
         forward_pressed,
         slow_due_to_using_item,
         vehicle,
@@ -135,16 +137,13 @@ pub fn tick(
     );
 
     // `LocalPlayer.aiStep`'s `goDownInWater`, before the living jump.
-    if player.in_water
-        && input.performing_action(input::Action::Sneak)
-        && player.is_affected_by_fluids()
-    {
+    if player.in_water && sneak_held && player.is_affected_by_fluids() {
         player.velocity.y -= f64::from(LIQUID_JUMP_ACCELERATION);
     }
 
     if player.flying {
         let mut input_ya = 0.0f32;
-        if input.performing_action(input::Action::Sneak) {
+        if sneak_held {
             input_ya -= 1.0;
         }
         if raw_jump_held {
@@ -183,8 +182,8 @@ pub fn tick(
 
     travel(
         player,
-        input,
         raw_jump_held,
+        sneak_held,
         world,
         forward,
         strafe,
@@ -197,10 +196,10 @@ pub fn tick(
 
     // `Player.updatePlayerPose` runs after movement, so the new pose applies
     // from next tick.
-    update_player_pose(player, input, world, is_passenger);
+    update_player_pose(player, sneak_held, world, is_passenger);
 
     player.was_forward_pressed = forward_pressed;
-    player.was_shift_pressed = input.performing_action(input::Action::Sneak);
+    player.was_shift_pressed = sneak_held;
     player.was_jump_pressed = raw_jump_held;
 }
 
@@ -222,8 +221,8 @@ fn apply_living_immobility(
 // TODO: lava travel.
 fn travel(
     player: &mut LocalPlayer,
-    input: &InputState,
     jump_held: bool,
+    sneak_held: bool,
     world: CollisionWorld<'_>,
     forward: f32,
     strafe: f32,
@@ -232,11 +231,11 @@ fn travel(
 ) {
     if player.in_water && player.is_affected_by_fluids() {
         tick_water(
-            player, input, jump_held, world, forward, strafe, sin_y_rot, cos_y_rot,
+            player, jump_held, sneak_held, world, forward, strafe, sin_y_rot, cos_y_rot,
         );
     } else {
         tick_land(
-            player, input, jump_held, world, forward, strafe, sin_y_rot, cos_y_rot,
+            player, jump_held, sneak_held, world, forward, strafe, sin_y_rot, cos_y_rot,
         );
     }
 }
@@ -265,7 +264,7 @@ pub fn tick_dead(
     // remains authoritative until Player.updatePlayerPose runs at tick end.
     let neutral = InputState::released();
     let vehicle = is_passenger.then_some(Vehicle { jumpable: false });
-    update_sprint_state(player, &neutral, false, false, vehicle);
+    update_sprint_state(player, &neutral, false, false, false, vehicle);
     player.update_water_state(chunk_store, is_passenger);
     player.tick_eye_height();
 
@@ -275,14 +274,12 @@ pub fn tick_dead(
         block_entity_anim: Some(block_entity_anim),
     };
     normalize_tiny_velocity(&mut player.velocity);
-    travel(
-        player, &neutral, false, world, 0.0, 0.0, sin_y_rot, cos_y_rot,
-    );
+    travel(player, false, false, world, 0.0, 0.0, sin_y_rot, cos_y_rot);
 
     // Player.updatePlayerPose runs after LivingEntity.tick in vanilla. With
     // death-screen input released, this becomes standing unless clearance keeps
     // the player in the crouching pose for the following tick.
-    update_player_pose(player, &neutral, world, is_passenger);
+    update_player_pose(player, false, world, is_passenger);
 
     stop_flying_on_ground(player);
     player.was_forward_pressed = false;
@@ -408,8 +405,8 @@ pub(crate) fn on_climbable(player: &LocalPlayer, chunk_store: &ChunkStore) -> bo
 
 fn tick_land(
     player: &mut LocalPlayer,
-    input: &InputState,
     jump_held: bool,
+    sneak_held: bool,
     world: CollisionWorld<'_>,
     forward: f32,
     strafe: f32,
@@ -430,13 +427,11 @@ fn tick_land(
     let accel = friction_influenced_speed(speed, player, block_friction);
     move_relative(player, forward, strafe, accel, sin_y_rot, cos_y_rot);
 
-    handle_on_climbable(
-        player,
-        world.chunks,
-        input.performing_action(input::Action::Sneak),
-    );
+    handle_on_climbable(player, world.chunks, sneak_held);
 
-    apply_collision(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
+    apply_collision(
+        player, sneak_held, world, forward, strafe, sin_y_rot, cos_y_rot,
+    );
 
     // TODO: `wasInPowderSnow && canEntityWalkOnPowderSnow` also takes the impulse.
     if (player.horizontal_collision || jump_held) && on_climbable(player, world.chunks) {
@@ -484,8 +479,8 @@ fn water_falling_adjusted_y(
 
 fn tick_water(
     player: &mut LocalPlayer,
-    input: &InputState,
     jump_held: bool,
+    sneak_held: bool,
     world: CollisionWorld<'_>,
     forward: f32,
     strafe: f32,
@@ -521,7 +516,9 @@ fn tick_water(
         cos_y_rot,
     );
 
-    apply_collision(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
+    apply_collision(
+        player, sneak_held, world, forward, strafe, sin_y_rot, cos_y_rot,
+    );
     // TODO: `Entity.move`'s block speed factor also applies in water.
 
     if player.horizontal_collision && on_climbable(player, world.chunks) {
@@ -544,7 +541,7 @@ fn tick_water(
     // `LivingEntity.jumpOutOfFluid`.
     if player.horizontal_collision {
         let y_offset = player.velocity.y + f64::from(STEP_HEIGHT) - player.position.y + old_y;
-        let ctx = collision_context(player, input.performing_action(input::Action::Sneak));
+        let ctx = collision_context(player, sneak_held);
         let probe =
             player
                 .bounding_box()
@@ -589,7 +586,7 @@ fn contains_any_liquid(chunk_store: &ChunkStore, aabb: &Aabb) -> bool {
 
 fn apply_collision(
     player: &mut LocalPlayer,
-    input: &InputState,
+    sneak_held: bool,
     world: CollisionWorld<'_>,
     forward: f32,
     strafe: f32,
@@ -597,9 +594,8 @@ fn apply_collision(
     cos_y_rot: f32,
 ) {
     let aabb = player.bounding_box();
-    let shift_down = input.performing_action(input::Action::Sneak);
-    let ctx = collision_context(player, shift_down);
-    let delta = back_off_from_edge(world, player, *player.velocity, shift_down, &ctx);
+    let ctx = collision_context(player, sneak_held);
+    let delta = back_off_from_edge(world, player, *player.velocity, sneak_held, &ctx);
     let (resolved, on_ground) = resolve_collision(
         world,
         aabb,
@@ -655,6 +651,7 @@ fn apply_collision(
 fn update_sprint_state(
     player: &mut LocalPlayer,
     input: &InputState,
+    sneak_held: bool,
     forward_pressed: bool,
     slow_due_to_using_item: bool,
     vehicle: Option<Vehicle>,
@@ -664,7 +661,6 @@ fn update_sprint_state(
     if player.sprint_toggle_timer > 0 {
         player.sprint_toggle_timer -= 1;
     }
-    let current_shift = input.performing_action(input::Action::Sneak);
     let current_backward = input.is_key_held(KeyCode::KeyS)
         || input
             .get_gamepad_movement_axes()
@@ -708,7 +704,7 @@ fn update_sprint_state(
             // `LocalPlayer.shouldStopSwimSprinting`.
             if !sprinting_possible(true)
                 || !player.in_water
-                || (!forward_pressed && !player.on_ground && !current_shift)
+                || (!forward_pressed && !player.on_ground && !sneak_held)
             {
                 player.sprinting = false;
             }
@@ -748,11 +744,11 @@ fn update_movement_crouching_state(
 // Sleeping/fall-flying aren't simulated.
 fn update_player_pose(
     player: &mut LocalPlayer,
-    input: &InputState,
+    sneak_held: bool,
     world: CollisionWorld<'_>,
     is_passenger: bool,
 ) {
-    let descending = input.performing_action(input::Action::Sneak);
+    let descending = sneak_held;
     if !can_fit_with_height(world, player, crate::player::SWIMMING_HEIGHT, descending) {
         return;
     }
@@ -1359,11 +1355,10 @@ mod tests {
         player.position = dvec3(8.6, 64.5, 8.5).into();
         player.velocity = Velocity::new(0.5, -0.7, -0.5);
         player.fall_distance = 12.0;
-        let neutral = InputState::released();
 
         tick_land(
             &mut player,
-            &neutral,
+            false,
             false,
             (&chunks).into(),
             0.0,
@@ -1386,11 +1381,10 @@ mod tests {
         let mut player = LocalPlayer::new();
         player.position = dvec3(8.6, 64.0, 8.5).into();
         player.velocity = Velocity::new(0.5, 0.0, 0.0);
-        let neutral = InputState::released();
 
         tick_water(
             &mut player,
-            &neutral,
+            false,
             false,
             (&chunks).into(),
             0.0,
@@ -1463,7 +1457,6 @@ mod tests {
 
         let mut shift_input = InputState::released();
         shift_input.set_key_held_for_test(KeyCode::KeyW, true);
-        shift_input.set_key_held_for_test(KeyCode::ShiftLeft, true);
         let mut plain_input = InputState::released();
         plain_input.set_key_held_for_test(KeyCode::KeyW, true);
 
@@ -1471,6 +1464,7 @@ mod tests {
             &mut shifted,
             &shift_input,
             false,
+            true,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1480,6 +1474,7 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
+            false,
             false,
             &chunks,
             &block_entity_anim,
@@ -1502,6 +1497,7 @@ mod tests {
             &mut shifted,
             &shift_input,
             false,
+            true,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1516,6 +1512,7 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
+            false,
             false,
             &chunks,
             &block_entity_anim,
@@ -1536,6 +1533,7 @@ mod tests {
             &mut shifted,
             &plain_input,
             false,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1552,6 +1550,7 @@ mod tests {
             &mut shifted,
             &plain_input,
             false,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1559,6 +1558,85 @@ mod tests {
             None,
         );
         assert!(!shifted.movement_crouching);
+    }
+
+    #[test]
+    fn explicit_sneak_edge_backoff_uses_current_not_previous_tick() {
+        let chunks = ChunkStore::with_origin_chunk();
+        chunks.set_block_state(8, 63, 8, find_state("stone", &[]));
+        let anim = BlockEntityAnimStore::default();
+        let input = InputState::released();
+        let mut shifted = LocalPlayer::new();
+        shifted.position = dvec3(8.5, 64.0, 8.5).into();
+        shifted.velocity = Velocity::new(1.0, 0.0, 0.0);
+        shifted.on_ground = true;
+        let mut released = LocalPlayer::new();
+        released.position = shifted.position;
+        released.velocity = shifted.velocity;
+        released.on_ground = true;
+        released.was_shift_pressed = true;
+
+        tick(
+            &mut shifted,
+            &input,
+            false,
+            true,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
+        tick(
+            &mut released,
+            &input,
+            false,
+            false,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
+
+        assert!(shifted.position.x < released.position.x);
+        assert_eq!(released.position.x, 9.5);
+        assert!(!shifted.movement_crouching);
+        assert!(shifted.crouching);
+        assert!(shifted.was_shift_pressed);
+        assert!(released.movement_crouching);
+        assert!(!released.crouching);
+        assert!(!released.was_shift_pressed);
+    }
+
+    #[test]
+    fn explicit_sneak_descends_in_flight_without_raw_shift_input() {
+        crate::world::block::init("26.2");
+        let chunks = ChunkStore::new(2);
+        let anim = BlockEntityAnimStore::default();
+        let input = InputState::released();
+        let mut player = LocalPlayer::new();
+        player.position = dvec3(0.0, 80.0, 0.0).into();
+        player.may_fly = true;
+        player.flying = true;
+        let descent = f64::from(-player.fly_speed * 3.0);
+
+        tick(
+            &mut player,
+            &input,
+            false,
+            true,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
+
+        assert_eq!(player.position.y, 80.0 + descent);
+        assert_eq!(player.velocity.y, descent * FLYING_VERTICAL_FRICTION);
+        assert!(player.was_shift_pressed);
+        assert!(!player.crouching);
     }
 
     #[test]
@@ -1577,15 +1655,13 @@ mod tests {
         // One block of headroom: swimming fits, crouching doesn't.
         let stone = find_state("stone", &[]);
         chunks.set_block_state(8, 65, 8, stone);
-        let mut input = InputState::released();
-        input.set_key_held_for_test(KeyCode::ShiftLeft, true);
-        update_player_pose(&mut player, &input, (&chunks).into(), true);
+        update_player_pose(&mut player, true, (&chunks).into(), true);
         assert!(player.crouching);
         assert!(!player.swimming_pose);
 
         player.crouching = false;
         player.swimming_pose = false;
-        update_player_pose(&mut player, &input, (&chunks).into(), false);
+        update_player_pose(&mut player, true, (&chunks).into(), false);
         assert!(
             player.swimming_pose,
             "unmounted player falls back to SWIMMING when desired crouch pose does not fit"
@@ -1639,10 +1715,19 @@ mod tests {
 
         let mut input = InputState::released();
         input.set_key_held_for_test(KeyCode::KeyW, true);
-        input.set_key_held_for_test(KeyCode::ShiftLeft, true);
         let anim = BlockEntityAnimStore::default();
 
-        tick(&mut player, &input, false, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            false,
+            true,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
 
         let target_vy = vanilla_look_y(-38.0);
         let expected = target_vy * 0.06 * f64::from(WATER_VERTICAL_DRAG);
@@ -1747,10 +1832,9 @@ mod tests {
         dry_player.velocity = Velocity::new(0.08, 0.0, 0.0);
         dry_player.on_ground = true;
 
-        let neutral = InputState::released();
         tick_land(
             &mut wet_player,
-            &neutral,
+            false,
             false,
             (&wet).into(),
             0.0,
@@ -1760,7 +1844,7 @@ mod tests {
         );
         tick_land(
             &mut dry_player,
-            &neutral,
+            false,
             false,
             (&dry).into(),
             0.0,
@@ -1833,23 +1917,21 @@ mod tests {
 
         let released = InputState::released();
         player.on_ground = true;
-        update_sprint_state(&mut player, &released, false, false, None);
+        update_sprint_state(&mut player, &released, false, false, false, None);
         assert!(
             player.sprinting,
             "vanilla swim sprint ignores hard-wall collision and may persist without forward input on ground"
         );
 
         player.on_ground = false;
-        update_sprint_state(&mut player, &released, false, false, None);
+        update_sprint_state(&mut player, &released, false, false, false, None);
         assert!(
             !player.sprinting,
             "airborne swim sprint stops when forward input is lost"
         );
 
-        let mut descending = InputState::released();
-        descending.set_key_held_for_test(KeyCode::ShiftLeft, true);
         player.sprinting = true;
-        update_sprint_state(&mut player, &descending, false, false, None);
+        update_sprint_state(&mut player, &released, true, false, false, None);
         assert!(
             player.sprinting,
             "descending is the vanilla exception to the no-forward swim-sprint stop"
@@ -1865,7 +1947,7 @@ mod tests {
 
         let mut forward = InputState::released();
         forward.set_key_held_for_test(KeyCode::KeyW, true);
-        update_sprint_state(&mut player, &forward, true, false, None);
+        update_sprint_state(&mut player, &forward, false, true, false, None);
         assert_eq!(
             player.sprint_toggle_timer, DEFAULT_SPRINT_WINDOW,
             "previous shift clears the old window before the new forward edge arms a fresh one"
@@ -1875,9 +1957,16 @@ mod tests {
         player.sprint_toggle_timer = 4;
         player.was_shift_pressed = false;
         player.was_forward_pressed = true;
+        update_sprint_state(&mut player, &forward, true, true, false, None);
+        assert_eq!(
+            player.sprint_toggle_timer, 3,
+            "current Sneak must not clear the window until it becomes previous-tick input"
+        );
+
+        player.sprint_toggle_timer = 4;
         let mut backward = InputState::released();
         backward.set_key_held_for_test(KeyCode::KeyS, true);
-        update_sprint_state(&mut player, &backward, false, false, None);
+        update_sprint_state(&mut player, &backward, false, false, false, None);
         assert_eq!(player.sprint_toggle_timer, 0);
     }
 
@@ -1889,12 +1978,12 @@ mod tests {
 
         let mut player = LocalPlayer::new();
         player.food = 20;
-        update_sprint_state(&mut player, &input, true, true, None);
+        update_sprint_state(&mut player, &input, false, true, true, None);
         assert!(!player.sprinting, "item slowdown blocks canStartSprinting");
 
         player.sprinting = true;
         player.was_forward_pressed = true;
-        update_sprint_state(&mut player, &input, true, true, None);
+        update_sprint_state(&mut player, &input, false, true, true, None);
         assert!(
             player.sprinting,
             "vanilla shouldStopRunSprinting does not cancel an already-active sprint solely for item slowdown"
@@ -1914,7 +2003,7 @@ mod tests {
         player.under_water = false;
         player.food = 20;
 
-        update_sprint_state(&mut player, &input, true, false, None);
+        update_sprint_state(&mut player, &input, false, true, false, None);
 
         assert!(
             !player.sprinting,
@@ -1931,7 +2020,7 @@ mod tests {
         player.horizontal_collision = true;
         player.minor_horizontal_collision = false;
 
-        update_sprint_state(&mut player, &input, true, false, None);
+        update_sprint_state(&mut player, &input, false, true, false, None);
         assert!(
             !player.sprinting,
             "vanilla shouldStopRunSprinting consumes the prior hard wall collision"
@@ -1939,7 +2028,7 @@ mod tests {
 
         player.sprinting = true;
         player.minor_horizontal_collision = true;
-        update_sprint_state(&mut player, &input, true, false, None);
+        update_sprint_state(&mut player, &input, false, true, false, None);
         assert!(
             player.sprinting,
             "minorHorizontalCollision is the vanilla wall-sprint exemption"
@@ -2014,6 +2103,7 @@ mod tests {
             &mut player,
             &InputState::released(),
             true,
+            false,
             &chunks,
             &BlockEntityAnimStore::default(),
             1.0,
@@ -2102,18 +2192,58 @@ mod tests {
         player.position = dvec3(0.0, 80.0, 0.0).into();
         player.may_fly = true;
 
-        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            true,
+            false,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
         assert!(!player.flying);
         assert!(player.was_jump_pressed);
         assert_eq!(player.jump_trigger_time, FLY_TOGGLE_WINDOW - 1);
 
-        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            true,
+            false,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
         assert!(!player.flying);
         assert_eq!(player.jump_trigger_time, FLY_TOGGLE_WINDOW - 2);
 
-        tick(&mut player, &input, false, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            false,
+            false,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
         assert!(!player.was_jump_pressed);
-        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            true,
+            false,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
         assert!(player.flying);
         assert!(player.abilities_dirty);
         assert_eq!(player.jump_trigger_time, 0);
@@ -2130,7 +2260,17 @@ mod tests {
         player.position = ground_position;
         player.on_ground = true;
 
-        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            true,
+            false,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
         assert_eq!(player.no_jump_delay, JUMP_DELAY_TICKS);
         assert!(player.velocity.y > 0.0);
 
@@ -2139,7 +2279,17 @@ mod tests {
             player.position = ground_position;
             player.velocity = Velocity::new(0.0, 0.0, 0.0);
             player.on_ground = true;
-            tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+            tick(
+                &mut player,
+                &input,
+                true,
+                false,
+                &chunks,
+                &anim,
+                1.0,
+                false,
+                None,
+            );
             if elapsed < JUMP_DELAY_TICKS {
                 assert_eq!(player.no_jump_delay, JUMP_DELAY_TICKS - elapsed);
                 assert!(player.velocity.y < 0.0);
@@ -2149,12 +2299,32 @@ mod tests {
             }
         }
 
-        tick(&mut player, &input, false, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            false,
+            false,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
         assert_eq!(player.no_jump_delay, 0);
         player.position = ground_position;
         player.velocity = Velocity::new(0.0, 0.0, 0.0);
         player.on_ground = true;
-        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            true,
+            false,
+            &chunks,
+            &anim,
+            1.0,
+            false,
+            None,
+        );
         assert_eq!(player.no_jump_delay, JUMP_DELAY_TICKS);
         assert!(player.velocity.y > 0.0);
     }
@@ -2171,6 +2341,7 @@ mod tests {
             &mut player,
             &InputState::released(),
             true,
+            false,
             &chunks,
             &BlockEntityAnimStore::default(),
             1.0,
@@ -2200,6 +2371,7 @@ mod tests {
             &mut player,
             &input,
             true,
+            false,
             &chunks,
             &BlockEntityAnimStore::default(),
             1.0,
@@ -2226,6 +2398,7 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
+            false,
             false,
             &chunks,
             &BlockEntityAnimStore::default(),

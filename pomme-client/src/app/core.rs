@@ -321,6 +321,7 @@ pub struct PlayerInputState {
 fn player_input_state(
     input: &InputState,
     jump_held: bool,
+    sneak_held: bool,
     analog_move: glam::Vec2,
     sprint_key_down: bool,
 ) -> PlayerInputState {
@@ -330,7 +331,7 @@ fn player_input_state(
         left: input.is_key_held(KEY_LEFT) || analog_move.x > STICK_MOVEMENT_THRESHOLD,
         right: input.is_key_held(KEY_RIGHT) || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
         jump: jump_held,
-        shift: input.performing_action(Action::Sneak),
+        shift: sneak_held,
         sprint: sprint_key_down,
     }
 }
@@ -2872,7 +2873,7 @@ impl AppCore {
 
             let neutral = InputState::released();
             Self::send_abilities_packet(connection, game);
-            Self::send_input_packet(&neutral, false, connection, game);
+            Self::send_input_packet(&neutral, false, false, connection, game);
             self.send_sprint_command(connection, game);
             self.send_position_packet(connection, game);
 
@@ -2923,6 +2924,7 @@ impl AppCore {
         // Equine jump cooldown is always 0, so the cooldown gate collapses
         // into the vehicle check.
         let jump_held = self.action_consumers.jump.do_tick(game);
+        let sneak_held = self.action_consumers.sneak.do_tick(game);
         if game.riding_jumpable_vehicle() {
             let p = &mut game.player;
             if p.jump_riding_ticks < 0 {
@@ -3009,6 +3011,7 @@ impl AppCore {
         };
         let dirty = game.interaction.tick_actions(
             input,
+            sneak_held,
             &game.chunk_store,
             &connection.packet_tx,
             &self.audio,
@@ -3050,6 +3053,7 @@ impl AppCore {
             &mut game.player,
             input,
             jump_held,
+            sneak_held,
             &game.chunk_store,
             &game.block_entity_anim,
             game.interaction.use_speed_multiplier(),
@@ -3071,7 +3075,7 @@ impl AppCore {
             .tick_player_state(input.is_cursor_captured(), held_stack.as_ref());
 
         Self::send_abilities_packet(connection, game);
-        Self::send_input_packet(input, jump_held, connection, game);
+        Self::send_input_packet(input, jump_held, sneak_held, connection, game);
         self.send_sprint_command(connection, game);
         self.send_position_packet(connection, game);
         if !dirty.is_empty() {
@@ -3129,6 +3133,7 @@ impl AppCore {
     fn send_input_packet(
         input: &InputState,
         jump_held: bool,
+        sneak_held: bool,
         connection: &ConnectionHandle,
         game: &mut GameState,
     ) {
@@ -3141,6 +3146,7 @@ impl AppCore {
         let current = player_input_state(
             input,
             jump_held,
+            sneak_held,
             analog_move,
             input.performing_action(Action::Sprint),
         );
@@ -3581,6 +3587,7 @@ mod tests {
         let right_state = player_input_state(
             &input,
             false,
+            false,
             gamepad_movement_axes(glam::vec2(1.0, 0.0)),
             false,
         );
@@ -3591,6 +3598,7 @@ mod tests {
         let left_state = player_input_state(
             &input,
             false,
+            false,
             gamepad_movement_axes(glam::vec2(-1.0, 0.0)),
             false,
         );
@@ -3600,6 +3608,7 @@ mod tests {
 
         let forward_right_state = player_input_state(
             &input,
+            false,
             false,
             gamepad_movement_axes(glam::vec2(0.8, 0.8)),
             false,
@@ -3758,10 +3767,20 @@ mod tests {
     #[test]
     fn player_input_packet_uses_physical_sprint_key_state() {
         let input = InputState::released();
-        let pressed =
-            serverbound_player_input(&player_input_state(&input, false, glam::Vec2::ZERO, true));
-        let released =
-            serverbound_player_input(&player_input_state(&input, false, glam::Vec2::ZERO, false));
+        let pressed = serverbound_player_input(&player_input_state(
+            &input,
+            false,
+            false,
+            glam::Vec2::ZERO,
+            true,
+        ));
+        let released = serverbound_player_input(&player_input_state(
+            &input,
+            false,
+            false,
+            glam::Vec2::ZERO,
+            false,
+        ));
         assert!(pressed.sprint);
         assert!(!released.sprint);
     }
@@ -3770,16 +3789,52 @@ mod tests {
     fn player_input_packet_uses_consumer_jump_hold() {
         let mut input = InputState::released();
         input.set_key_held_for_test(winit::keyboard::KeyCode::Space, true);
-        let released =
-            serverbound_player_input(&player_input_state(&input, false, glam::Vec2::ZERO, false));
+        let released = serverbound_player_input(&player_input_state(
+            &input,
+            false,
+            false,
+            glam::Vec2::ZERO,
+            false,
+        ));
         assert!(
             !released.jump,
             "physical Space does not bypass the consumer"
         );
         input.set_key_held_for_test(winit::keyboard::KeyCode::Space, false);
-        let held =
-            serverbound_player_input(&player_input_state(&input, true, glam::Vec2::ZERO, false));
+        let held = serverbound_player_input(&player_input_state(
+            &input,
+            true,
+            false,
+            glam::Vec2::ZERO,
+            false,
+        ));
         assert!(held.jump);
+    }
+
+    #[test]
+    fn player_input_packet_uses_consumer_sneak_hold() {
+        let mut input = InputState::released();
+        input.set_key_held_for_test(winit::keyboard::KeyCode::ShiftLeft, true);
+        let released = serverbound_player_input(&player_input_state(
+            &input,
+            false,
+            false,
+            glam::Vec2::ZERO,
+            false,
+        ));
+        assert!(
+            !released.shift,
+            "physical Shift does not bypass the consumer"
+        );
+        input.set_key_held_for_test(winit::keyboard::KeyCode::ShiftLeft, false);
+        let held = serverbound_player_input(&player_input_state(
+            &input,
+            false,
+            true,
+            glam::Vec2::ZERO,
+            false,
+        ));
+        assert!(held.shift);
     }
 
     #[test]

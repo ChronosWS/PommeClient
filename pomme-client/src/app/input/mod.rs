@@ -368,9 +368,7 @@ impl InputState {
     pub fn performing_action(&self, action: Action) -> bool {
         match action {
             Action::Jump => self.is_action_held(action),
-            Action::Sneak => {
-                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::LeftThumb)
-            }
+            Action::Sneak => self.is_action_held(action),
             Action::Sprint => {
                 self.is_default_key_held(action) || self.is_gamepad_button_held(Button::West)
             }
