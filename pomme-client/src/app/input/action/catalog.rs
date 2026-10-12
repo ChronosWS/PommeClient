@@ -254,6 +254,14 @@ actions! {
         listed: true,
         defaults: [Keyboard(KeyCode::KeyF)],
     },
+    PickBlock => {
+        id: "key.pickItem",
+        translation_id: Some(StringId::new("key.pickItem")),
+        fallback: "Pick Block",
+        category: Gameplay,
+        listed: true,
+        defaults: [Mouse(MouseButton::Middle)],
+    },
     SpectatorHotbar => {
         id: "key.spectatorHotbar",
         translation_id: Some(StringId::new("key.spectatorHotbar")),

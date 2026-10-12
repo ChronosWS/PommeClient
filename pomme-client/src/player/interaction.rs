@@ -375,6 +375,7 @@ impl InteractionState {
         sneak_held: bool,
         destroy_input: DestroyInput,
         use_input: UseInput,
+        pick_requested: bool,
         chunks: &ChunkStore,
         sender: &PacketSender,
         audio: &AudioEngine,
@@ -467,7 +468,7 @@ impl InteractionState {
 
         // Vanilla checks `isUsingItem` once before the attack/use/pick loops,
         // so a use started above does not suppress a pick from the same tick.
-        if !using && input.has_pending_middle_mouse_press() {
+        if !using && pick_requested {
             self.pick_block_or_entity(sender, input.is_ctrl_held());
         }
 

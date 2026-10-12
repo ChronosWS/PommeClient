@@ -133,7 +133,12 @@ mod tests {
         let key = source(InputKey::Mouse(MouseButton::Middle));
         dispatcher.on_press(key.clone());
         dispatcher.on_release(&key);
-        assert!(dispatch(&mut consumer, &mut dispatcher, &bindings, true).is_empty());
+        let passed = dispatch(&mut consumer, &mut dispatcher, &bindings, true);
+        assert!(
+            passed
+                .iter()
+                .all(|event| event.action != Action::SpectatorHotbar)
+        );
         dispatch(&mut consumer, &mut dispatcher, &bindings, true);
         assert_eq!(consumer.pending_requests, 1);
         dispatcher.on_press(key.clone());
@@ -203,7 +208,11 @@ mod tests {
         let mut dispatcher = ActionDispatcher::new();
         dispatcher.on_press(source(InputKey::Mouse(MouseButton::Middle)));
         let passed = dispatch(&mut consumer, &mut dispatcher, &bindings, false);
-        assert_eq!(passed[0].action, Action::SpectatorHotbar);
+        assert!(
+            passed
+                .iter()
+                .any(|event| event.action == Action::SpectatorHotbar)
+        );
         assert_eq!(consumer.take_requests(), 0);
         dispatch(&mut consumer, &mut dispatcher, &bindings, true);
         assert_eq!(consumer.take_requests(), 0);

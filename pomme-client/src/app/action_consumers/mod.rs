@@ -9,6 +9,7 @@ pub mod open_chat;
 pub mod open_commands;
 pub mod open_menu;
 pub mod perspective;
+pub mod pick_block;
 pub mod player_list;
 pub mod sneak;
 pub mod spectator_hotbar;
@@ -27,6 +28,7 @@ use open_chat::{OpenChatConsumer, OpenChatOutcome};
 use open_commands::{OpenCommandsConsumer, OpenCommandsOutcome};
 use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
 use perspective::PerspectiveConsumer;
+use pick_block::PickBlockConsumer;
 use player_list::PlayerListConsumer;
 use sneak::SneakConsumer;
 use spectator_hotbar::SpectatorHotbarConsumer;
@@ -46,6 +48,7 @@ use super::state_slot::StateSlot;
 pub struct ActionConsumers {
     pub(super) destroy: DestroyConsumer,
     pub(super) use_item: UseConsumer,
+    pub(super) pick_block: PickBlockConsumer,
     pub(super) jump: JumpConsumer,
     pub(super) sneak: SneakConsumer,
     pub(super) sprint: SprintConsumer,
@@ -60,6 +63,7 @@ impl ActionConsumers {
     pub fn clear_pending_gameplay(&mut self) {
         self.destroy.clear();
         self.use_item.clear();
+        self.pick_block.clear();
         self.jump.clear();
         self.sneak.clear();
         self.sprint.clear();
@@ -87,6 +91,10 @@ impl ActionConsumers {
         };
         let mut use_handler = |event: &ActionEvent, _: &ActionStates| {
             self.use_item
+                .handle_event(event, phase.get(), binding_capture)
+        };
+        let mut pick_handler = |event: &ActionEvent, _: &ActionStates| {
+            self.pick_block
                 .handle_event(event, phase.get(), binding_capture)
         };
         let mut jump_handler = |event: &ActionEvent, _: &ActionStates| {
@@ -165,6 +173,7 @@ impl ActionConsumers {
                 &mut sprint_handler,
                 &mut destroy_handler,
                 &mut use_handler,
+                &mut pick_handler,
                 &mut drop_handler,
                 &mut swap_handler,
                 &mut spectator_hotbar_handler,
@@ -176,6 +185,7 @@ impl ActionConsumers {
                 .do_frame(input.action_states(), phase.get(), binding_capture);
             self.use_item
                 .do_frame(input.action_states(), phase.get(), binding_capture);
+            self.pick_block.do_frame(phase.get(), binding_capture);
             self.jump
                 .do_frame(input.action_states(), phase.get(), binding_capture);
             self.sneak
@@ -225,6 +235,7 @@ impl ActionConsumers {
             .do_frame(input.action_states(), phase.get(), binding_capture);
         self.use_item
             .do_frame(input.action_states(), phase.get(), binding_capture);
+        self.pick_block.do_frame(phase.get(), binding_capture);
         self.jump
             .do_frame(input.action_states(), phase.get(), binding_capture);
         self.sneak
