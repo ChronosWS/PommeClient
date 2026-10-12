@@ -69,6 +69,11 @@ pub(crate) fn valid_asset_key(asset_key: &str) -> bool {
 pub const POMME_ICON_PNG: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.png"));
 
+pub const RESET_ICON_PNG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/gui/icons/reset.png"
+));
+
 pub fn load_image(path: &Path) -> Result<image::DynamicImage, image::ImageError> {
     image::open(path).or_else(|_| {
         let data = std::fs::read(path).map_err(image::ImageError::IoError)?;
@@ -190,6 +195,18 @@ impl AssetIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_icon_is_transparent_pixel_art() {
+        let rgba = image::load_from_memory(RESET_ICON_PNG).unwrap().to_rgba8();
+        assert_eq!(rgba.dimensions(), (15, 15));
+        assert!(rgba.pixels().any(|pixel| pixel.0 == [255, 255, 255, 255]));
+        assert!(rgba.pixels().any(|pixel| pixel.0[3] == 0));
+        assert!(
+            rgba.pixels()
+                .all(|pixel| pixel.0[3] == 0 || pixel.0 == [255, 255, 255, 255])
+        );
+    }
 
     #[test]
     fn asset_keys_reject_traversal_and_invalid_resource_location_syntax() {
