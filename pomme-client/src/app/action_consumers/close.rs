@@ -45,7 +45,7 @@ impl CloseConsumer {
         EventDisposition::Consume
     }
 
-    pub fn apply(&mut self, game: &mut GameState) -> CloseOutcome {
+    pub fn do_frame(&mut self, game: &mut GameState) -> CloseOutcome {
         let escape_requested = std::mem::take(&mut self.escape_requested);
         if !self.take_close_request() || game.dialog_open() {
             return CloseOutcome::Unchanged;

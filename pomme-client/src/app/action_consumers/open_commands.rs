@@ -39,7 +39,7 @@ impl OpenCommandsConsumer {
         EventDisposition::Consume
     }
 
-    pub fn apply(&mut self, game: &mut GameState) -> OpenCommandsOutcome {
+    pub fn do_frame(&mut self, game: &mut GameState) -> OpenCommandsOutcome {
         if !self.take_open_request()
             || game.paused
             || game.death_screen_open

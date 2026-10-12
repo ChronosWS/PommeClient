@@ -39,7 +39,7 @@ impl OpenChatConsumer {
         EventDisposition::Consume
     }
 
-    pub fn apply(&mut self, game: &mut GameState) -> OpenChatOutcome {
+    pub fn do_frame(&mut self, game: &mut GameState) -> OpenChatOutcome {
         if !self.take_open_request()
             || game.paused
             || game.death_screen_open

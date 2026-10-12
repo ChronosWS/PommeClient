@@ -2,6 +2,9 @@
 
 use crate::app::input::action::dispatcher::{ActionEvent, ActionEventKind, EventDisposition};
 use crate::app::input::{Action, InputKey};
+use crate::app::phases::AppPhase;
+use crate::app::phases::in_game::GameState;
+use crate::net::sender::PacketSender;
 
 #[derive(Default)]
 pub struct SwapOffhandConsumer {
@@ -9,7 +12,22 @@ pub struct SwapOffhandConsumer {
 }
 
 impl SwapOffhandConsumer {
-    pub fn handle_event(&mut self, event: &ActionEvent, enabled: bool) -> EventDisposition {
+    pub fn handle_event(
+        &mut self,
+        event: &ActionEvent,
+        phase: &AppPhase,
+        binding_capture: bool,
+        text_capture: bool,
+        menu_capture: bool,
+    ) -> EventDisposition {
+        let enabled = !binding_capture
+            && matches!(phase, AppPhase::InGame { .. })
+            && (!matches!(event.source.input, InputKey::Keyboard(_))
+                || (!text_capture && !menu_capture));
+        self.process_event(event, enabled)
+    }
+
+    fn process_event(&mut self, event: &ActionEvent, enabled: bool) -> EventDisposition {
         if !enabled || event.action != Action::SwapOffhand {
             return EventDisposition::Pass;
         }
@@ -22,8 +40,39 @@ impl SwapOffhandConsumer {
         EventDisposition::Consume
     }
 
+    /// Reconcile after frame-local consumers, even when no input or tick
+    /// occurs.
+    pub fn do_frame(&mut self, phase: &AppPhase, binding_capture: bool) {
+        if binding_capture
+            || !matches!(phase, AppPhase::InGame { game, .. } if Self::gameplay_enabled(game))
+        {
+            self.clear();
+        }
+    }
+
+    pub fn do_tick(&mut self, game: &GameState, sender: &PacketSender) {
+        self.process_tick(
+            Self::gameplay_enabled(game),
+            game.player.game_mode == 3,
+            sender,
+        );
+    }
+
+    fn gameplay_enabled(game: &GameState) -> bool {
+        game.client_loaded && !game.dead && game.input_live() && game.chunk_load_bench.is_none()
+    }
+
+    fn process_tick(&mut self, enabled: bool, spectator: bool, sender: &PacketSender) {
+        let requests = self.take_requests();
+        if enabled && !spectator {
+            for _ in 0..requests {
+                crate::player::interaction::send_swap_offhand(sender);
+            }
+        }
+    }
+
     /// Drain once at the gameplay-tick application point, not at frame end.
-    pub fn take_requests(&mut self) -> usize {
+    fn take_requests(&mut self) -> usize {
         std::mem::take(&mut self.pending_requests)
     }
 
@@ -65,7 +114,7 @@ mod tests {
     ) -> Vec<ActionEvent> {
         let mut passed = Vec::new();
         let mut handler =
-            |event: &ActionEvent, _: &ActionStates| consumer.handle_event(event, enabled);
+            |event: &ActionEvent, _: &ActionStates| consumer.process_event(event, enabled);
         let mut later = |event: &ActionEvent, _: &ActionStates| {
             passed.push(event.clone());
             EventDisposition::Pass
@@ -164,6 +213,84 @@ mod tests {
         let passed = dispatch(&mut consumer, &mut dispatcher, &bindings, true);
         assert_eq!(passed[0].action, Action::Jump);
         assert_eq!(consumer.take_requests(), 0);
+    }
+
+    #[test]
+    fn frame_processing_outside_game_discards_pending_work_without_a_tick() {
+        let phase = AppPhase::Setup {
+            quick_access_multiplayer: None,
+            pending_skin_uuid: None,
+        };
+        for binding_capture in [false, true] {
+            let mut consumer = SwapOffhandConsumer {
+                pending_requests: 2,
+            };
+            consumer.do_frame(&phase, binding_capture);
+            assert_eq!(consumer.take_requests(), 0);
+        }
+    }
+
+    #[test]
+    fn event_eligibility_outside_game_is_owned_by_consumer() {
+        let phase = AppPhase::Setup {
+            quick_access_multiplayer: None,
+            pending_skin_uuid: None,
+        };
+        let event = ActionEvent {
+            action: Action::SwapOffhand,
+            source: source(InputKey::Keyboard(KeyCode::KeyF)),
+            kind: ActionEventKind::Press,
+            timestamp: Instant::now(),
+            hold_transition: crate::app::input::action::dispatcher::HoldTransition::Started,
+        };
+        let mut consumer = SwapOffhandConsumer::default();
+        assert_eq!(
+            consumer.handle_event(&event, &phase, false, false, false),
+            EventDisposition::Pass
+        );
+        assert_eq!(consumer.take_requests(), 0);
+    }
+
+    #[test]
+    fn tick_processing_sends_each_swap_once() {
+        use azalea_protocol::packets::game::ServerboundGamePacket;
+        use azalea_protocol::packets::game::s_player_action::Action as PlayerAction;
+
+        use crate::net::sender::Outbound;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sender = PacketSender::new(tx);
+        let mut consumer = SwapOffhandConsumer {
+            pending_requests: 3,
+        };
+        consumer.process_tick(true, false, &sender);
+        for _ in 0..3 {
+            let Outbound::Packet(packet) = rx.try_recv().unwrap() else {
+                panic!("expected a swap packet");
+            };
+            let ServerboundGamePacket::PlayerAction(packet) = *packet else {
+                panic!("expected a player action");
+            };
+            assert_eq!(packet.action, PlayerAction::SwapItemWithOffhand);
+        }
+        consumer.process_tick(true, false, &sender);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(consumer.take_requests(), 0);
+    }
+
+    #[test]
+    fn blocked_and_spectator_ticks_discard_requests_without_sending() {
+        for (enabled, spectator) in [(false, false), (true, true)] {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let sender = PacketSender::new(tx);
+            let mut consumer = SwapOffhandConsumer {
+                pending_requests: 2,
+            };
+            consumer.process_tick(enabled, spectator, &sender);
+            assert_eq!(consumer.take_requests(), 0);
+            consumer.process_tick(true, false, &sender);
+            assert!(rx.try_recv().is_err());
+        }
     }
 
     #[test]

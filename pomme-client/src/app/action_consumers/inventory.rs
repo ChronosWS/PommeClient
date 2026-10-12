@@ -44,7 +44,7 @@ impl InventoryConsumer {
         EventDisposition::Consume
     }
 
-    pub fn apply(&mut self, game: &mut GameState) -> InventoryOutcome {
+    pub fn do_frame(&mut self, game: &mut GameState) -> InventoryOutcome {
         if !self.take_toggle_request() || game.dialog_open() {
             return InventoryOutcome::Unchanged;
         }

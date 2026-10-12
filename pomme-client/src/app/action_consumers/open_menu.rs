@@ -40,7 +40,7 @@ impl OpenMenuConsumer {
         EventDisposition::Consume
     }
 
-    pub fn apply(&mut self, game: &mut GameState) -> OpenMenuOutcome {
+    pub fn do_frame(&mut self, game: &mut GameState) -> OpenMenuOutcome {
         if !self.take_menu_request() || game.dialog_open() {
             return OpenMenuOutcome::Unchanged;
         }

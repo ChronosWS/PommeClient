@@ -2888,8 +2888,8 @@ impl AppCore {
 
         // Vanilla Minecraft.handleKeybinds: drop and offhand-swap consume the
         // queued key presses each tick; spectators consume without acting.
+        let spectator = game.player.game_mode == 3;
         if input_live {
-            let spectator = game.player.game_mode == 3;
             while self.input.consume_action_press(Action::DropItem) {
                 let whole_stack = self.input.is_ctrl_held();
                 if !spectator {
@@ -2905,11 +2905,11 @@ impl AppCore {
                     }
                 }
             }
-            for _ in 0..self.action_consumers.swap_offhand.take_requests() {
-                if !spectator {
-                    crate::player::interaction::send_swap_offhand(&connection.packet_tx);
-                }
-            }
+        }
+        self.action_consumers
+            .swap_offhand
+            .do_tick(game, &connection.packet_tx);
+        if input_live {
             for slot in self.input.take_spectator_slot_presses() {
                 if spectator {
                     game.spectator.on_hotbar_selected(
@@ -2931,7 +2931,6 @@ impl AppCore {
             }
         }
         // A press queued while a menu or chat was open must not fire later.
-        self.action_consumers.clear_pending_gameplay();
         self.input.clear_action_press_counts();
 
         let neutral = InputState::released();
