@@ -18,7 +18,7 @@ use azalea_registry::builtin::ItemKind;
 use glam::{DVec3, Vec3};
 use pomme_protocol::wire;
 
-use crate::app::input::{self, InputState};
+use crate::app::input::InputState;
 use crate::attribute::{AttributeKind, AttributeMap};
 use crate::audio::{AudioEngine, CATEGORY_BLOCKS, CATEGORY_PLAYERS, SoundRef};
 use crate::entity::components::{LookDirection, Position};
@@ -77,6 +77,13 @@ pub enum HitResult {
 /// Accepted attack press latch and hold sampled at the gameplay tick.
 #[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
 pub struct DestroyInput {
+    pub just_pressed: bool,
+    pub held: bool,
+}
+
+/// Accepted use press latch and hold sampled at the gameplay tick.
+#[derive(Default, Debug, PartialEq, Eq, Clone, Copy)]
+pub struct UseInput {
     pub just_pressed: bool,
     pub held: bool,
 }
@@ -367,6 +374,7 @@ impl InteractionState {
         input: &InputState,
         sneak_held: bool,
         destroy_input: DestroyInput,
+        use_input: UseInput,
         chunks: &ChunkStore,
         sender: &PacketSender,
         audio: &AudioEngine,
@@ -429,12 +437,10 @@ impl InteractionState {
         // cancel; consumables finish on the server's own timer, never on
         // release).
         if using {
-            if !input.performing_action(input::Action::Use) {
+            if !use_input.held {
                 self.release_using_item(sender);
             }
-        } else if input.action_just_pressed(input::Action::Use)
-            || (input.performing_action(input::Action::Use) && self.use_delay == 0)
-        {
+        } else if use_input.just_pressed || (use_input.held && self.use_delay == 0) {
             let sneaking = sneak_held;
             let suppress_block_use = sneaking && !hands_empty;
             let success = self.start_use_item(

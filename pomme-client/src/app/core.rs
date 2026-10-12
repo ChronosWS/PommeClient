@@ -3005,6 +3005,7 @@ impl AppCore {
             .and_then(|name| renderer.registry().placeable_block_for_item(name));
         let hands_empty = held_stack.is_none() && game.player.inventory.offhand().is_empty();
         let destroy_input = self.action_consumers.destroy.do_tick(game);
+        let use_input = self.action_consumers.use_item.do_tick(game);
         let player_aabb = game.player.bounding_box();
         let mut effects = crate::player::interaction::BreakEffects {
             particles: &mut game.particle_store,
@@ -3015,6 +3016,7 @@ impl AppCore {
             input,
             sneak_held,
             destroy_input,
+            use_input,
             &game.chunk_store,
             &connection.packet_tx,
             &self.audio,

@@ -5,7 +5,7 @@
 //! The Key Binds screen edits these settings using limited input capture;
 //! Perspective, inventory, and player-list actions use these bindings; other
 //! gameplay input still uses the existing hardcoded mappings.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use action::collector::ActionCollector;
 use action::dispatcher::ActionStates;
@@ -183,7 +183,6 @@ pub struct InputState {
     weak_rumble_effect: Option<Effect>,
     strong_rumble_effect: Option<Effect>,
     active_gamepad_id: Option<GamepadId>,
-    recent_actions: HashMap<Action, bool>,
 }
 
 #[derive(Default)]
@@ -270,7 +269,6 @@ impl InputState {
             weak_rumble_effect: weak_effect,
             strong_rumble_effect: strong_effect,
             active_gamepad_id: None,
-            recent_actions: HashMap::new(),
         }
     }
 
@@ -332,50 +330,19 @@ impl InputState {
             return;
         }
 
+        // TODO: gamepad spectator-menu support (vanilla has none).
         match event.event {
-            gilrs::EventType::ButtonPressed(button, _) => match button {
-                // TODO: gamepad spectator-menu support (vanilla has none).
-                Button::RightTrigger if !self.spectator && !self.menu_capture => {
-                    self.selected_slot = (self.selected_slot + 1) % 9;
-                }
-                Button::LeftTrigger2 => {
-                    self.recent_actions.insert(Action::Use, true);
-                }
-                Button::LeftTrigger if !self.spectator && !self.menu_capture => {
-                    self.selected_slot = (self.selected_slot + 8) % 9;
-                }
-
-                _ => {}
-            },
-            gilrs::EventType::ButtonReleased(Button::LeftTrigger2, _) => {
-                self.recent_actions.insert(Action::Use, false);
+            gilrs::EventType::ButtonPressed(Button::RightTrigger, _)
+                if !self.spectator && !self.menu_capture =>
+            {
+                self.selected_slot = (self.selected_slot + 1) % 9;
             }
-
+            gilrs::EventType::ButtonPressed(Button::LeftTrigger, _)
+                if !self.spectator && !self.menu_capture =>
+            {
+                self.selected_slot = (self.selected_slot + 8) % 9;
+            }
             _ => {}
-        }
-    }
-
-    pub fn performing_action(&self, action: Action) -> bool {
-        match action {
-            Action::Jump => self.is_action_held(action),
-            Action::Sneak => self.is_action_held(action),
-            Action::Sprint => self.is_action_held(action),
-            Action::Destroy => self.is_action_held(action),
-            Action::Use => {
-                self.is_right_mouse_held() || self.is_gamepad_button_held(Button::LeftTrigger2)
-            }
-            Action::ToggleInventory => self.is_action_held(action),
-            Action::OpenMenu => self.is_action_held(action),
-            Action::ViewPlayerList => self.is_action_held(action),
-            Action::ChangePerspective => {
-                self.is_default_key_held(action) || self.is_gamepad_button_held(Button::DPadUp)
-            }
-            Action::OpenChat => self.is_action_held(action),
-            Action::OpenCommands => self.is_action_held(action),
-            Action::Close => self.is_action_held(action),
-            Action::DropItem => self.is_action_held(action),
-            Action::SwapOffhand => self.is_action_held(action),
-            Action::SpectatorHotbar => self.is_action_held(action),
         }
     }
 
@@ -391,25 +358,7 @@ impl InputState {
         self.action_events.dispatcher().action_states()
     }
 
-    /// Aggregate held state resolved from configured bindings at frame
-    /// dispatch.
-    pub fn is_action_held(&self, action: Action) -> bool {
-        self.action_states().contains_key(&action)
-    }
-
-    fn is_default_key_held(&self, action: Action) -> bool {
-        action
-            .default_key()
-            .is_some_and(|key| self.is_key_held(key))
-    }
-
-    pub fn action_just_pressed(&self, action: Action) -> bool {
-        self.recent_actions.get(&action).copied().unwrap_or(false)
-    }
-
     pub fn clear_just_pressed_actions(&mut self) {
-        self.recent_actions.clear();
-
         self.left_click.just_pressed = false;
         self.left_click.just_released = false;
         self.right_click.just_pressed = false;
@@ -761,10 +710,8 @@ impl InputState {
                 self.right_click.held = was_pressed;
                 if was_pressed {
                     self.right_click.just_pressed = true;
-                    self.recent_actions.insert(Action::Use, true);
                 } else {
                     self.right_click.just_released = true;
-                    self.recent_actions.insert(Action::Use, false);
                 }
             }
             MouseButton::Middle => {
@@ -902,20 +849,18 @@ mod player_list_tests {
             vec![InputKey::Mouse(MouseButton::Other(4))],
         );
         input.held_keys.insert(KeyCode::Tab);
-        assert!(!input.is_action_held(Action::ViewPlayerList));
-        assert!(!input.performing_action(Action::ViewPlayerList));
+        assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
         mouse(
             &mut input,
             MouseButton::Other(4),
             ElementState::Pressed,
             false,
         );
-        assert!(!input.is_action_held(Action::ViewPlayerList));
+        assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
         dispatch(&mut input, &bindings);
-        assert!(input.is_action_held(Action::ViewPlayerList));
-        assert!(input.performing_action(Action::ViewPlayerList));
+        assert!(input.action_states().contains_key(&Action::ViewPlayerList));
         dispatch(&mut input, &bindings);
-        assert!(input.is_action_held(Action::ViewPlayerList));
+        assert!(input.action_states().contains_key(&Action::ViewPlayerList));
         mouse(
             &mut input,
             MouseButton::Other(4),
@@ -923,7 +868,7 @@ mod player_list_tests {
             false,
         );
         dispatch(&mut input, &bindings);
-        assert!(!input.is_action_held(Action::ViewPlayerList));
+        assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
     }
 
     #[test]
@@ -940,10 +885,10 @@ mod player_list_tests {
         mouse(&mut input, MouseButton::Left, ElementState::Pressed, false);
         mouse(&mut input, MouseButton::Right, ElementState::Pressed, false);
         dispatch(&mut input, &bindings);
-        assert!(input.is_action_held(Action::ViewPlayerList));
+        assert!(input.action_states().contains_key(&Action::ViewPlayerList));
         mouse(&mut input, MouseButton::Left, ElementState::Released, false);
         dispatch(&mut input, &bindings);
-        assert!(input.is_action_held(Action::ViewPlayerList));
+        assert!(input.action_states().contains_key(&Action::ViewPlayerList));
         mouse(
             &mut input,
             MouseButton::Right,
@@ -951,7 +896,7 @@ mod player_list_tests {
             false,
         );
         dispatch(&mut input, &bindings);
-        assert!(!input.is_action_held(Action::ViewPlayerList));
+        assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
     }
 
     #[test]
@@ -961,7 +906,7 @@ mod player_list_tests {
         bindings.set(Action::ViewPlayerList, vec![]);
         input.held_keys.insert(KeyCode::Tab);
         dispatch(&mut input, &bindings);
-        assert!(!input.performing_action(Action::ViewPlayerList));
+        assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
         bindings.set(
             Action::ViewPlayerList,
             vec![InputKey::Mouse(MouseButton::Other(4))],
@@ -973,7 +918,7 @@ mod player_list_tests {
             true,
         );
         dispatch(&mut input, &bindings);
-        assert!(!input.is_action_held(Action::ViewPlayerList));
+        assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
         mouse(
             &mut input,
             MouseButton::Other(4),
@@ -987,7 +932,7 @@ mod player_list_tests {
             false,
         );
         dispatch(&mut input, &bindings);
-        assert!(input.is_action_held(Action::ViewPlayerList));
+        assert!(input.action_states().contains_key(&Action::ViewPlayerList));
     }
 
     #[test]
@@ -1009,7 +954,7 @@ mod player_list_tests {
             .action_events
             .on_window_event(&WindowEvent::Focused(false), false);
         dispatch(&mut input, &bindings);
-        assert!(!input.is_action_held(Action::ViewPlayerList));
+        assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
         mouse(
             &mut input,
             MouseButton::Other(4),
@@ -1017,12 +962,12 @@ mod player_list_tests {
             false,
         );
         dispatch(&mut input, &bindings);
-        assert!(input.is_action_held(Action::ViewPlayerList));
+        assert!(input.action_states().contains_key(&Action::ViewPlayerList));
         input
             .action_events
             .on_device_disconnected(InputDeviceId::Window(Some(DeviceId::dummy())));
         dispatch(&mut input, &bindings);
-        assert!(!input.is_action_held(Action::ViewPlayerList));
+        assert!(!input.action_states().contains_key(&Action::ViewPlayerList));
     }
 }
 
@@ -1092,9 +1037,10 @@ mod binding_capture_tests {
         assert!(!input.has_pending_left_mouse_press());
         assert!(!input.is_left_mouse_held());
         assert!(!input.has_pending_middle_mouse_press());
-        assert!(input.recent_actions.is_empty());
 
         input.on_mouse_button(MouseButton::Right, ElementState::Pressed);
+        assert!(!input.has_pending_right_mouse_press());
+        assert!(!input.is_right_mouse_held());
         input.set_binding_capture(false);
         assert!(input.take_binding_presses().is_empty());
         input.on_mouse_button(MouseButton::Left, ElementState::Pressed);
