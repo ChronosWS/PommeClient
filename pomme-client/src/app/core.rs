@@ -2889,23 +2889,9 @@ impl AppCore {
         // Vanilla Minecraft.handleKeybinds: drop and offhand-swap consume the
         // queued key presses each tick; spectators consume without acting.
         let spectator = game.player.game_mode == 3;
-        if input_live {
-            while self.input.consume_action_press(Action::DropItem) {
-                let whole_stack = self.input.is_ctrl_held();
-                if !spectator {
-                    // Vanilla `LocalPlayer.drop` always sends the action packet;
-                    // only the swing is gated on something actually dropping.
-                    crate::player::interaction::send_drop(&connection.packet_tx, whole_stack);
-                    if game
-                        .player
-                        .inventory
-                        .remove_from_selected(self.input.selected_slot(), whole_stack)
-                    {
-                        crate::player::interaction::send_use_swing(&connection.packet_tx);
-                    }
-                }
-            }
-        }
+        self.action_consumers
+            .drop_item
+            .do_tick(game, &self.input, &connection.packet_tx);
         self.action_consumers
             .swap_offhand
             .do_tick(game, &connection.packet_tx);

@@ -1,6 +1,7 @@
 //! Application-owned action consumers and frame dispatch.
 
 pub mod close;
+pub mod drop_item;
 pub mod inventory;
 pub mod open_chat;
 pub mod open_commands;
@@ -12,6 +13,7 @@ pub mod swap_offhand;
 use std::time::Instant;
 
 use close::{CloseConsumer, CloseOutcome};
+use drop_item::DropItemConsumer;
 use inventory::{InventoryConsumer, InventoryOutcome};
 use open_chat::{OpenChatConsumer, OpenChatOutcome};
 use open_commands::{OpenCommandsConsumer, OpenCommandsOutcome};
@@ -29,6 +31,7 @@ use super::state_slot::StateSlot;
 /// during processing; tick-driven consumers retain pending requests here.
 #[derive(Default)]
 pub struct ActionConsumers {
+    pub(super) drop_item: DropItemConsumer,
     pub(super) swap_offhand: SwapOffhandConsumer,
 }
 
@@ -36,6 +39,7 @@ impl ActionConsumers {
     /// Discard tick work when the game session ends or gameplay cannot apply
     /// it.
     pub fn clear_pending_gameplay(&mut self) {
+        self.drop_item.clear();
         self.swap_offhand.clear();
     }
 
@@ -52,6 +56,15 @@ impl ActionConsumers {
         let binding_capture = input.binding_capture_active();
         let text_capture = input.text_capture;
         let menu_capture = input.menu_capture;
+        let mut drop_handler = |event: &ActionEvent, _: &ActionStates| {
+            self.drop_item.handle_event(
+                event,
+                phase.get(),
+                binding_capture,
+                text_capture,
+                menu_capture,
+            )
+        };
         let mut swap_handler = |event: &ActionEvent, _: &ActionStates| {
             self.swap_offhand.handle_event(
                 event,
@@ -95,11 +108,13 @@ impl ActionConsumers {
                 &mut open_chat_handler,
                 &mut open_commands_handler,
                 &mut player_list_handler,
+                &mut drop_handler,
                 &mut swap_handler,
             ],
         );
 
         if binding_capture {
+            self.drop_item.do_frame(phase.get(), binding_capture);
             self.swap_offhand.do_frame(phase.get(), binding_capture);
             return false;
         }
@@ -137,6 +152,7 @@ impl ActionConsumers {
             app
         });
 
+        self.drop_item.do_frame(phase.get(), binding_capture);
         self.swap_offhand.do_frame(phase.get(), binding_capture);
 
         should_apply_cursor_grab

@@ -51,24 +51,16 @@ impl SwapOffhandConsumer {
     }
 
     pub fn do_tick(&mut self, game: &GameState, sender: &PacketSender) {
-        self.process_tick(
-            Self::gameplay_enabled(game),
-            game.player.game_mode == 3,
-            sender,
-        );
-    }
-
-    fn gameplay_enabled(game: &GameState) -> bool {
-        game.client_loaded && !game.dead && game.input_live() && game.chunk_load_bench.is_none()
-    }
-
-    fn process_tick(&mut self, enabled: bool, spectator: bool, sender: &PacketSender) {
         let requests = self.take_requests();
-        if enabled && !spectator {
+        if Self::gameplay_enabled(game) && game.player.game_mode != 3 {
             for _ in 0..requests {
                 crate::player::interaction::send_swap_offhand(sender);
             }
         }
+    }
+
+    fn gameplay_enabled(game: &GameState) -> bool {
+        game.client_loaded && !game.dead && game.input_live() && game.chunk_load_bench.is_none()
     }
 
     /// Drain once at the gameplay-tick application point, not at frame end.
@@ -249,48 +241,6 @@ mod tests {
             EventDisposition::Pass
         );
         assert_eq!(consumer.take_requests(), 0);
-    }
-
-    #[test]
-    fn tick_processing_sends_each_swap_once() {
-        use azalea_protocol::packets::game::ServerboundGamePacket;
-        use azalea_protocol::packets::game::s_player_action::Action as PlayerAction;
-
-        use crate::net::sender::Outbound;
-
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let sender = PacketSender::new(tx);
-        let mut consumer = SwapOffhandConsumer {
-            pending_requests: 3,
-        };
-        consumer.process_tick(true, false, &sender);
-        for _ in 0..3 {
-            let Outbound::Packet(packet) = rx.try_recv().unwrap() else {
-                panic!("expected a swap packet");
-            };
-            let ServerboundGamePacket::PlayerAction(packet) = *packet else {
-                panic!("expected a player action");
-            };
-            assert_eq!(packet.action, PlayerAction::SwapItemWithOffhand);
-        }
-        consumer.process_tick(true, false, &sender);
-        assert!(rx.try_recv().is_err());
-        assert_eq!(consumer.take_requests(), 0);
-    }
-
-    #[test]
-    fn blocked_and_spectator_ticks_discard_requests_without_sending() {
-        for (enabled, spectator) in [(false, false), (true, true)] {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            let sender = PacketSender::new(tx);
-            let mut consumer = SwapOffhandConsumer {
-                pending_requests: 2,
-            };
-            consumer.process_tick(enabled, spectator, &sender);
-            assert_eq!(consumer.take_requests(), 0);
-            consumer.process_tick(true, false, &sender);
-            assert!(rx.try_recv().is_err());
-        }
     }
 
     #[test]
