@@ -78,6 +78,7 @@ pub struct Vehicle {
 pub fn tick(
     player: &mut LocalPlayer,
     input: &InputState,
+    raw_jump_held: bool,
     chunk_store: &ChunkStore,
     block_entity_anim: &BlockEntityAnimStore,
     use_speed_multiplier: f32,
@@ -85,7 +86,6 @@ pub fn tick(
     vehicle: Option<Vehicle>,
 ) {
     let is_passenger = vehicle.is_some();
-    let raw_jump_held = input.performing_action(input::Action::Jump);
     let world = CollisionWorld {
         chunks: chunk_store,
         block_entity_anim: Some(block_entity_anim),
@@ -125,7 +125,14 @@ pub fn tick(
 
     let (sin_y_rot, cos_y_rot) = vanilla_yaw_sin_cos(player.look_dir.y_rot_deg());
 
-    update_fly_state(player, input, chunk_store, vehicle, sin_y_rot, cos_y_rot);
+    update_fly_state(
+        player,
+        raw_jump_held,
+        chunk_store,
+        vehicle,
+        sin_y_rot,
+        cos_y_rot,
+    );
 
     // `LocalPlayer.aiStep`'s `goDownInWater`, before the living jump.
     if player.in_water
@@ -174,7 +181,16 @@ pub fn tick(
         player.no_jump_delay = 0;
     }
 
-    travel(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
+    travel(
+        player,
+        input,
+        raw_jump_held,
+        world,
+        forward,
+        strafe,
+        sin_y_rot,
+        cos_y_rot,
+    );
 
     player.tick_air_supply();
     stop_flying_on_ground(player);
@@ -207,6 +223,7 @@ fn apply_living_immobility(
 fn travel(
     player: &mut LocalPlayer,
     input: &InputState,
+    jump_held: bool,
     world: CollisionWorld<'_>,
     forward: f32,
     strafe: f32,
@@ -214,9 +231,13 @@ fn travel(
     cos_y_rot: f32,
 ) {
     if player.in_water && player.is_affected_by_fluids() {
-        tick_water(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
+        tick_water(
+            player, input, jump_held, world, forward, strafe, sin_y_rot, cos_y_rot,
+        );
     } else {
-        tick_land(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
+        tick_land(
+            player, input, jump_held, world, forward, strafe, sin_y_rot, cos_y_rot,
+        );
     }
 }
 
@@ -254,7 +275,9 @@ pub fn tick_dead(
         block_entity_anim: Some(block_entity_anim),
     };
     normalize_tiny_velocity(&mut player.velocity);
-    travel(player, &neutral, world, 0.0, 0.0, sin_y_rot, cos_y_rot);
+    travel(
+        player, &neutral, false, world, 0.0, 0.0, sin_y_rot, cos_y_rot,
+    );
 
     // Player.updatePlayerPose runs after LivingEntity.tick in vanilla. With
     // death-screen input released, this becomes standing unless clearance keeps
@@ -271,7 +294,7 @@ pub fn tick_dead(
 // a second one inside it toggles flight.
 fn update_fly_state(
     player: &mut LocalPlayer,
-    input: &InputState,
+    jump_held: bool,
     chunk_store: &ChunkStore,
     vehicle: Option<Vehicle>,
     sin_y_rot: f32,
@@ -284,7 +307,7 @@ fn update_fly_state(
                 player.flying = true;
                 player.abilities_dirty = true;
             }
-        } else if !player.was_jump_pressed && input.performing_action(input::Action::Jump) {
+        } else if !player.was_jump_pressed && jump_held {
             if player.jump_trigger_time == 0 {
                 player.jump_trigger_time = FLY_TOGGLE_WINDOW;
             } else if !player.swimming && vehicle.is_none_or(|v| v.jumpable) {
@@ -386,6 +409,7 @@ pub(crate) fn on_climbable(player: &LocalPlayer, chunk_store: &ChunkStore) -> bo
 fn tick_land(
     player: &mut LocalPlayer,
     input: &InputState,
+    jump_held: bool,
     world: CollisionWorld<'_>,
     forward: f32,
     strafe: f32,
@@ -415,9 +439,7 @@ fn tick_land(
     apply_collision(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
 
     // TODO: `wasInPowderSnow && canEntityWalkOnPowderSnow` also takes the impulse.
-    if (player.horizontal_collision || input.performing_action(input::Action::Jump))
-        && on_climbable(player, world.chunks)
-    {
+    if (player.horizontal_collision || jump_held) && on_climbable(player, world.chunks) {
         player.velocity.y = CLIMB_UP_VELOCITY;
     }
 
@@ -463,6 +485,7 @@ fn water_falling_adjusted_y(
 fn tick_water(
     player: &mut LocalPlayer,
     input: &InputState,
+    jump_held: bool,
     world: CollisionWorld<'_>,
     forward: f32,
     strafe: f32,
@@ -479,10 +502,7 @@ fn tick_water(
             surface_y,
             player.position.z.floor() as i32,
         ));
-        if target_vy <= 0.0
-            || input.performing_action(input::Action::Jump)
-            || surface_fluid.kind != FluidKind::Empty
-        {
+        if target_vy <= 0.0 || jump_held || surface_fluid.kind != FluidKind::Empty {
             let boost = if target_vy < -0.2 { 0.085 } else { 0.06 };
             player.velocity.y += (target_vy - player.velocity.y) * boost;
         }
@@ -1341,7 +1361,16 @@ mod tests {
         player.fall_distance = 12.0;
         let neutral = InputState::released();
 
-        tick_land(&mut player, &neutral, (&chunks).into(), 0.0, 0.0, 0.0, 1.0);
+        tick_land(
+            &mut player,
+            &neutral,
+            false,
+            (&chunks).into(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
 
         assert!(player.horizontal_collision);
         assert!((player.position.z - (8.5 - f64::from(CLIMB_MAX_FALL_SPEED))).abs() < 1.0e-12);
@@ -1359,7 +1388,16 @@ mod tests {
         player.velocity = Velocity::new(0.5, 0.0, 0.0);
         let neutral = InputState::released();
 
-        tick_water(&mut player, &neutral, (&chunks).into(), 0.0, 0.0, 0.0, 1.0);
+        tick_water(
+            &mut player,
+            &neutral,
+            false,
+            (&chunks).into(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
 
         assert!(player.horizontal_collision);
         let expected_y = CLIMB_UP_VELOCITY * f64::from(WATER_VERTICAL_DRAG) - GRAVITY / 16.0;
@@ -1432,6 +1470,7 @@ mod tests {
         tick(
             &mut shifted,
             &shift_input,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1441,6 +1480,7 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1461,6 +1501,7 @@ mod tests {
         tick(
             &mut shifted,
             &shift_input,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1475,6 +1516,7 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1493,6 +1535,7 @@ mod tests {
         tick(
             &mut shifted,
             &plain_input,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1508,6 +1551,7 @@ mod tests {
         tick(
             &mut shifted,
             &plain_input,
+            false,
             &chunks,
             &block_entity_anim,
             1.0,
@@ -1598,7 +1642,7 @@ mod tests {
         input.set_key_held_for_test(KeyCode::ShiftLeft, true);
         let anim = BlockEntityAnimStore::default();
 
-        tick(&mut player, &input, &chunks, &anim, 1.0, false, None);
+        tick(&mut player, &input, false, &chunks, &anim, 1.0, false, None);
 
         let target_vy = vanilla_look_y(-38.0);
         let expected = target_vy * 0.06 * f64::from(WATER_VERTICAL_DRAG);
@@ -1704,8 +1748,26 @@ mod tests {
         dry_player.on_ground = true;
 
         let neutral = InputState::released();
-        tick_land(&mut wet_player, &neutral, (&wet).into(), 0.0, 0.0, 0.0, 1.0);
-        tick_land(&mut dry_player, &neutral, (&dry).into(), 0.0, 0.0, 0.0, 1.0);
+        tick_land(
+            &mut wet_player,
+            &neutral,
+            false,
+            (&wet).into(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        tick_land(
+            &mut dry_player,
+            &neutral,
+            false,
+            (&dry).into(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
 
         assert!(
             wet_player.in_water,
@@ -1951,6 +2013,7 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
+            true,
             &chunks,
             &BlockEntityAnimStore::default(),
             1.0,
@@ -2030,6 +2093,99 @@ mod tests {
     }
 
     #[test]
+    fn explicit_jump_double_tap_toggles_flight_but_holding_does_not() {
+        crate::world::block::init("26.2");
+        let chunks = ChunkStore::new(2);
+        let anim = BlockEntityAnimStore::default();
+        let input = InputState::released();
+        let mut player = LocalPlayer::new();
+        player.position = dvec3(0.0, 80.0, 0.0).into();
+        player.may_fly = true;
+
+        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        assert!(!player.flying);
+        assert!(player.was_jump_pressed);
+        assert_eq!(player.jump_trigger_time, FLY_TOGGLE_WINDOW - 1);
+
+        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        assert!(!player.flying);
+        assert_eq!(player.jump_trigger_time, FLY_TOGGLE_WINDOW - 2);
+
+        tick(&mut player, &input, false, &chunks, &anim, 1.0, false, None);
+        assert!(!player.was_jump_pressed);
+        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        assert!(player.flying);
+        assert!(player.abilities_dirty);
+        assert_eq!(player.jump_trigger_time, 0);
+    }
+
+    #[test]
+    fn explicit_held_jump_respects_delay_and_release_resets_it() {
+        let chunks = ChunkStore::with_origin_chunk();
+        chunks.set_block_state(8, 63, 8, find_state("stone", &[]));
+        let anim = BlockEntityAnimStore::default();
+        let input = InputState::released();
+        let mut player = LocalPlayer::new();
+        let ground_position = dvec3(8.5, 64.0, 8.5).into();
+        player.position = ground_position;
+        player.on_ground = true;
+
+        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        assert_eq!(player.no_jump_delay, JUMP_DELAY_TICKS);
+        assert!(player.velocity.y > 0.0);
+
+        // Simulate landing each tick to isolate the held-jump cooldown.
+        for elapsed in 1..=JUMP_DELAY_TICKS {
+            player.position = ground_position;
+            player.velocity = Velocity::new(0.0, 0.0, 0.0);
+            player.on_ground = true;
+            tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+            if elapsed < JUMP_DELAY_TICKS {
+                assert_eq!(player.no_jump_delay, JUMP_DELAY_TICKS - elapsed);
+                assert!(player.velocity.y < 0.0);
+            } else {
+                assert_eq!(player.no_jump_delay, JUMP_DELAY_TICKS);
+                assert!(player.velocity.y > 0.0);
+            }
+        }
+
+        tick(&mut player, &input, false, &chunks, &anim, 1.0, false, None);
+        assert_eq!(player.no_jump_delay, 0);
+        player.position = ground_position;
+        player.velocity = Velocity::new(0.0, 0.0, 0.0);
+        player.on_ground = true;
+        tick(&mut player, &input, true, &chunks, &anim, 1.0, false, None);
+        assert_eq!(player.no_jump_delay, JUMP_DELAY_TICKS);
+        assert!(player.velocity.y > 0.0);
+    }
+
+    #[test]
+    fn sleeping_suppresses_living_jump_but_travel_keeps_raw_jump() {
+        let chunks = trapdoor_ladder_store(false);
+        let mut player = LocalPlayer::new();
+        player.position = dvec3(8.5, 64.5, 8.5).into();
+        player.sleeping_pos = Some(azalea_core::position::BlockPos::new(8, 64, 8));
+        player.on_ground = true;
+
+        tick(
+            &mut player,
+            &InputState::released(),
+            true,
+            &chunks,
+            &BlockEntityAnimStore::default(),
+            1.0,
+            false,
+            None,
+        );
+
+        assert_eq!(player.no_jump_delay, 0);
+        assert!(player.was_jump_pressed);
+        assert!(!player.horizontal_collision);
+        let expected_y = (CLIMB_UP_VELOCITY - GRAVITY) * f64::from(VERTICAL_DRAG);
+        assert!((player.velocity.y - expected_y).abs() < 1.0e-12);
+    }
+
+    #[test]
     fn flight_toggle_off_the_ground_skips_the_living_jump() {
         let chunks = ChunkStore::with_origin_chunk();
         chunks.set_block_state(8, 63, 8, find_state("stone", &[]));
@@ -2038,12 +2194,12 @@ mod tests {
         player.on_ground = true;
         player.may_fly = true;
         player.jump_trigger_time = 5;
-        let mut input = InputState::released();
-        input.set_key_held_for_test(KeyCode::Space, true);
+        let input = InputState::released();
 
         tick(
             &mut player,
             &input,
+            true,
             &chunks,
             &BlockEntityAnimStore::default(),
             1.0,
@@ -2070,6 +2226,7 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
+            false,
             &chunks,
             &BlockEntityAnimStore::default(),
             1.0,

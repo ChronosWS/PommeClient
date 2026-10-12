@@ -3,6 +3,7 @@
 pub mod close;
 pub mod drop_item;
 pub mod inventory;
+pub mod jump;
 pub mod open_chat;
 pub mod open_commands;
 pub mod open_menu;
@@ -16,6 +17,7 @@ use std::time::Instant;
 use close::{CloseConsumer, CloseOutcome};
 use drop_item::DropItemConsumer;
 use inventory::{InventoryConsumer, InventoryOutcome};
+use jump::JumpConsumer;
 use open_chat::{OpenChatConsumer, OpenChatOutcome};
 use open_commands::{OpenCommandsConsumer, OpenCommandsOutcome};
 use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
@@ -30,9 +32,11 @@ use super::phases::AppPhase;
 use super::state_slot::StateSlot;
 
 /// Application-owned action coordination. Frame-local consumers are constructed
-/// during processing; tick-driven consumers retain pending requests here.
+/// during processing; tick-driven consumers retain gameplay holds or pending
+/// requests here.
 #[derive(Default)]
 pub struct ActionConsumers {
+    pub(super) jump: JumpConsumer,
     pub(super) drop_item: DropItemConsumer,
     pub(super) swap_offhand: SwapOffhandConsumer,
     pub(super) spectator_hotbar: SpectatorHotbarConsumer,
@@ -42,6 +46,7 @@ impl ActionConsumers {
     /// Discard tick work when the game session ends or gameplay cannot apply
     /// it.
     pub fn clear_pending_gameplay(&mut self) {
+        self.jump.clear();
         self.drop_item.clear();
         self.swap_offhand.clear();
         self.spectator_hotbar.clear();
@@ -60,6 +65,9 @@ impl ActionConsumers {
         let binding_capture = input.binding_capture_active();
         let text_capture = input.text_capture;
         let menu_capture = input.menu_capture;
+        let mut jump_handler = |event: &ActionEvent, _: &ActionStates| {
+            self.jump.handle_event(event, phase.get(), binding_capture)
+        };
         let mut drop_handler = |event: &ActionEvent, _: &ActionStates| {
             self.drop_item.handle_event(
                 event,
@@ -121,6 +129,7 @@ impl ActionConsumers {
                 &mut open_chat_handler,
                 &mut open_commands_handler,
                 &mut player_list_handler,
+                &mut jump_handler,
                 &mut drop_handler,
                 &mut swap_handler,
                 &mut spectator_hotbar_handler,
@@ -128,6 +137,8 @@ impl ActionConsumers {
         );
 
         if binding_capture {
+            self.jump
+                .do_frame(input.action_states(), phase.get(), binding_capture);
             self.drop_item.do_frame(phase.get(), binding_capture);
             self.swap_offhand.do_frame(phase.get(), binding_capture);
             self.spectator_hotbar.do_frame(phase.get(), binding_capture);
@@ -167,6 +178,8 @@ impl ActionConsumers {
             app
         });
 
+        self.jump
+            .do_frame(input.action_states(), phase.get(), binding_capture);
         self.drop_item.do_frame(phase.get(), binding_capture);
         self.swap_offhand.do_frame(phase.get(), binding_capture);
         self.spectator_hotbar.do_frame(phase.get(), binding_capture);

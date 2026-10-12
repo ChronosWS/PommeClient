@@ -320,6 +320,7 @@ pub struct PlayerInputState {
 
 fn player_input_state(
     input: &InputState,
+    jump_held: bool,
     analog_move: glam::Vec2,
     sprint_key_down: bool,
 ) -> PlayerInputState {
@@ -328,7 +329,7 @@ fn player_input_state(
         backward: input.is_key_held(KEY_BACK) || analog_move.y < -STICK_MOVEMENT_THRESHOLD,
         left: input.is_key_held(KEY_LEFT) || analog_move.x > STICK_MOVEMENT_THRESHOLD,
         right: input.is_key_held(KEY_RIGHT) || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
-        jump: input.performing_action(Action::Jump),
+        jump: jump_held,
         shift: input.performing_action(Action::Sneak),
         sprint: sprint_key_down,
     }
@@ -2871,7 +2872,7 @@ impl AppCore {
 
             let neutral = InputState::released();
             Self::send_abilities_packet(connection, game);
-            Self::send_input_packet(&neutral, connection, game);
+            Self::send_input_packet(&neutral, false, connection, game);
             self.send_sprint_command(connection, game);
             self.send_position_packet(connection, game);
 
@@ -2921,7 +2922,7 @@ impl AppCore {
         // below), matching vanilla's wasJumping sampled before input.tick().
         // Equine jump cooldown is always 0, so the cooldown gate collapses
         // into the vehicle check.
-        let jump_held = input.performing_action(Action::Jump);
+        let jump_held = self.action_consumers.jump.do_tick(game);
         if game.riding_jumpable_vehicle() {
             let p = &mut game.player;
             if p.jump_riding_ticks < 0 {
@@ -3048,6 +3049,7 @@ impl AppCore {
         movement::tick(
             &mut game.player,
             input,
+            jump_held,
             &game.chunk_store,
             &game.block_entity_anim,
             game.interaction.use_speed_multiplier(),
@@ -3069,7 +3071,7 @@ impl AppCore {
             .tick_player_state(input.is_cursor_captured(), held_stack.as_ref());
 
         Self::send_abilities_packet(connection, game);
-        Self::send_input_packet(input, connection, game);
+        Self::send_input_packet(input, jump_held, connection, game);
         self.send_sprint_command(connection, game);
         self.send_position_packet(connection, game);
         if !dirty.is_empty() {
@@ -3124,15 +3126,24 @@ impl AppCore {
         }
     }
 
-    fn send_input_packet(input: &InputState, connection: &ConnectionHandle, game: &mut GameState) {
+    fn send_input_packet(
+        input: &InputState,
+        jump_held: bool,
+        connection: &ConnectionHandle,
+        game: &mut GameState,
+    ) {
         let sender = &connection.packet_tx;
 
         let analog_move = input
             .get_gamepad_movement_axes()
             .unwrap_or(glam::Vec2::ZERO);
 
-        let current =
-            player_input_state(input, analog_move, input.performing_action(Action::Sprint));
+        let current = player_input_state(
+            input,
+            jump_held,
+            analog_move,
+            input.performing_action(Action::Sprint),
+        );
 
         if current != game.last_sent_input {
             sender.send(ServerboundGamePacket::PlayerInput(
@@ -3567,20 +3578,32 @@ mod tests {
     fn controller_packet_directions_match_physical_stick_direction() {
         let input = InputState::released();
 
-        let right_state =
-            player_input_state(&input, gamepad_movement_axes(glam::vec2(1.0, 0.0)), false);
+        let right_state = player_input_state(
+            &input,
+            false,
+            gamepad_movement_axes(glam::vec2(1.0, 0.0)),
+            false,
+        );
         let right = serverbound_player_input(&right_state);
         assert!(right.right);
         assert!(!right.left);
 
-        let left_state =
-            player_input_state(&input, gamepad_movement_axes(glam::vec2(-1.0, 0.0)), false);
+        let left_state = player_input_state(
+            &input,
+            false,
+            gamepad_movement_axes(glam::vec2(-1.0, 0.0)),
+            false,
+        );
         let left = serverbound_player_input(&left_state);
         assert!(left.left);
         assert!(!left.right);
 
-        let forward_right_state =
-            player_input_state(&input, gamepad_movement_axes(glam::vec2(0.8, 0.8)), false);
+        let forward_right_state = player_input_state(
+            &input,
+            false,
+            gamepad_movement_axes(glam::vec2(0.8, 0.8)),
+            false,
+        );
         let forward_right = serverbound_player_input(&forward_right_state);
         assert!(forward_right.forward);
         assert!(forward_right.right);
@@ -3735,11 +3758,28 @@ mod tests {
     #[test]
     fn player_input_packet_uses_physical_sprint_key_state() {
         let input = InputState::released();
-        let pressed = serverbound_player_input(&player_input_state(&input, glam::Vec2::ZERO, true));
+        let pressed =
+            serverbound_player_input(&player_input_state(&input, false, glam::Vec2::ZERO, true));
         let released =
-            serverbound_player_input(&player_input_state(&input, glam::Vec2::ZERO, false));
+            serverbound_player_input(&player_input_state(&input, false, glam::Vec2::ZERO, false));
         assert!(pressed.sprint);
         assert!(!released.sprint);
+    }
+
+    #[test]
+    fn player_input_packet_uses_consumer_jump_hold() {
+        let mut input = InputState::released();
+        input.set_key_held_for_test(winit::keyboard::KeyCode::Space, true);
+        let released =
+            serverbound_player_input(&player_input_state(&input, false, glam::Vec2::ZERO, false));
+        assert!(
+            !released.jump,
+            "physical Space does not bypass the consumer"
+        );
+        input.set_key_held_for_test(winit::keyboard::KeyCode::Space, false);
+        let held =
+            serverbound_player_input(&player_input_state(&input, true, glam::Vec2::ZERO, false));
+        assert!(held.jump);
     }
 
     #[test]
