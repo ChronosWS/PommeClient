@@ -152,17 +152,15 @@ pub struct InputState {
     /// hotbar digits and the drop/swap keys, like vanilla screens do.
     pub menu_capture: bool,
     /// The player is a spectator: digits drive the spectator menu instead of
-    /// the carried slot, and middle click is `key.spectatorHotbar`.
+    /// the carried slot.
     pub spectator: bool,
-    /// Digit presses queued for the spectator menu, drained per tick like the
-    /// action press counts (vanilla routes them in `handleKeybinds`).
+    /// Digit presses queued for the spectator menu, drained per tick
+    /// (vanilla routes them in `handleKeybinds`).
     spectator_slot_presses: Vec<u8>,
     /// Keys pressed since the last `end_frame`, including OS key repeats:
     /// vanilla dispatches GLFW repeats to screens and debug chords.
     pending_key_presses: HashSet<KeyCode>,
-    /// Per-action press counters mirroring vanilla `KeyMapping.click`, so a
-    /// key repeating faster than the tick rate still fires once per press.
-    action_press_counts: HashMap<Action, u32>,
+
     /// Ordered key/char events for focused text fields, mirroring vanilla's
     /// `keyPressed` + `charTyped` callback pair. Drained once per frame by
     /// whichever screen owns the focused field.
@@ -254,7 +252,7 @@ impl InputState {
             spectator: false,
             spectator_slot_presses: Vec::new(),
             pending_key_presses: HashSet::new(),
-            action_press_counts: HashMap::new(),
+
             text_events: Vec::new(),
             binding_capture: false,
             binding_presses: Vec::new(),
@@ -395,8 +393,7 @@ impl InputState {
             Action::Close => self.is_action_held(action),
             Action::DropItem => self.is_action_held(action),
             Action::SwapOffhand => self.is_action_held(action),
-            // Vanilla `key.spectatorHotbar` default: middle mouse.
-            Action::SpectatorHotbar => self.middle_click.held,
+            Action::SpectatorHotbar => self.is_action_held(action),
         }
     }
 
@@ -491,19 +488,7 @@ impl InputState {
             .find_map(|&c| hotbar_slot(c))
     }
 
-    /// Consume one queued press of `action`, vanilla `KeyMapping.consumeClick`.
-    pub fn consume_action_press(&mut self, action: Action) -> bool {
-        match self.action_press_counts.get_mut(&action) {
-            Some(count) if *count > 0 => {
-                *count -= 1;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    pub fn clear_action_press_counts(&mut self) {
-        self.action_press_counts.clear();
+    pub fn clear_spectator_slot_presses(&mut self) {
         self.spectator_slot_presses.clear();
     }
 
@@ -579,7 +564,7 @@ impl InputState {
         self.binding_presses.clear();
         if active {
             self.clear_just_pressed_actions();
-            self.clear_action_press_counts();
+            self.clear_spectator_slot_presses();
             self.pending_key_presses.clear();
             self.text_events.clear();
             self.enter_press_pending = false;
@@ -806,12 +791,6 @@ impl InputState {
                 self.middle_click.held = was_pressed;
                 if was_pressed {
                     self.middle_click.just_pressed = true;
-                    if self.spectator && !self.menu_capture {
-                        *self
-                            .action_press_counts
-                            .entry(Action::SpectatorHotbar)
-                            .or_insert(0) += 1;
-                    }
                 } else {
                     self.middle_click.just_released = true;
                 }
@@ -1064,6 +1043,31 @@ mod player_list_tests {
             .on_device_disconnected(InputDeviceId::Window(Some(DeviceId::dummy())));
         dispatch(&mut input, &bindings);
         assert!(!input.is_action_held(Action::ViewPlayerList));
+    }
+}
+
+#[cfg(test)]
+mod spectator_digit_tests {
+    use super::*;
+
+    #[test]
+    fn digit_requests_survive_frame_end_and_drain_once() {
+        let mut input = InputState::released();
+        input.spectator_slot_presses.extend([0, 8]);
+        input.end_frame();
+        assert_eq!(input.take_spectator_slot_presses(), vec![0, 8]);
+        assert!(input.take_spectator_slot_presses().is_empty());
+    }
+
+    #[test]
+    fn explicit_clearing_and_binding_capture_discard_digit_requests() {
+        let mut input = InputState::released();
+        input.spectator_slot_presses.push(0);
+        input.clear_spectator_slot_presses();
+        assert!(input.take_spectator_slot_presses().is_empty());
+        input.spectator_slot_presses.push(8);
+        input.set_binding_capture(true);
+        assert!(input.take_spectator_slot_presses().is_empty());
     }
 }
 

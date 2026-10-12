@@ -2807,7 +2807,7 @@ impl AppCore {
         // packets while the level is still coming in.
         if !game.client_loaded {
             self.action_consumers.clear_pending_gameplay();
-            self.input.clear_action_press_counts();
+            self.input.clear_spectator_slot_presses();
             self.input.clear_just_pressed_actions();
             return;
         }
@@ -2816,7 +2816,7 @@ impl AppCore {
         // on ClientLevel.tickEntities skips it entirely.
         if game.dead && game.player.death_animation_finished() {
             self.action_consumers.clear_pending_gameplay();
-            self.input.clear_action_press_counts();
+            self.input.clear_spectator_slot_presses();
             return;
         }
 
@@ -2875,9 +2875,9 @@ impl AppCore {
             self.send_sprint_command(connection, game);
             self.send_position_packet(connection, game);
 
-            // Drop/swap requests queued while dead must not fire on respawn.
+            // Gameplay requests queued while dead must not fire on respawn.
             self.action_consumers.clear_pending_gameplay();
-            self.input.clear_action_press_counts();
+            self.input.clear_spectator_slot_presses();
             return;
         }
 
@@ -2886,8 +2886,8 @@ impl AppCore {
         // same fixed origin.
         let input_live = game.input_live() && game.chunk_load_bench.is_none();
 
-        // Vanilla Minecraft.handleKeybinds: drop and offhand-swap consume the
-        // queued key presses each tick; spectators consume without acting.
+        // Preserve handleKeybinds order: drop, swap, spectator digits, then
+        // the spectator-menu action.
         let spectator = game.player.game_mode == 3;
         self.action_consumers
             .drop_item
@@ -2906,18 +2906,12 @@ impl AppCore {
                     );
                 }
             }
-            while self.input.consume_action_press(Action::SpectatorHotbar) {
-                if spectator {
-                    game.spectator.on_hotbar_action_key(
-                        &game.tab_list,
-                        &game.scoreboard,
-                        &connection.packet_tx,
-                    );
-                }
-            }
         }
-        // A press queued while a menu or chat was open must not fire later.
-        self.input.clear_action_press_counts();
+        self.action_consumers
+            .spectator_hotbar
+            .do_tick(game, &connection.packet_tx);
+        // A digit queued while a menu or chat was open must not fire later.
+        self.input.clear_spectator_slot_presses();
 
         let neutral = InputState::released();
         let input = if input_live { &self.input } else { &neutral };

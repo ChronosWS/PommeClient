@@ -8,6 +8,7 @@ pub mod open_commands;
 pub mod open_menu;
 pub mod perspective;
 pub mod player_list;
+pub mod spectator_hotbar;
 pub mod swap_offhand;
 
 use std::time::Instant;
@@ -20,6 +21,7 @@ use open_commands::{OpenCommandsConsumer, OpenCommandsOutcome};
 use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
 use perspective::PerspectiveConsumer;
 use player_list::PlayerListConsumer;
+use spectator_hotbar::SpectatorHotbarConsumer;
 use swap_offhand::SwapOffhandConsumer;
 
 use super::input::action::dispatcher::{ActionEvent, ActionStates};
@@ -33,6 +35,7 @@ use super::state_slot::StateSlot;
 pub struct ActionConsumers {
     pub(super) drop_item: DropItemConsumer,
     pub(super) swap_offhand: SwapOffhandConsumer,
+    pub(super) spectator_hotbar: SpectatorHotbarConsumer,
 }
 
 impl ActionConsumers {
@@ -41,6 +44,7 @@ impl ActionConsumers {
     pub fn clear_pending_gameplay(&mut self) {
         self.drop_item.clear();
         self.swap_offhand.clear();
+        self.spectator_hotbar.clear();
     }
 
     /// Dispatch action events, then apply consumer requests in the existing
@@ -67,6 +71,15 @@ impl ActionConsumers {
         };
         let mut swap_handler = |event: &ActionEvent, _: &ActionStates| {
             self.swap_offhand.handle_event(
+                event,
+                phase.get(),
+                binding_capture,
+                text_capture,
+                menu_capture,
+            )
+        };
+        let mut spectator_hotbar_handler = |event: &ActionEvent, _: &ActionStates| {
+            self.spectator_hotbar.handle_event(
                 event,
                 phase.get(),
                 binding_capture,
@@ -110,12 +123,14 @@ impl ActionConsumers {
                 &mut player_list_handler,
                 &mut drop_handler,
                 &mut swap_handler,
+                &mut spectator_hotbar_handler,
             ],
         );
 
         if binding_capture {
             self.drop_item.do_frame(phase.get(), binding_capture);
             self.swap_offhand.do_frame(phase.get(), binding_capture);
+            self.spectator_hotbar.do_frame(phase.get(), binding_capture);
             return false;
         }
 
@@ -154,6 +169,7 @@ impl ActionConsumers {
 
         self.drop_item.do_frame(phase.get(), binding_capture);
         self.swap_offhand.do_frame(phase.get(), binding_capture);
+        self.spectator_hotbar.do_frame(phase.get(), binding_capture);
 
         should_apply_cursor_grab
     }
