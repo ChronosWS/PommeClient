@@ -287,8 +287,10 @@ mod tests {
         );
         collector.press_for_test(InputKey::Keyboard(KeyCode::Escape), false);
         assert_eq!(
-            dispatch_collector(&mut collector, &bindings, &mut selected_slot),
-            vec![Action::Close]
+            dispatch_collector(&mut collector, &bindings, &mut selected_slot)
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+            std::collections::HashSet::from([Action::Close, Action::OpenMenu])
         );
         assert_eq!(selected_slot, 1);
     }

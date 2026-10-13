@@ -181,9 +181,8 @@ impl ActionDispatcher {
         });
     }
 
-    /// Transitional bridge for raw handlers that already handled the latest
-    /// collected press/repeat. Resolution and held state remain unchanged;
-    /// only delivery of this action for that occurrence is consumed.
+    /// Test occurrence-local suppression without changing resolution or holds.
+    #[cfg(test)]
     pub(crate) fn consume_latest_action(&mut self, action: Action) {
         if let Some(QueuedInput {
             event: InputEvent::Press(_) | InputEvent::Repeat(_),

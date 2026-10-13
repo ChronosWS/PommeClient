@@ -15,6 +15,7 @@ use crate::net::connection::ConnectionHandle;
 enum DebugRequest {
     Shortcut(KeyCode),
     PauseHidden,
+    CancelSwitcher,
     ApplyGameMode,
     ToggleOverlay,
 }
@@ -49,6 +50,11 @@ impl DebugConsumer {
         if !self.enabled {
             self.overlay_consumed = false;
         }
+    }
+
+    /// Occurrence-time switcher context for routing shared navigation inputs.
+    pub fn projected_switcher_open(&self) -> bool {
+        self.switcher_open
     }
 
     /// Collection-time screen filtering only; responses wait for frame
@@ -89,12 +95,13 @@ impl DebugConsumer {
     /// 1. Queue ordinary last-source modifier/overlay release responses;
     ///    synthetic releases do not apply the game-mode switcher or toggle the
     ///    overlay.
-    /// 2. Recognize modifier shortcuts and hidden pause, suppressing the
-    ///    overlay release when a shortcut uses a shared overlay/modifier
-    ///    binding.
+    /// 2. Recognize switcher cancellation, modifier shortcuts and hidden pause,
+    ///    suppressing the overlay release when a shortcut uses a shared
+    ///    overlay/modifier binding.
     /// 3. Filter Screenshot and Toggle Fullscreen delivery while the modifier
-    ///    is held, and Close delivery when Escape requests hidden pause,
-    ///    without changing held action state.
+    ///    is held, and navigation delivery when Open Pause Menu requests hidden
+    ///    pause or Close cancels the switcher, without changing held action
+    ///    state.
     /// 4. Project screen changes from earlier requests in the batch so later
     ///    occurrences are routed correctly (for example, F4 followed by
     ///    Escape).
@@ -145,10 +152,41 @@ impl DebugConsumer {
             InputEvent::Press(source) | InputEvent::Repeat(source) => source,
             _ => return Vec::new(),
         };
-        let Some(modifier) = states.get(&Action::DebugModifier) else {
-            return Vec::new();
+        let modifier = states.get(&Action::DebugModifier);
+        let mut filtered = if modifier.is_some() {
+            vec![Action::Screenshot, Action::ToggleFullscreen]
+        } else {
+            Vec::new()
         };
-        let mut filtered = vec![Action::Screenshot, Action::ToggleFullscreen];
+        // Cancellation must execute before a later modifier release in this
+        // batch, rather than waiting for the separate navigation response pass.
+        if self.enabled
+            && self.input_live_without_switcher
+            && self.switcher_open
+            && events.iter().any(|event| {
+                event.action == Action::Close
+                    && (event.kind == ActionEventKind::Press
+                        || (event.kind == ActionEventKind::Repeat
+                            && matches!(source.input, InputKey::Keyboard(_))))
+            })
+        {
+            self.requests.push(DebugRequest::CancelSwitcher);
+            self.switcher_open = false;
+            filtered.extend([Action::Close, Action::OpenMenu]);
+            if states.get(&Action::ToggleOverlay).is_some_and(|overlay| {
+                modifier.is_some_and(|modifier| {
+                    !overlay
+                        .active_sources()
+                        .is_disjoint(modifier.active_sources())
+                })
+            }) {
+                self.overlay_consumed = true;
+            }
+            return filtered;
+        }
+        let Some(modifier) = modifier else {
+            return filtered;
+        };
         if !self.shortcuts_enabled {
             return filtered;
         }
@@ -161,25 +199,23 @@ impl DebugConsumer {
         {
             return filtered;
         }
-        let InputKey::Keyboard(code) = source.input else {
-            return filtered;
-        };
-        let handled = if Self::is_shortcut(code) {
+        let handled = if self.input_live_without_switcher
+            && !self.switcher_open
+            && events.iter().any(|event| event.action == Action::OpenMenu)
+        {
+            self.requests.push(DebugRequest::PauseHidden);
+            self.input_live_without_switcher = false;
+            filtered.extend([Action::Close, Action::OpenMenu]);
+            true
+        } else if let InputKey::Keyboard(code) = source.input
+            && Self::is_shortcut(code)
+        {
             self.requests.push(DebugRequest::Shortcut(code));
             // Project only the screen changes that affect later debug routing
             // in this batch; application still happens in do_frame.
             if code == KeyCode::F4 && self.input_live_without_switcher {
                 self.switcher_open = true;
             }
-            true
-        } else if code == KeyCode::Escape
-            && self.input_live_without_switcher
-            && !self.switcher_open
-            && events.iter().any(|event| event.action == Action::Close)
-        {
-            self.requests.push(DebugRequest::PauseHidden);
-            self.input_live_without_switcher = false;
-            filtered.push(Action::Close);
             true
         } else {
             false
@@ -211,6 +247,7 @@ impl DebugConsumer {
                         refresh_cursor = true;
                     }
                 }
+                DebugRequest::CancelSwitcher => game.game_mode_switcher = None,
                 DebugRequest::ApplyGameMode => game.apply_game_mode_switcher(connection),
                 DebugRequest::ToggleOverlay => game.show_debug = !game.show_debug,
             }
@@ -359,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn modifier_release_applies_switcher_in_order_and_escape_filters_only_close() {
+    fn modifier_release_applies_switcher_in_order_and_hidden_pause_filters_navigation() {
         let bindings = KeyBindings::default();
         let mut collector = ActionCollector::new();
         let mut consumer = consumer();
@@ -397,10 +434,18 @@ mod tests {
         release(&mut collector, KeyCode::Escape);
         press(&mut collector, KeyCode::F3);
         press(&mut collector, KeyCode::Escape);
-        // Chat and creative inventory handle Escape before frame dispatch.
-        collector.consume_latest_action(Action::Close);
+        // Chat and creative inventory leave navigation to the screen router,
+        // but their screen context must prevent debug hidden pause.
+        consumer.input_live_without_switcher = false;
         release(&mut collector, KeyCode::F3);
-        dispatch(&mut consumer, &mut collector, &bindings);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        for action in [Action::Close, Action::OpenMenu] {
+            assert!(
+                delivered.iter().any(|event| {
+                    event.action == action && event.kind == ActionEventKind::Press
+                })
+            );
+        }
         assert_eq!(
             consumer.requests,
             [DebugRequest::ApplyGameMode, DebugRequest::ToggleOverlay]
@@ -408,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn same_frame_switcher_open_leaves_escape_for_close_consumer() {
+    fn same_frame_switcher_open_routes_escape_to_ordered_debug_cancellation() {
         let bindings = KeyBindings::default();
         let mut collector = ActionCollector::new();
         let mut consumer = consumer();
@@ -416,12 +461,142 @@ mod tests {
         press(&mut collector, KeyCode::F4);
         press(&mut collector, KeyCode::Escape);
         let delivered = dispatch(&mut consumer, &mut collector, &bindings);
-        assert_eq!(consumer.requests, [DebugRequest::Shortcut(KeyCode::F4)]);
-        assert!(
-            delivered
-                .iter()
-                .any(|event| event.action == Action::Close && event.kind == ActionEventKind::Press)
+        assert_eq!(
+            consumer.requests,
+            [
+                DebugRequest::Shortcut(KeyCode::F4),
+                DebugRequest::CancelSwitcher
+            ]
         );
+        assert!(!consumer.projected_switcher_open());
+        assert!(
+            !delivered
+                .iter()
+                .any(|event| { matches!(event.action, Action::Close | Action::OpenMenu) })
+        );
+    }
+
+    #[test]
+    fn rebound_open_menu_inputs_request_hidden_pause_and_filter_navigation() {
+        for input in [
+            InputKey::Keyboard(KeyCode::KeyJ),
+            InputKey::Mouse(MouseButton::Other(4)),
+            InputKey::Controller(Button::Select),
+        ] {
+            for shared_close in [false, true] {
+                let mut bindings = KeyBindings::default();
+                bindings.set(Action::OpenMenu, vec![input]);
+                if shared_close {
+                    bindings.set(Action::Close, vec![input]);
+                }
+                let mut collector = ActionCollector::new();
+                let mut consumer = consumer();
+                press(&mut collector, KeyCode::F3);
+                collector.press_for_test(input, false);
+                release(&mut collector, KeyCode::F3);
+                let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+                assert_eq!(
+                    consumer.requests,
+                    [DebugRequest::PauseHidden, DebugRequest::ApplyGameMode]
+                );
+                assert!(!delivered.iter().any(|event| {
+                    matches!(event.action, Action::Close | Action::OpenMenu)
+                        && event.kind == ActionEventKind::Press
+                }));
+                assert!(
+                    collector
+                        .dispatcher()
+                        .action_states()
+                        .contains_key(&Action::OpenMenu)
+                );
+                assert!(!consumer.input_live_without_switcher);
+            }
+        }
+    }
+
+    #[test]
+    fn switcher_cancel_before_modifier_release_clears_selection_in_request_order() {
+        for input in [
+            InputKey::Keyboard(KeyCode::Escape),
+            InputKey::Keyboard(KeyCode::KeyJ),
+            InputKey::Mouse(MouseButton::Other(4)),
+            InputKey::Controller(Button::Select),
+        ] {
+            for already_open in [false, true] {
+                let mut bindings = KeyBindings::default();
+                bindings.set(Action::Close, vec![input]);
+                bindings.set(Action::OpenMenu, vec![input]);
+                let mut collector = ActionCollector::new();
+                let mut consumer = consumer();
+                consumer.switcher_open = already_open;
+                press(&mut collector, KeyCode::F3);
+                if !already_open {
+                    press(&mut collector, KeyCode::F4);
+                }
+                collector.press_for_test(input, false);
+                release(&mut collector, KeyCode::F3);
+                let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+                let mut expected = Vec::new();
+                if !already_open {
+                    expected.push(DebugRequest::Shortcut(KeyCode::F4));
+                }
+                // ApplyGameMode is harmless after CancelSwitcher has removed
+                // the actual selection; no overlay toggle or pause is queued.
+                expected.extend([DebugRequest::CancelSwitcher, DebugRequest::ApplyGameMode]);
+                assert_eq!(consumer.requests, expected);
+                assert!(!consumer.projected_switcher_open());
+                assert!(!delivered.iter().any(|event| {
+                    matches!(event.action, Action::Close | Action::OpenMenu)
+                        && event.kind == ActionEventKind::Press
+                }));
+                assert!(
+                    collector
+                        .dispatcher()
+                        .action_states()
+                        .contains_key(&Action::Close)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn switcher_cancel_without_modifier_respects_screen_context_and_repeat_policy() {
+        for input in [
+            InputKey::Keyboard(KeyCode::Escape),
+            InputKey::Controller(Button::East),
+        ] {
+            for screen_blocks_switcher in [false, true] {
+                let bindings = KeyBindings::default();
+                let mut collector = ActionCollector::new();
+                let mut consumer = consumer();
+                consumer.switcher_open = true;
+                consumer.input_live_without_switcher = !screen_blocks_switcher;
+                collector.press_for_test(input, false);
+                let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+                if screen_blocks_switcher {
+                    assert!(consumer.requests.is_empty());
+                    assert!(consumer.projected_switcher_open());
+                    assert!(delivered.iter().any(|event| {
+                        event.action == Action::Close && event.kind == ActionEventKind::Press
+                    }));
+                } else {
+                    assert_eq!(consumer.requests, [DebugRequest::CancelSwitcher]);
+                    assert!(!consumer.projected_switcher_open());
+                }
+                consumer.requests.clear();
+                consumer.switcher_open = true;
+                collector.press_for_test(input, true);
+                dispatch(&mut consumer, &mut collector, &bindings);
+                assert_eq!(
+                    consumer.requests,
+                    if !screen_blocks_switcher && matches!(input, InputKey::Keyboard(_)) {
+                        vec![DebugRequest::CancelSwitcher]
+                    } else {
+                        Vec::new()
+                    }
+                );
+            }
+        }
     }
 
     #[test]

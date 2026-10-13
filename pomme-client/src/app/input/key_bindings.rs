@@ -143,6 +143,8 @@ impl KeyBindings {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use winit::keyboard::KeyCode;
 
     use super::*;
@@ -163,17 +165,25 @@ mod tests {
         let escape = InputKey::Keyboard(KeyCode::Escape);
         let replacement = InputKey::Keyboard(KeyCode::KeyC);
         assert_eq!(Action::Close.fixed_inputs(), &[escape]);
+        assert_eq!(Action::OpenMenu.fixed_inputs(), &[escape]);
+        assert_eq!(Action::OpenMenu.id().as_str(), "key.menu");
+        assert_eq!(Action::OpenMenu.display_name(), "Open Pause Menu");
+        assert!(Action::OpenMenu.listed());
+        assert_eq!(Action::Close.id().as_str(), "key.close");
+        assert_eq!(Action::Close.display_name(), "Cancel/Close");
         let mut bindings = KeyBindings::default();
         for inputs in [vec![replacement], vec![], vec![escape, escape]] {
-            bindings.set(Action::Close, inputs);
+            bindings.set(Action::Close, inputs.clone());
+            bindings.set(Action::OpenMenu, inputs);
             assert_eq!(
                 bindings
                     .actions_for_input(&escape)
                     .copied()
-                    .collect::<Vec<_>>(),
-                vec![Action::Close]
+                    .collect::<HashSet<_>>(),
+                HashSet::from([Action::Close, Action::OpenMenu])
             );
             assert!(!bindings.0[&Action::Close].contains(&escape));
+            assert!(!bindings.0[&Action::OpenMenu].contains(&escape));
         }
         bindings.set(Action::Close, vec![replacement]);
         assert!(
@@ -183,10 +193,14 @@ mod tests {
         );
         bindings.reset_all();
         assert!(bindings.all_default());
-        assert!(
+        assert_eq!(inputs(&bindings, Action::OpenMenu), ["key.gamepad.start"]);
+        assert_eq!(inputs(&bindings, Action::Close), ["key.gamepad.east"]);
+        assert_eq!(
             bindings
                 .actions_for_input(&escape)
-                .any(|action| *action == Action::Close)
+                .copied()
+                .collect::<HashSet<_>>(),
+            HashSet::from([Action::Close, Action::OpenMenu])
         );
         for action in Action::ALL {
             let fixed = action.fixed_inputs();
@@ -201,29 +215,32 @@ mod tests {
         let bindings = load(
             r#"{
                 "key.close": ["key.keyboard.escape", "key.keyboard.c"],
+                "key.menu": ["key.keyboard.escape", "key.gamepad.start"],
                 "key.jump": ["key.keyboard.escape", "key.keyboard.j"]
             }"#,
         );
         assert_eq!(inputs(&bindings, Action::Close), ["key.keyboard.c"]);
         assert_eq!(inputs(&bindings, Action::Jump), ["key.keyboard.j"]);
+        assert_eq!(inputs(&bindings, Action::OpenMenu), ["key.gamepad.start"]);
         let escape = InputKey::Keyboard(KeyCode::Escape);
         assert_eq!(
             bindings
                 .actions_for_input(&escape)
                 .copied()
-                .collect::<Vec<_>>(),
-            vec![Action::Close]
+                .collect::<HashSet<_>>(),
+            HashSet::from([Action::Close, Action::OpenMenu])
         );
         let json = serde_json::to_string(&bindings).unwrap();
         assert!(!json.contains("key.keyboard.escape"));
         let loaded = load(&json);
         assert_eq!(inputs(&loaded, Action::Close), ["key.keyboard.c"]);
+        assert_eq!(inputs(&loaded, Action::OpenMenu), ["key.gamepad.start"]);
         assert_eq!(
             loaded
                 .actions_for_input(&escape)
                 .copied()
-                .collect::<Vec<_>>(),
-            vec![Action::Close]
+                .collect::<HashSet<_>>(),
+            HashSet::from([Action::Close, Action::OpenMenu])
         );
     }
 

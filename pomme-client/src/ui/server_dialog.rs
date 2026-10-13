@@ -705,6 +705,16 @@ impl ServerDialogState {
         std::mem::take(&mut self.click_sound)
     }
 
+    /// Whether Cancel/Close may dismiss this screen. Navigation uses this to
+    /// invalidate collected text only when cancellation is actually permitted.
+    pub fn can_cancel(&self) -> bool {
+        match &self.mode {
+            DialogMode::Waiting { ticks, .. } => *ticks >= BUTTON_ACTIVE_AFTER,
+            DialogMode::Finished => false,
+            DialogMode::Dialog(dialog) => dialog.can_close_with_escape,
+        }
+    }
+
     pub fn handle_escape(&mut self) -> Option<ServerDialogAction> {
         match &self.mode {
             // `shouldCloseOnEsc` is the Back button's `active`.
@@ -3144,6 +3154,38 @@ mod tests {
     }
 
     #[test]
+    fn cancel_permission_matches_dialog_restrictions_and_waiting_delay() {
+        let mut state = open_nbt(compound(vec![
+            ("type", text("minecraft:notice")),
+            ("title", text("Title")),
+            ("can_close_with_escape", NbtTag::Byte(0)),
+        ]));
+        assert!(!state.can_cancel());
+        assert!(state.handle_escape().is_none());
+        assert!(state.is_dialog());
+        state.finish_click(
+            Some(ClickEvent::Custom {
+                id: "pomme:test".to_owned(),
+                payload: None,
+            }),
+            AfterAction::WaitForResponse,
+        );
+        state.activate();
+        assert!(!state.can_cancel());
+        assert!(state.handle_escape().is_none());
+        assert!(!state.is_finished());
+        if let DialogMode::Waiting { ticks, .. } = &mut state.mode {
+            *ticks = BUTTON_ACTIVE_AFTER;
+        } else {
+            panic!("expected waiting screen");
+        }
+        assert!(state.can_cancel());
+        assert!(state.handle_escape().is_none());
+        assert!(state.is_finished());
+        assert!(!state.can_cancel());
+    }
+
+    #[test]
     fn escape_closes_a_dialog_that_waits_for_a_response() {
         // `DialogScreen.onClose` forces CLOSE, whatever the after_action is.
         let dialog = compound(vec![
@@ -3165,6 +3207,7 @@ mod tests {
             ),
         ]);
         let mut state = open_nbt(dialog);
+        assert!(state.can_cancel());
         assert!(matches!(
             state.handle_escape(),
             Some(ServerDialogAction::Custom { .. })

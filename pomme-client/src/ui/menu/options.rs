@@ -2300,8 +2300,12 @@ mod tests {
     }
 
     fn render_close_bindings(menu: &mut MainMenu) -> MainMenuResult {
+        render_action_bindings(menu, Action::Close)
+    }
+
+    fn render_action_bindings(menu: &mut MainMenu, action: Action) -> MainMenuResult {
         let result = render_keybinds(menu, &MenuInput::default());
-        let label_y = match action_elements(&result, Action::Close)[0] {
+        let label_y = match action_elements(&result, action)[0] {
             MenuElement::Text { y, .. } => y,
             _ => unreachable!(),
         };
@@ -2330,69 +2334,92 @@ mod tests {
     }
 
     #[test]
-    fn fixed_close_escape_uses_disabled_binding_button_without_edit_controls_or_capture() {
-        let mut menu = test_menu("pomme-keybind-fixed-close-test");
-        menu.set_screen(Screen::OptionsKeybinds);
-        let result = render_close_bindings(&mut menu);
-        let group = action_elements(&result, Action::Close);
-        let fixed_text = InputKey::Keyboard(KeyCode::Escape).display_name();
-        let fixed_y = group
-            .iter()
-            .find_map(|element| match element {
-                MenuElement::TextSpans { spans, y, .. }
-                    if spans.iter().any(|span| span.text == fixed_text) =>
-                {
-                    Some(*y)
-                }
-                _ => None,
-            })
-            .expect("fixed Escape row");
-        let editable_y = group
-            .iter()
-            .find_map(|element| match element {
-                MenuElement::TextSpans { y, .. } => Some(*y),
-                _ => None,
-            })
-            .expect("editable Close label");
-        assert_eq!(fixed_y - editable_y, BTN_H);
-        assert_eq!(
-            group
+    fn each_fixed_escape_uses_its_own_disabled_binding_button_without_edit_controls_or_capture() {
+        for action in [Action::Close, Action::OpenMenu] {
+            let mut menu = test_menu("pomme-keybind-fixed-escape-test");
+            menu.set_screen(Screen::OptionsKeybinds);
+            let result = render_action_bindings(&mut menu, action);
+            let group = action_elements(&result, action);
+            let fixed_text = InputKey::Keyboard(KeyCode::Escape).display_name();
+            let fixed_y = group
                 .iter()
-                .filter(|element| matches!(element, MenuElement::NineSlice { .. }))
-                .count(),
-            4
-        );
-        let fixed_buttons: Vec<_> = group
-            .iter()
-            .filter(|element| {
-                matches!(element, MenuElement::NineSlice { y, h, .. }
-                if fixed_y >= *y && fixed_y < *y + *h)
-            })
-            .collect();
-        assert_eq!(fixed_buttons.len(), 1);
-        assert!(matches!(
-            fixed_buttons[0],
-            MenuElement::NineSlice {
-                sprite: SpriteId::ButtonDisabled,
-                ..
-            }
-        ));
-        let initial = close_inputs(&menu).to_vec();
-        for column in 0..3 {
-            let x = close_button_cursor(&result, 0, column).0;
-            let clicked = render_keybinds(
-                &mut menu,
-                &MenuInput {
-                    cursor: (x, fixed_y),
-                    clicked: true,
-                    ..MenuInput::default()
-                },
+                .find_map(|element| match element {
+                    MenuElement::TextSpans { spans, y, .. }
+                        if spans.iter().any(|span| span.text == fixed_text) =>
+                    {
+                        Some(*y)
+                    }
+                    _ => None,
+                })
+                .expect("fixed Escape row");
+            let editable_y = group
+                .iter()
+                .find_map(|element| match element {
+                    MenuElement::TextSpans { y, .. } => Some(*y),
+                    _ => None,
+                })
+                .expect("editable action label");
+            assert_eq!(fixed_y - editable_y, BTN_H);
+            assert_eq!(
+                group
+                    .iter()
+                    .filter(|element| matches!(element, MenuElement::NineSlice { .. }))
+                    .count(),
+                4
             );
-            assert!(!clicked.clicked_button);
-            assert!(!clicked.cursor_pointer);
-            assert!(menu.action_binding.is_none());
-            assert!(!menu.settings_dirty);
-            assert_eq!(close_inputs(&menu), initial);
+            let fixed_buttons: Vec<_> = group
+                .iter()
+                .filter(|element| {
+                    matches!(element, MenuElement::NineSlice { y, h, .. }
+                if fixed_y >= *y && fixed_y < *y + *h)
+                })
+                .collect();
+            assert_eq!(fixed_buttons.len(), 1);
+            assert!(matches!(
+                fixed_buttons[0],
+                MenuElement::NineSlice {
+                    sprite: SpriteId::ButtonDisabled,
+                    ..
+                }
+            ));
+            let initial = menu
+                .key_bindings
+                .iter()
+                .find(|entry| entry.action == action)
+                .unwrap()
+                .inputs
+                .to_vec();
+            for column in 0..3 {
+                let x = match group
+                    .iter()
+                    .filter(|element| matches!(element, MenuElement::NineSlice { .. }))
+                    .nth(column)
+                    .unwrap()
+                {
+                    MenuElement::NineSlice { x, w, .. } => *x + *w / 2.0,
+                    _ => unreachable!(),
+                };
+                let clicked = render_keybinds(
+                    &mut menu,
+                    &MenuInput {
+                        cursor: (x, fixed_y),
+                        clicked: true,
+                        ..MenuInput::default()
+                    },
+                );
+                assert!(!clicked.clicked_button);
+                assert!(!clicked.cursor_pointer);
+                assert!(menu.action_binding.is_none());
+                assert!(!menu.settings_dirty);
+                assert_eq!(
+                    menu.key_bindings
+                        .iter()
+                        .find(|entry| entry.action == action)
+                        .unwrap()
+                        .inputs,
+                    initial
+                );
+            }
         }
     }
 
@@ -2401,6 +2428,7 @@ mod tests {
         let mut menu = test_menu("pomme-keybind-fixed-scroll-test");
         menu.set_screen(Screen::OptionsKeybinds);
         menu.key_bindings.set(Action::Close, Vec::new());
+        menu.key_bindings.set(Action::OpenMenu, Vec::new());
         let result = menu.build_options_keybinds(
             800.0,
             200.0,
@@ -2436,6 +2464,7 @@ mod tests {
         let total_height = categories as f32 * (16.0 + common::FONT_SIZE) + rows as f32 * BTN_H;
         assert_eq!(menu.scroll_offset, (total_height - viewport_h).max(0.0));
         assert!(!Action::Close.fixed_inputs().is_empty());
+        assert!(!Action::OpenMenu.fixed_inputs().is_empty());
     }
 
     #[test]

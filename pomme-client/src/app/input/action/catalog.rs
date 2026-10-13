@@ -224,9 +224,10 @@ actions! {
     OpenMenu => {
         id: "key.menu",
         translation_id: None,
-        fallback: "Open Menu",
+        fallback: "Open Pause Menu",
         category: Miscellaneous,
-        listed: false,
+        listed: true,
+        fixed_inputs: [Keyboard(KeyCode::Escape)],
         defaults: [Controller(Button::Start)],
     },
     ViewPlayerList => {
@@ -304,7 +305,7 @@ actions! {
     Close => {
         id: "key.close",
         translation_id: None,
-        fallback: "Close",
+        fallback: "Cancel/Close",
         category: Miscellaneous,
         listed: true,
         fixed_inputs: [Keyboard(KeyCode::Escape)],

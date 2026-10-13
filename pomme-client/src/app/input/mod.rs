@@ -340,14 +340,6 @@ impl InputState {
         }
     }
 
-    /// Preserve raw screen/debug handling until those paths migrate to
-    /// consumers.
-    pub(crate) fn consume_latest_action(&mut self, action: Action) {
-        if !self.binding_capture {
-            self.action_events.consume_latest_action(action);
-        }
-    }
-
     pub fn action_states(&self) -> &ActionStates {
         self.action_events.dispatcher().action_states()
     }
@@ -533,7 +525,6 @@ impl InputState {
         if let PhysicalKey::Code(code) = event.physical_key {
             match code {
                 KeyCode::Enter | KeyCode::NumpadEnter => self.enter_press_pending = true,
-                KeyCode::Escape => self.escape_press_pending = true,
                 KeyCode::Tab => self.tab_press_pending = true,
                 KeyCode::F5 => self.f5_press_pending = true,
                 // Chat history/scroll keys; latched here so OS key repeat
@@ -545,6 +536,29 @@ impl InputState {
                 _ => {}
             }
         }
+    }
+
+    /// Action-derived Back/Cancel input for the menu builders. The legacy
+    /// MenuInput field is named `escape`, but no physical key is sampled here.
+    pub fn request_menu_close(&mut self) {
+        self.discard_screen_input();
+        self.escape_press_pending = true;
+    }
+
+    /// Collected screen input belongs to the screen that owned it at arrival.
+    /// Do not replay text or activation into a parent after cancellation. Keep
+    /// the action-derived Back latch so menu builders can perform navigation.
+    pub fn discard_screen_input(&mut self) {
+        self.text_events.clear();
+        self.pending_key_presses.clear();
+        self.enter_press_pending = false;
+        self.tab_press_pending = false;
+        self.f5_press_pending = false;
+        self.arrow_up_press_pending = false;
+        self.arrow_down_press_pending = false;
+        self.page_up_press_pending = false;
+        self.page_down_press_pending = false;
+        self.clear_just_pressed_actions();
     }
 
     pub fn drain_text_events(&mut self) -> Vec<crate::ui::text_edit::TextInputEvent> {
@@ -762,6 +776,50 @@ fn build_rumble_effect(
         .finish(manager)
         .map_err(|e| tracing::warn!("Failed to create rumble effect: {e}"))
         .ok()
+}
+
+#[cfg(test)]
+mod screen_input_tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_discards_old_screen_input_but_preserves_back_and_holds() {
+        let mut input = InputState::released();
+        input
+            .text_events
+            .push(crate::ui::text_edit::TextInputEvent::Char('j'));
+        input.pending_key_presses.insert(KeyCode::Enter);
+        input.held_keys.insert(KeyCode::KeyJ);
+        input.enter_press_pending = true;
+        input.tab_press_pending = true;
+        input.f5_press_pending = true;
+        input.arrow_up_press_pending = true;
+        input.arrow_down_press_pending = true;
+        input.page_up_press_pending = true;
+        input.page_down_press_pending = true;
+        input.left_click = ClickState {
+            held: true,
+            just_pressed: true,
+            just_released: true,
+        };
+        input.request_menu_close();
+        input.discard_screen_input();
+        assert!(input.drain_text_events().is_empty());
+        assert!(input.pending_key_presses.is_empty());
+        assert!(!input.enter_press_pending);
+        assert!(!input.tab_press_pending);
+        assert!(!input.f5_press_pending);
+        assert!(!input.arrow_up_press_pending);
+        assert!(!input.arrow_down_press_pending);
+        assert!(!input.page_up_press_pending);
+        assert!(!input.page_down_press_pending);
+        assert!(!input.left_click.just_pressed);
+        assert!(!input.left_click.just_released);
+        assert!(input.left_click.held);
+        assert!(input.held_keys.contains(&KeyCode::KeyJ));
+        assert!(input.take_escape_press());
+        assert!(!input.take_escape_press());
+    }
 }
 
 #[cfg(test)]

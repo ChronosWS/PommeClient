@@ -13,7 +13,7 @@ use thiserror::Error;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
 use crate::app::core::AppCore;
@@ -408,6 +408,15 @@ impl ApplicationHandler for App {
                     }
 
                     self.core.input.on_key_event(&event);
+                    // Navigation is applied at frame timing. In particular, a
+                    // printable Cancel/Close binding must not also type into a field.
+                    if let PhysicalKey::Code(code) = event.physical_key
+                        && crate::app::action_consumers::navigation::NavigationConsumer::captures_key(
+                            code, &self.core.menu.key_bindings,
+                        )
+                    {
+                        return app;
+                    }
 
                     match app {
                         AppPhase::Setup { .. } | AppPhase::SavingWorld { .. } => app,
@@ -433,8 +442,6 @@ impl ApplicationHandler for App {
                                     code,
                                     &event,
                                     &mut self.core,
-                                    &gfx.window,
-                                    &connection,
                                     &mut game,
                                 );
                                 AppPhase::Connecting {
@@ -445,17 +452,6 @@ impl ApplicationHandler for App {
                                     game,
                                     world,
                                 }
-                            } else if event.state.is_pressed()
-                                && let PhysicalKey::Code(KeyCode::Escape) = event.physical_key
-                            {
-                                leave_world(
-                                    &mut self.core,
-                                    gfx,
-                                    Panorama::new(),
-                                    connection,
-                                    world,
-                                    AfterSaving::Menu,
-                                )
                             } else {
                                 AppPhase::Connecting {
                                     gfx,
@@ -493,59 +489,14 @@ impl ApplicationHandler for App {
                                         code,
                                         &event,
                                         &mut self.core,
-                                        &gfx.window,
-                                        &connection,
                                         &mut game,
                                     );
-                                } else if game.chat.is_open() {
-                                    match code {
-                                        KeyCode::Escape => {
-                                            let closed = game.escape_chat();
-                                            self.core.input.consume_latest_action(
-                                                crate::app::input::Action::Close,
-                                            );
-                                            if closed {
-                                                self.core.apply_cursor_grab(
-                                                    &gfx.window,
-                                                    Some(&mut game),
-                                                );
-                                            }
-                                        }
-                                        _ => {
-                                            if !debug_captured {
-                                                self.core.input.on_menu_key_event(&event);
-                                            }
-                                        }
-                                    }
-                                } else if game.creative_inventory_open {
-                                    match code {
-                                        KeyCode::Escape => {
-                                            game.close_creative_inventory();
-                                            self.core.input.consume_latest_action(
-                                                crate::app::input::Action::Close,
-                                            );
-                                            self.core
-                                                .apply_cursor_grab(&gfx.window, Some(&mut game));
-                                        }
-                                        _ => {
-                                            if !debug_captured {
-                                                self.core.input.on_menu_key_event(&event);
-                                            }
-                                        }
-                                    }
-                                } else if game.wants_text_input() {
-                                    // A container text field (anvil rename) has
-                                    // focus; keys type into it. Escape still
-                                    // closes via the OpenMenu action.
-                                    if !debug_captured {
-                                        self.core.input.on_menu_key_event(&event);
-                                    }
-                                } else if code == KeyCode::Escape
-                                    && game.death_confirm
-                                    && crate::ui::death::buttons_ready(game.death_confirm_ticks)
+                                } else if (game.chat.is_open()
+                                    || game.creative_inventory_open
+                                    || game.wants_text_input())
+                                    && !debug_captured
                                 {
-                                    game.death_confirm = false;
-                                    self.core.send_respawn(&connection, &mut game);
+                                    self.core.input.on_menu_key_event(&event);
                                 }
                             }
 
@@ -682,12 +633,18 @@ impl ApplicationHandler for App {
                 let core = &mut self.core;
 
                 core.input.collect_gamepad_events();
-                let should_apply_cursor_grab = core.action_consumers.process_actions(
+                let mut should_apply_cursor_grab = core.action_consumers.process_actions(
                     &mut core.input,
                     &mut self.phase,
                     frame_time,
                     &core.menu.key_bindings,
                 );
+                let mut navigation = std::mem::take(&mut core.action_consumers.navigation);
+                navigation.do_frame(core, &mut self.phase);
+                core.action_consumers.navigation = navigation;
+                should_apply_cursor_grab |= core
+                    .action_consumers
+                    .finish_frame(&mut core.input, &mut self.phase);
                 for _ in 0..core.action_consumers.fullscreen.take_presses() {
                     if let Some(gfx) = self.phase.gfx_mut() {
                         let display_mode = core.display_mode.cycle();

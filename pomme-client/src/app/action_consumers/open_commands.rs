@@ -6,6 +6,7 @@ use crate::app::phases::AppPhase;
 use crate::app::phases::in_game::GameState;
 use crate::ui::chat::ChatMethod;
 
+#[derive(Default)]
 pub struct OpenCommandsConsumer {
     enabled: bool,
     open_requested: bool,

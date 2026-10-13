@@ -10,11 +10,11 @@ use azalea_protocol::packets::game::{
 use azalea_registry::builtin::{BlockEntityKind, EntityKind};
 use glam::FloatExt as _;
 
+use crate::app::TICK_RATE;
 use crate::app::action_consumers::player_list::PlayerListConsumer;
 use crate::app::core::{AppCore, PlayerInputState};
 use crate::app::level_load::LevelLoadTracker;
 use crate::app::phases::Gfx;
-use crate::app::{TICK_RATE, input};
 use crate::audio::{CATEGORY_AMBIENT, CATEGORY_PLAYERS, SoundRef};
 use crate::benchmark::{
     Benchmark, BenchmarkResult, ChunkLoadBench, ChunkLoadResult, ChunkLoadStep, UploadHandle,
@@ -1646,42 +1646,20 @@ pub(crate) fn build_server_screens(
     }
 }
 
-/// A key press while a server dialog is the top screen: Escape cancels it,
-/// Tab cycles its text fields, and anything else types. A confirm screen the
-/// dialog raised sits above it and answers Escape first.
+/// Non-navigation key input for a server dialog. Cancel/Close bindings have
+/// already been excluded; their responses wait for frame action processing.
 pub(crate) fn server_dialog_key(
     code: winit::keyboard::KeyCode,
     event: &winit::event::KeyEvent,
     core: &mut AppCore,
-    window: &winit::window::Window,
-    connection: &ConnectionHandle,
     game: &mut GameState,
 ) {
-    use winit::keyboard::KeyCode;
-
     if game.chat.has_pending_modal_prompt() {
-        // `ConfirmScreen` answers Escape with `accept(false)`, which returns
-        // to the screen under it.
-        if code == KeyCode::Escape {
-            game.escape_chat();
-            core.input.consume_latest_action(input::Action::Close);
-            core.apply_cursor_grab(window, Some(game));
-        } else {
-            core.input.on_menu_key_event(event);
-        }
+        core.input.on_menu_key_event(event);
         return;
     }
     match code {
-        KeyCode::Escape => {
-            let action = game
-                .server_dialog
-                .as_mut()
-                .and_then(|dialog| dialog.handle_escape());
-            settle_server_dialog(action, core, connection, game);
-            core.input.consume_latest_action(input::Action::Close);
-            core.apply_cursor_grab(window, Some(game));
-        }
-        KeyCode::Tab => {
+        winit::keyboard::KeyCode::Tab => {
             if let Some(dialog) = game.server_dialog.as_mut() {
                 dialog.handle_tab(core.input.is_shift_held());
             }
@@ -2769,7 +2747,7 @@ pub fn update_game(
             status.as_ref(),
             core.input.cursor_pos(),
             core.input.has_pending_left_mouse_press(),
-            core.input.take_escape_press(),
+            false, // Cancel/Close dismisses results at frame action timing.
         );
         apply_result_action(action, ResultKind::Fps, status, json, core, gfx, game);
     }
@@ -2891,7 +2869,7 @@ pub fn update_game(
             status.as_ref(),
             core.input.cursor_pos(),
             core.input.has_pending_left_mouse_press(),
-            core.input.take_escape_press(),
+            false, // Cancel/Close dismisses results at frame action timing.
         );
         apply_result_action(action, ResultKind::ChunkLoad, status, json, core, gfx, game);
     }

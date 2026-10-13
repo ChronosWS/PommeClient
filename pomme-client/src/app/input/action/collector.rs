@@ -31,6 +31,7 @@ impl ActionCollector {
         &self.dispatcher
     }
 
+    #[cfg(test)]
     pub(crate) fn consume_latest_action(&mut self, action: super::Action) {
         self.dispatcher.consume_latest_action(action);
     }
@@ -215,6 +216,7 @@ impl ActionCollector {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::time::Duration;
 
     use winit::event::MouseButton;
@@ -233,8 +235,8 @@ mod tests {
         bindings.set(Action::Close, vec![]);
         bindings.set(Action::OpenMenu, vec![InputKey::Keyboard(KeyCode::Escape)]);
         let inputs = [
-            InputKey::Mouse(MouseButton::Middle),
-            InputKey::Controller(Button::South),
+            InputKey::Mouse(MouseButton::Other(9)),
+            InputKey::Controller(Button::RightThumb),
             InputKey::Keyboard(KeyCode::KeyJ),
         ];
         bindings.set(Action::Jump, inputs.to_vec());
@@ -246,7 +248,7 @@ mod tests {
         }
         collector.press_for_test(InputKey::Keyboard(KeyCode::Escape), false);
         assert!(collector.action_held_including_pending(Action::Close, &bindings));
-        assert!(!collector.action_held_including_pending(Action::OpenMenu, &bindings));
+        assert!(collector.action_held_including_pending(Action::OpenMenu, &bindings));
         assert!(collector.dispatcher().action_states().is_empty());
         let mut observed = Vec::new();
         let mut delivered = Vec::new();
@@ -274,7 +276,20 @@ mod tests {
                 .count(),
             6
         );
-        assert_eq!(observed.last().unwrap().action, Action::Close);
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| event.action != Action::Jump)
+                .map(|event| event.action)
+                .collect::<HashSet<_>>(),
+            HashSet::from([Action::Close, Action::OpenMenu])
+        );
+        assert_eq!(observed.len(), 8);
+        assert!(
+            delivered
+                .iter()
+                .any(|event| event.action == Action::OpenMenu)
+        );
         assert_eq!(delivered.len(), observed.len() - 1);
         assert!(delivered.iter().all(|event| event.action != Action::Close));
         assert!(
@@ -329,31 +344,48 @@ mod tests {
     }
 
     #[test]
-    fn escape_resolves_only_close_even_when_bindings_are_replaced_or_cleared() {
-        for close_inputs in [vec![], vec![InputKey::Keyboard(KeyCode::F4)]] {
+    fn escape_resolves_close_and_open_menu_even_when_bindings_are_replaced_or_cleared() {
+        for inputs in [
+            vec![],
+            vec![InputKey::Keyboard(KeyCode::F4)],
+            vec![InputKey::Keyboard(KeyCode::Escape)],
+        ] {
             let mut bindings = KeyBindings::default();
-            bindings.set(Action::Close, close_inputs);
-            bindings.set(Action::OpenMenu, vec![InputKey::Keyboard(KeyCode::Escape)]);
+            bindings.set(Action::Close, inputs.clone());
+            bindings.set(Action::OpenMenu, inputs);
             let mut collector = ActionCollector::new();
             let escape = source(InputKey::Keyboard(KeyCode::Escape));
             collector.handle_input(escape.clone(), ElementState::Pressed, false, false);
             let events = dispatch_events(&mut collector, Instant::now(), &bindings);
-            assert_eq!(events.len(), 1);
-            assert_eq!(events[0].action, Action::Close);
-            assert_eq!(events[0].kind, ActionEventKind::Press);
-            assert!(
-                collector
-                    .dispatcher()
-                    .action_states()
-                    .contains_key(&Action::Close)
+            assert_eq!(events.len(), 2);
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|event| event.action)
+                    .collect::<HashSet<_>>(),
+                HashSet::from([Action::Close, Action::OpenMenu])
             );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.kind == ActionEventKind::Press)
+            );
+            for action in [Action::Close, Action::OpenMenu] {
+                assert!(collector.dispatcher().action_states().contains_key(&action));
+            }
             collector.handle_input(escape.clone(), ElementState::Pressed, true, false);
             collector.handle_input(escape, ElementState::Released, false, false);
             let events = dispatch_events(&mut collector, Instant::now(), &bindings);
-            assert_eq!(events.len(), 2);
-            assert!(events.iter().all(|event| event.action == Action::Close));
-            assert_eq!(events[0].kind, ActionEventKind::Repeat);
-            assert!(matches!(events[1].kind, ActionEventKind::Release(_)));
+            assert_eq!(events.len(), 4);
+            for action in [Action::Close, Action::OpenMenu] {
+                let action_events: Vec<_> = events
+                    .iter()
+                    .filter(|event| event.action == action)
+                    .collect();
+                assert_eq!(action_events.len(), 2);
+                assert_eq!(action_events[0].kind, ActionEventKind::Repeat);
+                assert!(matches!(action_events[1].kind, ActionEventKind::Release(_)));
+            }
             assert!(collector.dispatcher().action_states().is_empty());
         }
     }
@@ -369,31 +401,52 @@ mod tests {
         collector.handle_input(escape.clone(), ElementState::Released, false, false);
         assert!(dispatch_events(&mut collector, Instant::now(), &bindings).is_empty());
         collector.handle_input(escape, ElementState::Pressed, false, false);
+        let events = dispatch_events(&mut collector, Instant::now(), &bindings);
+        assert_eq!(events.len(), 2);
         assert_eq!(
-            dispatch_events(&mut collector, Instant::now(), &bindings)[0].action,
-            Action::Close
+            events
+                .iter()
+                .map(|event| event.action)
+                .collect::<HashSet<_>>(),
+            HashSet::from([Action::Close, Action::OpenMenu])
         );
     }
 
     #[test]
-    fn already_handled_escape_does_not_deliver_close_again() {
+    fn consuming_one_escape_action_leaves_the_other_and_preserves_both_holds() {
         let bindings = KeyBindings::default();
-        let mut collector = ActionCollector::new();
-        let escape = source(InputKey::Keyboard(KeyCode::Escape));
-        collector.handle_input(escape.clone(), ElementState::Pressed, false, false);
-        collector.consume_latest_action(Action::Close);
-        assert!(dispatch_events(&mut collector, Instant::now(), &bindings).is_empty());
-        assert!(
-            collector
-                .dispatcher()
-                .action_states()
-                .contains_key(&Action::Close)
-        );
-        collector.handle_input(escape, ElementState::Released, false, false);
-        let events = dispatch_events(&mut collector, Instant::now(), &bindings);
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0].kind, ActionEventKind::Release(_)));
-        assert!(collector.dispatcher().action_states().is_empty());
+        for (consumed, remaining) in [
+            (Action::Close, Action::OpenMenu),
+            (Action::OpenMenu, Action::Close),
+        ] {
+            let mut collector = ActionCollector::new();
+            let escape = source(InputKey::Keyboard(KeyCode::Escape));
+            collector.handle_input(escape.clone(), ElementState::Pressed, false, false);
+            collector.consume_latest_action(consumed);
+            let events = dispatch_events(&mut collector, Instant::now(), &bindings);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].action, remaining);
+            assert_eq!(events[0].kind, ActionEventKind::Press);
+            for action in [consumed, remaining] {
+                assert!(collector.dispatcher().action_states().contains_key(&action));
+            }
+            collector.handle_input(escape, ElementState::Released, false, false);
+            let events = dispatch_events(&mut collector, Instant::now(), &bindings);
+            assert_eq!(events.len(), 2);
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|event| event.action)
+                    .collect::<HashSet<_>>(),
+                HashSet::from([Action::Close, Action::OpenMenu])
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| matches!(event.kind, ActionEventKind::Release(_)))
+            );
+            assert!(collector.dispatcher().action_states().is_empty());
+        }
     }
 
     fn source(input: InputKey) -> InputSource {

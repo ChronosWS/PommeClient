@@ -10,6 +10,7 @@ pub mod hotbar_slot;
 pub mod inventory;
 pub mod jump;
 pub mod movement;
+pub mod navigation;
 pub mod open_chat;
 pub mod open_commands;
 pub mod open_menu;
@@ -26,7 +27,6 @@ pub mod use_item;
 
 use std::time::Instant;
 
-use close::{CloseConsumer, CloseOutcome};
 use debug::DebugConsumer;
 use destroy::DestroyConsumer;
 use drop_item::DropItemConsumer;
@@ -36,9 +36,9 @@ use hotbar_slot::HotbarSlotConsumer;
 use inventory::{InventoryConsumer, InventoryOutcome};
 use jump::JumpConsumer;
 use movement::MovementConsumer;
+use navigation::NavigationConsumer;
 use open_chat::{OpenChatConsumer, OpenChatOutcome};
 use open_commands::{OpenCommandsConsumer, OpenCommandsOutcome};
-use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
 use perspective::PerspectiveConsumer;
 use pick_block::PickBlockConsumer;
 use player_list::PlayerListConsumer;
@@ -64,7 +64,9 @@ pub struct ActionConsumers {
     pub(super) toggle_gui: ToggleGuiConsumer,
     pub(super) fullscreen: FullscreenConsumer,
     pub(super) open_chat: OpenChatConsumer,
+    open_commands: OpenCommandsConsumer,
     pub(super) debug: DebugConsumer,
+    pub(super) navigation: NavigationConsumer,
     pub(super) movement: MovementConsumer,
     pub(super) hotbar_slot: HotbarSlotConsumer,
     pub(super) destroy: DestroyConsumer,
@@ -95,8 +97,9 @@ impl ActionConsumers {
         self.spectator_hotbar.clear();
     }
 
-    /// Dispatch action events, then apply consumer requests in the existing
-    /// application order. Phase context is borrowed only for this call.
+    /// Dispatch events and apply responses that precede navigation. The caller
+    /// applies navigation with AppCore, then calls finish_frame to preserve the
+    /// existing Debug → inventory → navigation → chat → gameplay-state order.
     /// Returns whether cursor grab must be refreshed.
     pub fn process_actions(
         &mut self,
@@ -109,6 +112,7 @@ impl ActionConsumers {
         self.swap_offhand.begin_frame();
         self.drop_item.begin_frame();
         self.debug.begin_frame(phase.get(), binding_capture);
+        self.navigation.begin_frame();
         self.toggle_gui = ToggleGuiConsumer::new(phase.get(), binding_capture);
         self.fullscreen = FullscreenConsumer::new(phase.get(), binding_capture);
         let mut fullscreen_handler =
@@ -179,11 +183,7 @@ impl ActionConsumers {
         );
         let mut inventory_handler =
             |event: &ActionEvent, _: &ActionStates| inventory.handle_event(event);
-        let mut open_menu = OpenMenuConsumer::new(phase.get(), input.binding_capture_active());
-        let mut open_menu_handler =
-            |event: &ActionEvent, _: &ActionStates| open_menu.handle_event(event);
-        let mut close = CloseConsumer::new(phase.get(), input.binding_capture_active());
-        let mut close_handler = |event: &ActionEvent, _: &ActionStates| close.handle_event(event);
+
         let mut screenshot = ScreenshotConsumer::new(phase.get(), binding_capture);
         let mut screenshot_handler =
             |event: &ActionEvent, _: &ActionStates| screenshot.handle_event(event);
@@ -193,10 +193,9 @@ impl ActionConsumers {
         self.open_chat = OpenChatConsumer::new(phase.get(), binding_capture);
         let mut open_chat_handler =
             |event: &ActionEvent, _: &ActionStates| self.open_chat.handle_event(event);
-        let mut open_commands =
-            OpenCommandsConsumer::new(phase.get(), input.binding_capture_active());
+        self.open_commands = OpenCommandsConsumer::new(phase.get(), input.binding_capture_active());
         let mut open_commands_handler =
-            |event: &ActionEvent, _: &ActionStates| open_commands.handle_event(event);
+            |event: &ActionEvent, _: &ActionStates| self.open_commands.handle_event(event);
         let mut player_list_handler = PlayerListConsumer::handle_event;
         let mut hotbar_handler = |event: &ActionEvent, _: &ActionStates| {
             let slot_disposition = self.hotbar_slot.handle_event(
@@ -225,11 +224,19 @@ impl ActionConsumers {
         input.action_events.dispatch(
             frame_time,
             bindings,
-            |input, events, states| self.debug.observe(input, events, states),
+            |input, events, states| {
+                let filtered = self.debug.observe(input, events, states);
+                self.navigation.observe(
+                    input,
+                    events,
+                    &filtered,
+                    binding_capture,
+                    self.debug.projected_switcher_open(),
+                );
+                filtered
+            },
             &mut [
                 &mut inventory_handler,
-                &mut open_menu_handler,
-                &mut close_handler,
                 &mut perspective_handler,
                 &mut screenshot_handler,
                 &mut fullscreen_handler,
@@ -291,27 +298,40 @@ impl ActionConsumers {
                 should_apply_cursor_grab |= self.debug.do_frame(game, connection);
                 should_apply_cursor_grab |=
                     inventory.do_frame(game) == InventoryOutcome::RefreshCursorGrab;
-                should_apply_cursor_grab |=
-                    open_menu.do_frame(game) == OpenMenuOutcome::RefreshCursorGrab;
-                should_apply_cursor_grab |= close.do_frame(game) == CloseOutcome::RefreshCursorGrab;
+
                 if perspective.take_change_request() {
                     gfx.renderer.cycle_camera_mode();
-                }
-                if self.open_chat.do_frame(game) == OpenChatOutcome::Opened {
-                    // Update capture immediately for the rest of this frame;
-                    // update_game also refreshes it after processing chat input.
-                    input.text_capture = true;
-                    should_apply_cursor_grab = true;
-                }
-                if open_commands.do_frame(game) == OpenCommandsOutcome::Opened {
-                    input.text_capture = true;
-                    should_apply_cursor_grab = true;
                 }
             }
 
             app
         });
 
+        should_apply_cursor_grab
+    }
+
+    /// Complete frame responses after navigation has changed screen ownership.
+    /// This retains consumer ordering, not full interleaving of all actions.
+    pub fn finish_frame(
+        &mut self,
+        input: &mut InputState,
+        phase: &mut StateSlot<AppPhase>,
+    ) -> bool {
+        let binding_capture = input.binding_capture_active();
+        if binding_capture {
+            return false;
+        }
+        let mut should_apply_cursor_grab = false;
+        if let AppPhase::InGame { game, .. } = phase.get_mut() {
+            if self.open_chat.do_frame(game) == OpenChatOutcome::Opened {
+                input.text_capture = true;
+                should_apply_cursor_grab = true;
+            }
+            if self.open_commands.do_frame(game) == OpenCommandsOutcome::Opened {
+                input.text_capture = true;
+                should_apply_cursor_grab = true;
+            }
+        }
         self.movement
             .do_frame(input.action_states(), phase.get(), binding_capture);
         self.hotbar_slot.do_frame(binding_capture);
@@ -365,9 +385,11 @@ mod tests {
         input.on_scroll(-1.0);
         assert_eq!(input.selected_slot(), 1);
         consumers.process_actions(&mut input, &mut phase, Instant::now(), &bindings);
+        consumers.finish_frame(&mut input, &mut phase);
         assert_eq!(input.selected_slot(), 3);
         consumers.hotbar_slot.end_frame();
         consumers.process_actions(&mut input, &mut phase, Instant::now(), &bindings);
+        consumers.finish_frame(&mut input, &mut phase);
         assert_eq!(input.selected_slot(), 3);
         assert_eq!(consumers.hotbar_slot.container_slot(), None);
     }
