@@ -3245,8 +3245,7 @@ pub fn update_game(
             right_clicked,
             scroll_delta,
             &text_events,
-            core.input
-                .has_pending_key_press(winit::keyboard::KeyCode::KeyT),
+            core.action_consumers.open_chat.screen_requested(),
             hotbar_swap,
             hotbar_swap_key,
             core.action_consumers.swap_offhand.screen_requested(),

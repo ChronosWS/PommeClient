@@ -419,8 +419,8 @@ pub fn build_creative_inventory(
     right_held: bool,
     text_width_fn: &dyn Fn(&str, f32) -> f32,
 ) -> CreativeAction {
-    // Vanilla creative keyPressed: T on a non-search tab jumps to the search
-    // tab without typing the character (`ignoreTextInput`).
+    // Open Chat on a non-search tab jumps to the search tab without typing
+    // the triggering character (vanilla `ignoreTextInput`).
     let jumped_to_search = chat_key && !matches!(state.tab, CreativeTab::Search);
     if jumped_to_search {
         state.select_tab(CreativeTab::Search);
@@ -1595,6 +1595,46 @@ mod tests {
         assert_eq!(hotbar_shortcut_char(KeyCode::F1, &events), None);
         assert_eq!(hotbar_shortcut_char(KeyCode::Digit1, &events), Some('1'));
         assert_eq!(hotbar_shortcut_char(KeyCode::Digit9, &events), Some('9'));
+    }
+
+    #[test]
+    fn open_chat_request_jumps_to_search_without_typing_but_search_still_types() {
+        use crate::ui::text_edit::TextInputEvent;
+
+        for already_searching in [false, true] {
+            let mut state = CreativeState::new();
+            if already_searching {
+                state.select_tab(CreativeTab::Search);
+            }
+            let action = build_creative_inventory(
+                &mut Vec::new(),
+                &mut state,
+                390.0,
+                272.0,
+                (-1.0, -1.0),
+                false,
+                false,
+                false,
+                0.0,
+                &[TextInputEvent::Char('c')],
+                true,
+                None,
+                None,
+                false,
+                &Inventory::new(),
+                2.0,
+                false,
+                false,
+                false,
+                &|text, scale| text.len() as f32 * scale,
+            );
+            assert!(matches!(action, CreativeAction::None));
+            assert!(matches!(state.tab, CreativeTab::Search));
+            assert_eq!(
+                state.search.value(),
+                if already_searching { "c" } else { "" }
+            );
+        }
     }
 
     #[test]

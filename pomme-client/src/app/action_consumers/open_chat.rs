@@ -6,9 +6,11 @@ use crate::app::phases::AppPhase;
 use crate::app::phases::in_game::GameState;
 use crate::ui::chat::ChatMethod;
 
+#[derive(Default)]
 pub struct OpenChatConsumer {
     enabled: bool,
     open_requested: bool,
+    screen_requested: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +24,7 @@ impl OpenChatConsumer {
         Self {
             enabled: !binding_capture && matches!(phase, AppPhase::InGame { .. }),
             open_requested: false,
+            screen_requested: false,
         }
     }
 
@@ -35,8 +38,15 @@ impl OpenChatConsumer {
         {
             // Preserve the legacy latch's one request per frame and keyboard repeats.
             self.open_requested = true;
+            self.screen_requested = true;
         }
         EventDisposition::Consume
+    }
+
+    /// Creative inventory's search shortcut is applied later in the frame,
+    /// independently of whether the ordinary chat-opening request was drained.
+    pub fn screen_requested(&self) -> bool {
+        self.screen_requested
     }
 
     pub fn do_frame(&mut self, game: &mut GameState) -> OpenChatOutcome {
@@ -76,6 +86,7 @@ mod tests {
         OpenChatConsumer {
             enabled,
             open_requested: false,
+            screen_requested: false,
         }
     }
 
@@ -108,7 +119,9 @@ mod tests {
             &mut [&mut handler, &mut later],
         );
         let requested = chat.take_open_request();
+        assert_eq!(chat.screen_requested(), requested);
         assert!(!chat.take_open_request());
+        assert_eq!(chat.screen_requested(), requested);
         (requested, passed)
     }
 
@@ -244,6 +257,7 @@ mod tests {
             let mut chat = OpenChatConsumer::new(&phase, capture);
             assert_eq!(chat.handle_event(&event), EventDisposition::Pass);
             assert!(!chat.take_open_request());
+            assert!(!chat.screen_requested());
         }
     }
 }

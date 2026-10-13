@@ -63,6 +63,7 @@ pub struct ActionConsumers {
     // Frame-local handoff to update_game, not pending simulation work.
     pub(super) toggle_gui: ToggleGuiConsumer,
     pub(super) fullscreen: FullscreenConsumer,
+    pub(super) open_chat: OpenChatConsumer,
     pub(super) debug: DebugConsumer,
     pub(super) movement: MovementConsumer,
     pub(super) hotbar_slot: HotbarSlotConsumer,
@@ -189,9 +190,9 @@ impl ActionConsumers {
         let mut perspective = PerspectiveConsumer::new(phase.get(), input.binding_capture_active());
         let mut perspective_handler =
             |event: &ActionEvent, _: &ActionStates| perspective.handle_event(event);
-        let mut open_chat = OpenChatConsumer::new(phase.get(), input.binding_capture_active());
+        self.open_chat = OpenChatConsumer::new(phase.get(), binding_capture);
         let mut open_chat_handler =
-            |event: &ActionEvent, _: &ActionStates| open_chat.handle_event(event);
+            |event: &ActionEvent, _: &ActionStates| self.open_chat.handle_event(event);
         let mut open_commands =
             OpenCommandsConsumer::new(phase.get(), input.binding_capture_active());
         let mut open_commands_handler =
@@ -296,7 +297,7 @@ impl ActionConsumers {
                 if perspective.take_change_request() {
                     gfx.renderer.cycle_camera_mode();
                 }
-                if open_chat.do_frame(game) == OpenChatOutcome::Opened {
+                if self.open_chat.do_frame(game) == OpenChatOutcome::Opened {
                     // Update capture immediately for the rest of this frame;
                     // update_game also refreshes it after processing chat input.
                     input.text_capture = true;
