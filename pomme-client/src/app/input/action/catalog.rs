@@ -237,6 +237,14 @@ actions! {
         listed: true,
         defaults: [Keyboard(KeyCode::Tab), Controller(Button::Select)],
     },
+    Screenshot => {
+        id: "key.screenshot",
+        translation_id: Some(StringId::new("key.screenshot")),
+        fallback: "Take Screenshot",
+        category: Miscellaneous,
+        listed: true,
+        defaults: [Keyboard(KeyCode::F2)],
+    },
     ToggleGui => {
         id: "key.toggleGui",
         translation_id: Some(StringId::new("key.toggleGui")),

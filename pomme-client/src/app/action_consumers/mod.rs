@@ -14,6 +14,7 @@ pub mod open_menu;
 pub mod perspective;
 pub mod pick_block;
 pub mod player_list;
+pub mod screenshot;
 pub mod sneak;
 pub mod spectator_hotbar;
 pub mod sprint;
@@ -37,6 +38,7 @@ use open_menu::{OpenMenuConsumer, OpenMenuOutcome};
 use perspective::PerspectiveConsumer;
 use pick_block::PickBlockConsumer;
 use player_list::PlayerListConsumer;
+use screenshot::ScreenshotConsumer;
 use sneak::SneakConsumer;
 use spectator_hotbar::SpectatorHotbarConsumer;
 use sprint::SprintConsumer;
@@ -169,6 +171,9 @@ impl ActionConsumers {
             |event: &ActionEvent, _: &ActionStates| open_menu.handle_event(event);
         let mut close = CloseConsumer::new(phase.get(), input.binding_capture_active());
         let mut close_handler = |event: &ActionEvent, _: &ActionStates| close.handle_event(event);
+        let mut screenshot = ScreenshotConsumer::new(phase.get(), binding_capture);
+        let mut screenshot_handler =
+            |event: &ActionEvent, _: &ActionStates| screenshot.handle_event(event);
         let mut perspective = PerspectiveConsumer::new(phase.get(), input.binding_capture_active());
         let mut perspective_handler =
             |event: &ActionEvent, _: &ActionStates| perspective.handle_event(event);
@@ -212,6 +217,7 @@ impl ActionConsumers {
                 &mut open_menu_handler,
                 &mut close_handler,
                 &mut perspective_handler,
+                &mut screenshot_handler,
                 &mut toggle_gui_handler,
                 &mut open_chat_handler,
                 &mut open_commands_handler,
@@ -255,6 +261,11 @@ impl ActionConsumers {
         let mut should_apply_cursor_grab = false;
 
         phase.transition(|mut app| {
+            if screenshot.take_capture_request()
+                && let Some(gfx) = app.gfx_mut()
+            {
+                gfx.renderer.request_screenshot();
+            }
             if let AppPhase::InGame {
                 gfx,
                 connection: _connection,

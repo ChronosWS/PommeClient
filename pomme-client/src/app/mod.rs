@@ -418,15 +418,12 @@ impl ApplicationHandler for App {
                         self.core.menu.set_display_mode(display_mode);
                         self.core.sync_display_mode(window);
                     }
-                    // F2 screenshot works in every phase, like vanilla.
-                    // TODO: Ctrl+F2 panoramic screenshot
-                    if let Some(Gfx { renderer, .. }) = app.gfx_mut()
-                        && event.state.is_pressed()
-                        && !event.repeat
-                        && !self.core.input.is_key_held(KeyCode::F3)
-                        && let PhysicalKey::Code(KeyCode::F2) = event.physical_key
-                    {
-                        renderer.request_screenshot();
+                    // Filter F3 chords at input collection so releasing F3
+                    // before frame dispatch cannot revive a blocked screenshot.
+                    if event.state.is_pressed() && self.core.input.is_key_held(KeyCode::F3) {
+                        self.core
+                            .input
+                            .consume_latest_action(crate::app::input::Action::Screenshot);
                     }
 
                     self.core.input.on_key_event(&event);
