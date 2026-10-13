@@ -4,6 +4,7 @@ pub mod close;
 pub mod debug;
 pub mod destroy;
 pub mod drop_item;
+pub mod fullscreen;
 pub mod hotbar_cycle;
 pub mod hotbar_slot;
 pub mod inventory;
@@ -29,6 +30,7 @@ use close::{CloseConsumer, CloseOutcome};
 use debug::DebugConsumer;
 use destroy::DestroyConsumer;
 use drop_item::DropItemConsumer;
+use fullscreen::FullscreenConsumer;
 use hotbar_cycle::HotbarCycleConsumer;
 use hotbar_slot::HotbarSlotConsumer;
 use inventory::{InventoryConsumer, InventoryOutcome};
@@ -60,6 +62,7 @@ use super::state_slot::StateSlot;
 pub struct ActionConsumers {
     // Frame-local handoff to update_game, not pending simulation work.
     pub(super) toggle_gui: ToggleGuiConsumer,
+    pub(super) fullscreen: FullscreenConsumer,
     pub(super) debug: DebugConsumer,
     pub(super) movement: MovementConsumer,
     pub(super) hotbar_slot: HotbarSlotConsumer,
@@ -104,6 +107,9 @@ impl ActionConsumers {
         let binding_capture = input.binding_capture_active();
         self.debug.begin_frame(phase.get(), binding_capture);
         self.toggle_gui = ToggleGuiConsumer::new(phase.get(), binding_capture);
+        self.fullscreen = FullscreenConsumer::new(phase.get(), binding_capture);
+        let mut fullscreen_handler =
+            |event: &ActionEvent, _: &ActionStates| self.fullscreen.handle_event(event);
         let mut toggle_gui_handler =
             |event: &ActionEvent, _: &ActionStates| self.toggle_gui.handle_event(event);
         let text_capture = input.text_capture;
@@ -223,6 +229,7 @@ impl ActionConsumers {
                 &mut close_handler,
                 &mut perspective_handler,
                 &mut screenshot_handler,
+                &mut fullscreen_handler,
                 &mut toggle_gui_handler,
                 &mut open_chat_handler,
                 &mut open_commands_handler,

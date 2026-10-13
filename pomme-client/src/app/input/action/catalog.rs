@@ -243,6 +243,14 @@ actions! {
         listed: true,
         defaults: [Keyboard(KeyCode::F2)],
     },
+    ToggleFullscreen => {
+        id: "key.fullscreen",
+        translation_id: Some(StringId::new("key.fullscreen")),
+        fallback: "Toggle Fullscreen",
+        category: Miscellaneous,
+        listed: true,
+        defaults: [Keyboard(KeyCode::F11)],
+    },
     ToggleGui => {
         id: "key.toggleGui",
         translation_id: Some(StringId::new("key.toggleGui")),

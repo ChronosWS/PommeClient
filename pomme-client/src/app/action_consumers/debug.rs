@@ -92,9 +92,9 @@ impl DebugConsumer {
     /// 2. Recognize modifier shortcuts and hidden pause, suppressing the
     ///    overlay release when a shortcut uses a shared overlay/modifier
     ///    binding.
-    /// 3. Filter Screenshot delivery while the modifier is held, and Close
-    ///    delivery when Escape requests hidden pause, without changing held
-    ///    action state.
+    /// 3. Filter Screenshot and Toggle Fullscreen delivery while the modifier
+    ///    is held, and Close delivery when Escape requests hidden pause,
+    ///    without changing held action state.
     /// 4. Project screen changes from earlier requests in the batch so later
     ///    occurrences are routed correctly (for example, F4 followed by
     ///    Escape).
@@ -148,7 +148,7 @@ impl DebugConsumer {
         let Some(modifier) = states.get(&Action::DebugModifier) else {
             return Vec::new();
         };
-        let mut filtered = vec![Action::Screenshot];
+        let mut filtered = vec![Action::Screenshot, Action::ToggleFullscreen];
         if !self.shortcuts_enabled {
             return filtered;
         }

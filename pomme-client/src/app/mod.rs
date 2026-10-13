@@ -401,27 +401,10 @@ impl ApplicationHandler for App {
             }
             // TODO: Migrate _fully_ to Action system
             WindowEvent::KeyboardInput { event, .. } => {
-                self.phase.transition(|mut app| {
+                self.phase.transition(|app| {
                     if self.core.input.captures_key_event(&event) {
                         self.core.input.on_key_event(&event);
                         return app;
-                    }
-                    // The Debug Modifier suppresses global keys. Fullscreen
-                    // remains raw until its action migration.
-                    let debug_modifier_held =
-                        self.core.input.action_events.action_held_including_pending(
-                            crate::app::input::Action::DebugModifier,
-                            &self.core.menu.key_bindings,
-                        );
-                    if let Some(Gfx { window, .. }) = app.gfx_mut()
-                        && event.state.is_pressed()
-                        && !event.repeat
-                        && !debug_modifier_held
-                        && let PhysicalKey::Code(KeyCode::F11) = event.physical_key
-                    {
-                        let display_mode = self.core.display_mode.cycle();
-                        self.core.menu.set_display_mode(display_mode);
-                        self.core.sync_display_mode(window);
                     }
 
                     self.core.input.on_key_event(&event);
@@ -705,6 +688,13 @@ impl ApplicationHandler for App {
                     frame_time,
                     &core.menu.key_bindings,
                 );
+                for _ in 0..core.action_consumers.fullscreen.take_presses() {
+                    if let Some(gfx) = self.phase.gfx_mut() {
+                        let display_mode = core.display_mode.cycle();
+                        core.menu.set_display_mode(display_mode);
+                        core.sync_display_mode(&gfx.window);
+                    }
+                }
                 if should_apply_cursor_grab
                     && let AppPhase::InGame { gfx, game, .. } = self.phase.get_mut()
                 {
