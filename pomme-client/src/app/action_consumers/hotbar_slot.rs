@@ -136,9 +136,11 @@ mod tests {
                 binding_capture,
             )
         };
-        input
-            .action_events
-            .dispatch(std::time::Instant::now(), bindings, &mut [&mut handler]);
+        input.action_events.dispatch_without_observer(
+            std::time::Instant::now(),
+            bindings,
+            &mut [&mut handler],
+        );
         input.set_selected_slot(selected_slot);
     }
 

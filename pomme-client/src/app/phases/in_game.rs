@@ -220,9 +220,6 @@ pub struct GameState {
     pub advanced_item_tooltips: bool,
     /// F1 (vanilla `hideGui`): the HUD, chat, and overlays don't render.
     pub hide_gui: bool,
-    /// A chord fired while F3 was held, so releasing F3 must not toggle the
-    /// overlay (vanilla `usedDebugKeyAsModifier`).
-    pub f3_chord_consumed: bool,
     /// Set by F3+A; consumed by `update_game` to re-mesh every loaded chunk.
     pub pending_chunk_reload: bool,
     /// Game mode before the last change (vanilla `previousLocalPlayerMode`),
@@ -446,7 +443,6 @@ impl GameState {
             show_chunk_borders: false,
             advanced_item_tooltips: false,
             hide_gui: false,
-            f3_chord_consumed: false,
             pending_chunk_reload: false,
             previous_game_mode: None,
             dimension: String::new(),
@@ -529,11 +525,14 @@ impl GameState {
     }
 
     pub fn gui_open(&self) -> bool {
+        self.other_gui_open() || self.game_mode_switcher.is_some()
+    }
+
+    fn other_gui_open(&self) -> bool {
         self.inventory_open
             || self.creative_inventory_open
             || self.open_container.is_some()
             || self.dialog_open()
-            || self.game_mode_switcher.is_some()
     }
 
     /// The container menu the player currently has open (0 = survival
@@ -705,34 +704,30 @@ impl GameState {
 
     /// No menu (pause, inventory, chat) is capturing input.
     pub fn input_live(&self) -> bool {
+        self.input_live_without_game_mode_switcher() && self.game_mode_switcher.is_none()
+    }
+
+    /// Debug dispatch projects switcher changes before applying frame
+    /// responses.
+    pub(crate) fn input_live_without_game_mode_switcher(&self) -> bool {
         !self.paused
             && !self.death_screen_open
-            && !self.gui_open()
+            && !self.other_gui_open()
             && !self.chat.is_open()
             && self.benchmark_result.is_none()
             && self.chunk_load_result.is_none()
     }
 
-    /// F3-family debug chords; these fire even while a menu is open, matching
-    /// vanilla KeyboardHandler. Returns true if handled. The overlay itself
-    /// toggles in [`Self::handle_f3_release`], not here.
+    /// Apply an existing debug shortcut selected by the Debug consumer.
     // TODO: vanilla gates hitbox/border/copy chords on the server's
     // reducedDebugInfo flag, which pomme doesn't track yet.
-    pub fn handle_debug_key(
+    pub fn handle_debug_shortcut(
         &mut self,
         code: winit::keyboard::KeyCode,
-        f3_held: bool,
         connection: &ConnectionHandle,
     ) -> bool {
         use winit::keyboard::KeyCode;
-        if code == KeyCode::F3 {
-            // Consumed, but acts on release so chords can suppress it.
-            return true;
-        }
-        if !f3_held {
-            return false;
-        }
-        let handled = match code {
+        match code {
             KeyCode::KeyA => {
                 self.pending_chunk_reload = true;
                 self.debug_feedback("Reloading all chunks");
@@ -864,15 +859,11 @@ impl GameState {
             // F3+S dump dynamic textures, F3+T resource pack reload,
             // F3+L profiler, F3+1..4 debug charts (no backing features)
             _ => false,
-        };
-        self.f3_chord_consumed |= handled;
-        handled
+        }
     }
 
-    /// Vanilla toggles the debug overlay when F3 is released, unless a chord
-    /// key consumed it as a modifier while held (KeyboardHandler.keyPress).
-    /// An open game-mode switcher applies its selection instead.
-    pub fn handle_f3_release(&mut self, connection: &ConnectionHandle) {
+    /// Apply the game-mode switcher when the Debug Modifier action is released.
+    pub fn apply_game_mode_switcher(&mut self, connection: &ConnectionHandle) {
         if let Some(switcher) = self.game_mode_switcher.take() {
             use azalea_core::game_type::GameMode;
             if switcher.selected != self.player.game_mode
@@ -886,13 +877,6 @@ impl GameState {
                     },
                 ));
             }
-            self.f3_chord_consumed = false;
-            return;
-        }
-        if self.f3_chord_consumed {
-            self.f3_chord_consumed = false;
-        } else {
-            self.show_debug = !self.show_debug;
         }
     }
 

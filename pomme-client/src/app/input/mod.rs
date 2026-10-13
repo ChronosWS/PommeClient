@@ -83,7 +83,8 @@ pub fn keybind_label(key: &str) -> Option<(&'static str, &'static str)> {
         "key.hotbar.7" => action_label(Action::Hotbar7)?,
         "key.hotbar.8" => action_label(Action::Hotbar8)?,
         "key.hotbar.9" => action_label(Action::Hotbar9)?,
-        "key.debug.overlay" | "key.debug.modifier" => ("key.keyboard.f3", "F3"),
+        "key.debug.overlay" => action_label(Action::ToggleOverlay)?,
+        "key.debug.modifier" => action_label(Action::DebugModifier)?,
         "key.debug.crash" | "key.debug.copyLocation" => ("key.keyboard.c", "C"),
         "key.debug.reloadChunk" => ("key.keyboard.a", "A"),
         "key.debug.showHitboxes" => ("key.keyboard.b", "B"),
@@ -128,6 +129,7 @@ fn keycode_translation(key: KeyCode) -> Option<(&'static str, &'static str)> {
         KeyCode::Slash => Some(("key.keyboard.slash", "/")),
         KeyCode::F1 => Some(("key.keyboard.f1", "F1")),
         KeyCode::F2 => Some(("key.keyboard.f2", "F2")),
+        KeyCode::F3 => Some(("key.keyboard.f3", "F3")),
         KeyCode::F5 => Some(("key.keyboard.f5", "F5")),
         KeyCode::Digit1 => Some(("key.keyboard.1", "1")),
         KeyCode::Digit2 => Some(("key.keyboard.2", "2")),
@@ -784,7 +786,7 @@ mod player_list_tests {
     fn dispatch(input: &mut InputState, bindings: &KeyBindings) {
         input
             .action_events
-            .dispatch(Instant::now(), bindings, &mut []);
+            .dispatch_without_observer(Instant::now(), bindings, &mut []);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Application-owned action consumers and frame dispatch.
 
 pub mod close;
+pub mod debug;
 pub mod destroy;
 pub mod drop_item;
 pub mod hotbar_cycle;
@@ -25,6 +26,7 @@ pub mod use_item;
 use std::time::Instant;
 
 use close::{CloseConsumer, CloseOutcome};
+use debug::DebugConsumer;
 use destroy::DestroyConsumer;
 use drop_item::DropItemConsumer;
 use hotbar_cycle::HotbarCycleConsumer;
@@ -58,6 +60,7 @@ use super::state_slot::StateSlot;
 pub struct ActionConsumers {
     // Frame-local handoff to update_game, not pending simulation work.
     pub(super) toggle_gui: ToggleGuiConsumer,
+    pub(super) debug: DebugConsumer,
     pub(super) movement: MovementConsumer,
     pub(super) hotbar_slot: HotbarSlotConsumer,
     pub(super) destroy: DestroyConsumer,
@@ -99,6 +102,7 @@ impl ActionConsumers {
         bindings: &KeyBindings,
     ) -> bool {
         let binding_capture = input.binding_capture_active();
+        self.debug.begin_frame(phase.get(), binding_capture);
         self.toggle_gui = ToggleGuiConsumer::new(phase.get(), binding_capture);
         let mut toggle_gui_handler =
             |event: &ActionEvent, _: &ActionStates| self.toggle_gui.handle_event(event);
@@ -212,6 +216,7 @@ impl ActionConsumers {
         input.action_events.dispatch(
             frame_time,
             bindings,
+            |input, events, states| self.debug.observe(input, events, states),
             &mut [
                 &mut inventory_handler,
                 &mut open_menu_handler,
@@ -268,11 +273,12 @@ impl ActionConsumers {
             }
             if let AppPhase::InGame {
                 gfx,
-                connection: _connection,
+                connection,
                 game,
                 ..
             } = &mut app
             {
+                should_apply_cursor_grab |= self.debug.do_frame(game, connection);
                 should_apply_cursor_grab |=
                     inventory.do_frame(game) == InventoryOutcome::RefreshCursorGrab;
                 should_apply_cursor_grab |=

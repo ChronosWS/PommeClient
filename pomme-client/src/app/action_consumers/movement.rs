@@ -116,7 +116,7 @@ mod tests {
             passed.push(event.action);
             EventDisposition::Pass
         };
-        dispatcher.dispatch(
+        dispatcher.dispatch_without_observer(
             Instant::now(),
             |input| bindings.actions_for_input(input).cloned().collect(),
             &mut [&mut handler, &mut later],

@@ -66,7 +66,11 @@ mod tests {
             passed.push(event.action);
             EventDisposition::Pass
         };
-        collector.dispatch(Instant::now(), bindings, &mut [&mut screenshot, &mut later]);
+        collector.dispatch_without_observer(
+            Instant::now(),
+            bindings,
+            &mut [&mut screenshot, &mut later],
+        );
         passed
     }
 

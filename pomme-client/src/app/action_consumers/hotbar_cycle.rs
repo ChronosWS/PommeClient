@@ -68,7 +68,7 @@ mod tests {
             passed.push(event.action);
             EventDisposition::Pass
         };
-        dispatcher.dispatch(
+        dispatcher.dispatch_without_observer(
             Instant::now(),
             |key| bindings.actions_for_input(key).copied().collect(),
             &mut [&mut cycle, &mut later],
@@ -89,7 +89,11 @@ mod tests {
             passed.push(event.action);
             EventDisposition::Pass
         };
-        collector.dispatch(Instant::now(), bindings, &mut [&mut cycle, &mut later]);
+        collector.dispatch_without_observer(
+            Instant::now(),
+            bindings,
+            &mut [&mut cycle, &mut later],
+        );
         passed
     }
 

@@ -89,7 +89,7 @@ mod tests {
             passed.push(event.action);
             EventDisposition::Pass
         };
-        dispatcher.dispatch(
+        dispatcher.dispatch_without_observer(
             Instant::now(),
             |key| bindings.actions_for_input(key).copied().collect(),
             &mut [&mut toggle, &mut later],

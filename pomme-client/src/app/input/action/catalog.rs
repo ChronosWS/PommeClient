@@ -84,8 +84,6 @@ action_categories! {
         fallback: "Spectator",
         ui_order: 6,
     },
-    // TODO: Remove this allowance once the remaining Debug key bindings are added.
-    #[allow(dead_code)]
     Debug => {
         translation_id: Some(StringId::new("key.category.minecraft.debug")),
         fallback: "Debug",
@@ -252,6 +250,22 @@ actions! {
         category: Miscellaneous,
         listed: true,
         defaults: [Keyboard(KeyCode::F1)],
+    },
+    ToggleOverlay => {
+        id: "key.debug.overlay",
+        translation_id: Some(StringId::new("key.debug.overlay")),
+        fallback: "Toggle Overlay",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::F3)],
+    },
+    DebugModifier => {
+        id: "key.debug.modifier",
+        translation_id: Some(StringId::new("key.debug.modifier")),
+        fallback: "Debug Modifier Key",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::F3)],
     },
     ChangePerspective => {
         id: "key.togglePerspective",

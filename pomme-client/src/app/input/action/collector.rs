@@ -8,7 +8,10 @@ use gilrs::{Button, Event, EventType};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
-use super::dispatcher::{ActionDispatcher, ActionHandler, InputDeviceId, InputSource};
+use super::dispatcher::{
+    ActionDispatcher, ActionEvent, ActionHandler, ActionStates, InputDeviceId, InputEvent,
+    InputSource,
+};
 use crate::app::input::{Action, InputKey, KeyBindings};
 
 #[derive(Default)]
@@ -32,25 +35,46 @@ impl ActionCollector {
         self.dispatcher.consume_latest_action(action);
     }
 
-    pub fn dispatch(
+    #[cfg(test)]
+    pub fn dispatch_without_observer(
         &mut self,
         frame_time: Instant,
         bindings: &KeyBindings,
         handlers: &mut [&mut ActionHandler<'_>],
     ) {
+        // TODO: Make observer use systematic in the dispatch design rather than
+        // patching individual call sites with real or no-op observers.
+        self.dispatch(frame_time, bindings, |_, _, _| Vec::new(), handlers);
+    }
+
+    pub fn dispatch(
+        &mut self,
+        frame_time: Instant,
+        bindings: &KeyBindings,
+        observer: impl FnMut(&InputEvent, &[ActionEvent], &ActionStates) -> Vec<Action>,
+        handlers: &mut [&mut ActionHandler<'_>],
+    ) {
         self.dispatcher.dispatch(
             frame_time,
-            |input| {
-                // Escape is reserved, not a configurable binding. Capture filtering
-                // still happens at arrival, before this fixed rule can run.
-                if matches!(input, InputKey::Keyboard(KeyCode::Escape)) {
-                    vec![Action::Close]
-                } else {
-                    bindings.actions_for_input(input).cloned().collect()
-                }
-            },
+            |input| Self::resolve_bindings(input, bindings),
+            observer,
             handlers,
         );
+    }
+
+    /// Collection-time held-state query; does not execute action responses.
+    pub fn action_held_including_pending(&self, action: Action, bindings: &KeyBindings) -> bool {
+        self.dispatcher
+            .action_held_including_pending(action, |input| Self::resolve_bindings(input, bindings))
+    }
+
+    fn resolve_bindings(input: &InputKey, bindings: &KeyBindings) -> Vec<Action> {
+        // Escape is reserved, not configurable. Capture filtering happens at arrival.
+        if matches!(input, InputKey::Keyboard(KeyCode::Escape)) {
+            vec![Action::Close]
+        } else {
+            bindings.actions_for_input(input).cloned().collect()
+        }
     }
 
     #[cfg(test)]
@@ -208,6 +232,65 @@ mod tests {
     };
 
     #[test]
+    fn observer_and_pending_query_share_bindings_and_reserved_escape() {
+        let mut collector = ActionCollector::new();
+        let mut bindings = KeyBindings::default();
+        bindings.set(Action::Close, vec![]);
+        bindings.set(Action::OpenMenu, vec![InputKey::Keyboard(KeyCode::Escape)]);
+        let inputs = [
+            InputKey::Mouse(MouseButton::Middle),
+            InputKey::Controller(Button::South),
+            InputKey::Keyboard(KeyCode::KeyJ),
+        ];
+        bindings.set(Action::Jump, inputs.to_vec());
+        for input in inputs {
+            collector.press_for_test(input, false);
+            assert!(collector.action_held_including_pending(Action::Jump, &bindings));
+            collector.release_for_test(input);
+            assert!(!collector.action_held_including_pending(Action::Jump, &bindings));
+        }
+        collector.press_for_test(InputKey::Keyboard(KeyCode::Escape), false);
+        assert!(collector.action_held_including_pending(Action::Close, &bindings));
+        assert!(!collector.action_held_including_pending(Action::OpenMenu, &bindings));
+        assert!(collector.dispatcher().action_states().is_empty());
+        let mut observed = Vec::new();
+        let mut delivered = Vec::new();
+        let mut handler = |event: &ActionEvent, _: &ActionStates| {
+            delivered.push(event.clone());
+            EventDisposition::Pass
+        };
+        collector.dispatch(
+            Instant::now(),
+            &bindings,
+            |_, events, states| {
+                observed.extend_from_slice(events);
+                if states.contains_key(&Action::Close) {
+                    vec![Action::Close]
+                } else {
+                    vec![]
+                }
+            },
+            &mut [&mut handler],
+        );
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| event.action == Action::Jump)
+                .count(),
+            6
+        );
+        assert_eq!(observed.last().unwrap().action, Action::Close);
+        assert_eq!(delivered.len(), observed.len() - 1);
+        assert!(delivered.iter().all(|event| event.action != Action::Close));
+        assert!(
+            collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::Close)
+        );
+    }
+
+    #[test]
     fn raw_consumption_affects_only_latest_occurrence_and_not_held_state() {
         let mut collector = ActionCollector::new();
         let mut bindings = KeyBindings::default();
@@ -335,7 +418,7 @@ mod tests {
             events.push(event.clone());
             EventDisposition::Pass
         };
-        collector.dispatch(frame_time, bindings, &mut [&mut capture]);
+        collector.dispatch_without_observer(frame_time, bindings, &mut [&mut capture]);
         events
     }
 
@@ -527,7 +610,7 @@ mod tests {
                 events.push(event.clone());
                 EventDisposition::Pass
             };
-            collector.dispatch(frame_time, &bindings, &mut [&mut capture]);
+            collector.dispatch_without_observer(frame_time, &bindings, &mut [&mut capture]);
             assert_eq!(events.len(), 2);
             assert!(events.iter().all(|event| event.source == source));
             assert_eq!(events[0].kind, ActionEventKind::Press);

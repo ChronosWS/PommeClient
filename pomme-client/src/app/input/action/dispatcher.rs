@@ -84,7 +84,9 @@ pub enum EventDisposition {
 
 pub type ActionHandler<'a> = dyn FnMut(&ActionEvent, &ActionStates) -> EventDisposition + 'a;
 
-enum InputEvent {
+/// A physical occurrence, including inputs with no action binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputEvent {
     Press(InputSource),
     Repeat(InputSource),
     Release(InputSource),
@@ -112,6 +114,44 @@ impl ActionDispatcher {
     /// occurrences.
     pub fn action_states(&self) -> &ActionStates {
         &self.action_states
+    }
+
+    /// Query held state after replaying pending input without draining the
+    /// queue or changing dispatched state. Existing sources retain their
+    /// active mappings.
+    pub fn action_held_including_pending(
+        &self,
+        action: Action,
+        mut resolve_bindings: impl FnMut(&InputKey) -> Vec<Action>,
+    ) -> bool {
+        let mut sources: HashMap<InputSource, Vec<Action>> = HashMap::new();
+        for (active_action, state) in &self.action_states {
+            for source in &state.active_sources {
+                sources
+                    .entry(source.clone())
+                    .or_default()
+                    .push(*active_action);
+            }
+        }
+        for queued in &self.input_queue {
+            match &queued.event {
+                InputEvent::Press(source) if !sources.contains_key(source) => {
+                    let actions = resolve_bindings(&source.input);
+                    if !actions.is_empty() {
+                        sources.insert(source.clone(), actions);
+                    }
+                }
+                InputEvent::Press(_) | InputEvent::Repeat(_) => {}
+                InputEvent::Release(source) => {
+                    sources.remove(source);
+                }
+                InputEvent::DeviceDisconnected(device) => {
+                    sources.retain(|source, _| source.device != *device);
+                }
+                InputEvent::FocusLost => sources.clear(),
+            }
+        }
+        sources.values().any(|actions| actions.contains(&action))
     }
 
     pub fn on_press(&mut self, source: InputSource) {
@@ -258,14 +298,34 @@ impl ActionDispatcher {
         }
     }
 
+    /// Test convenience for consumers that do not observe physical occurrences.
+    #[cfg(test)]
+    pub fn dispatch_without_observer(
+        &mut self,
+        frame_time: Instant,
+        resolve_bindings: impl FnMut(&InputKey) -> Vec<Action>,
+        handlers: &mut [&mut ActionHandler<'_>],
+    ) {
+        // TODO: Make observer use systematic in the dispatch design rather than
+        // patching individual call sites with real or no-op observers.
+        self.dispatch(frame_time, resolve_bindings, |_, _, _| Vec::new(), handlers);
+    }
+
     /// Resolve the whole batch before delivery. Events are offered in
     /// occurrence order, handlers in caller-supplied priority order.
     /// Handlers own eligibility and internal screen routing. The caller
     /// supplies a monotonic frame time.
+    ///
+    /// Observe each resolved physical occurrence after raw-handler consumption,
+    /// even when it produces no deliverable action events. Observer states are
+    /// occurrence-time; handlers still receive final frame state. Returned
+    /// actions suppress only this occurrence's delivery, never its
+    /// held-state effects.
     pub fn dispatch(
         &mut self,
         frame_time: Instant,
         mut resolve_bindings: impl FnMut(&InputKey) -> Vec<Action>,
+        mut observer: impl FnMut(&InputEvent, &[ActionEvent], &ActionStates) -> Vec<Action>,
         handlers: &mut [&mut ActionHandler<'_>],
     ) {
         let mut events = Vec::new();
@@ -275,16 +335,19 @@ impl ActionDispatcher {
         }) = self.input_queue.pop_front()
         {
             let occurrence_start = events.len();
-            match input {
-                InputEvent::Press(source) => {
-                    self.press(source, frame_time, &mut resolve_bindings, &mut events)
-                }
-                InputEvent::Repeat(source) => self.repeat(&source, frame_time, &mut events),
+            match &input {
+                InputEvent::Press(source) => self.press(
+                    source.clone(),
+                    frame_time,
+                    &mut resolve_bindings,
+                    &mut events,
+                ),
+                InputEvent::Repeat(source) => self.repeat(source, frame_time, &mut events),
                 InputEvent::Release(source) => {
-                    self.release(&source, ReleaseReason::Released, frame_time, &mut events)
+                    self.release(source, ReleaseReason::Released, frame_time, &mut events)
                 }
                 InputEvent::DeviceDisconnected(device) => self.cancel(
-                    Some(device),
+                    Some(*device),
                     ReleaseReason::DeviceDisconnected,
                     frame_time,
                     &mut events,
@@ -293,14 +356,14 @@ impl ActionDispatcher {
                     self.cancel(None, ReleaseReason::FocusLost, frame_time, &mut events)
                 }
             }
-            if let Some(action) = consumed {
-                let occurrence = events.split_off(occurrence_start);
-                events.extend(
-                    occurrence
-                        .into_iter()
-                        .filter(|event| event.action != action),
-                );
-            }
+            let mut occurrence = events.split_off(occurrence_start);
+            occurrence.retain(|event| Some(event.action) != consumed);
+            let filtered = observer(&input, &occurrence, &self.action_states);
+            events.extend(
+                occurrence
+                    .into_iter()
+                    .filter(|event| !filtered.contains(&event.action)),
+            );
         }
         for event in events {
             for handler in handlers.iter_mut() {
@@ -346,8 +409,185 @@ mod tests {
             events.push(event.clone());
             EventDisposition::Pass
         };
-        dispatcher.dispatch(time, |_| actions.to_vec(), &mut [&mut handler]);
+        dispatcher.dispatch_without_observer(time, |_| actions.to_vec(), &mut [&mut handler]);
         events
+    }
+
+    #[test]
+    fn observer_sees_occurrence_states_after_raw_consumption_and_handlers_see_final_state() {
+        let mut dispatcher = ActionDispatcher::new();
+        let unmapped = InputSource {
+            input: InputKey::Keyboard(KeyCode::KeyJ),
+            ..keyboard()
+        };
+        dispatcher.on_press(keyboard());
+        dispatcher.consume_latest_action(Action::Jump);
+        dispatcher.on_repeat(&keyboard());
+        dispatcher.on_release(&keyboard());
+        dispatcher.on_press(unmapped.clone());
+        dispatcher.on_press(keyboard());
+        let time = Instant::now();
+        let mut observations = Vec::new();
+        let mut delivered = Vec::new();
+        let mut handler = |event: &ActionEvent, states: &ActionStates| {
+            assert!(states.contains_key(&Action::Jump));
+            delivered.push(event.clone());
+            EventDisposition::Pass
+        };
+        dispatcher.dispatch(
+            time,
+            |input| {
+                if *input == keyboard().input {
+                    vec![Action::Jump]
+                } else {
+                    vec![]
+                }
+            },
+            |input, events, states| {
+                observations.push((
+                    input.clone(),
+                    events.to_vec(),
+                    states.contains_key(&Action::Jump),
+                ));
+                if matches!(input, InputEvent::Repeat(_)) {
+                    vec![Action::Jump]
+                } else {
+                    vec![]
+                }
+            },
+            &mut [&mut handler],
+        );
+        assert_eq!(
+            observations
+                .iter()
+                .map(|(_, _, held)| *held)
+                .collect::<Vec<_>>(),
+            vec![true, true, false, false, true]
+        );
+        assert_eq!(
+            observations
+                .iter()
+                .map(|(input, _, _)| input.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                InputEvent::Press(keyboard()),
+                InputEvent::Repeat(keyboard()),
+                InputEvent::Release(keyboard()),
+                InputEvent::Press(unmapped),
+                InputEvent::Press(keyboard())
+            ]
+        );
+        assert!(observations[0].1.is_empty());
+        assert_eq!(observations[1].1[0].kind, ActionEventKind::Repeat);
+        assert!(observations[3].1.is_empty());
+        assert_eq!(
+            delivered.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            vec![
+                ActionEventKind::Release(ReleaseReason::Released),
+                ActionEventKind::Press
+            ]
+        );
+        assert!(delivered.iter().all(|event| event.timestamp == time));
+        assert_eq!(
+            dispatcher.action_states()[&Action::Jump]
+                .active_sources()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn observer_sees_disconnect_and_focus_loss_occurrence_states() {
+        let mut dispatcher = ActionDispatcher::new();
+        dispatcher.on_press(keyboard());
+        dispatcher.on_press(gamepad(1));
+        dispatcher.on_device_disconnected(InputDeviceId::Gamepad(1));
+        dispatcher.on_focus_lost();
+        let mut observations = Vec::new();
+        dispatcher.dispatch(
+            Instant::now(),
+            |_| vec![Action::Jump],
+            |input, events, states| {
+                observations.push((
+                    input.clone(),
+                    events.to_vec(),
+                    states
+                        .get(&Action::Jump)
+                        .map_or(0, |state| state.active_sources().len()),
+                ));
+                vec![Action::Jump]
+            },
+            &mut [],
+        );
+        assert_eq!(
+            observations
+                .iter()
+                .map(|(_, _, count)| *count)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 1, 0]
+        );
+        assert_eq!(
+            observations[2].0,
+            InputEvent::DeviceDisconnected(InputDeviceId::Gamepad(1))
+        );
+        assert_eq!(
+            observations[2].1[0].kind,
+            ActionEventKind::Release(ReleaseReason::DeviceDisconnected)
+        );
+        assert_eq!(observations[3].0, InputEvent::FocusLost);
+        assert_eq!(
+            observations[3].1[0].kind,
+            ActionEventKind::Release(ReleaseReason::FocusLost)
+        );
+    }
+
+    #[test]
+    fn pending_query_preserves_active_mappings_and_replays_source_scoped_cancellation() {
+        let mut dispatcher = ActionDispatcher::new();
+        dispatcher.on_press(keyboard());
+        dispatch(&mut dispatcher, Instant::now(), &[Action::Jump]);
+        dispatcher.on_press(keyboard());
+        dispatcher.on_repeat(&keyboard());
+        assert!(
+            dispatcher.action_held_including_pending(Action::Jump, |_| panic!(
+                "active source must not resolve"
+            ))
+        );
+        assert!(
+            !dispatcher.action_held_including_pending(Action::OpenMenu, |_| vec![Action::OpenMenu])
+        );
+        dispatcher.on_press(gamepad(1));
+        dispatcher.consume_latest_action(Action::Jump);
+        dispatcher.on_press(gamepad(1));
+        dispatcher.on_press(gamepad(2));
+        dispatcher.on_release(&keyboard());
+        dispatcher.on_device_disconnected(InputDeviceId::Gamepad(1));
+        let calls = Cell::new(0);
+        for _ in 0..2 {
+            assert!(dispatcher.action_held_including_pending(Action::Jump, |_| {
+                calls.set(calls.get() + 1);
+                vec![Action::Jump]
+            }));
+        }
+        assert_eq!(calls.get(), 4);
+        assert_eq!(
+            dispatcher.action_states()[&Action::Jump].active_sources(),
+            &HashSet::from([keyboard()])
+        );
+        dispatcher.on_device_disconnected(InputDeviceId::Gamepad(2));
+        assert!(!dispatcher.action_held_including_pending(Action::Jump, |_| vec![Action::Jump]));
+        dispatcher.on_press(gamepad(3));
+        dispatcher.on_focus_lost();
+        dispatcher.on_repeat(&gamepad(3));
+        assert!(!dispatcher.action_held_including_pending(Action::Jump, |_| vec![Action::Jump]));
+        dispatcher.on_press(keyboard());
+        assert!(
+            dispatcher.action_held_including_pending(Action::OpenMenu, |_| vec![Action::OpenMenu])
+        );
+        let events = dispatch(&mut dispatcher, Instant::now(), &[Action::OpenMenu]);
+        assert!(!events.is_empty());
+        assert!(!dispatcher.action_states().contains_key(&Action::Jump));
+        assert!(dispatcher.action_states().contains_key(&Action::OpenMenu));
     }
 
     #[test]
@@ -357,7 +597,7 @@ mod tests {
         assert!(dispatcher.action_states().is_empty());
         let calls = Cell::new(0);
         let time = Instant::now();
-        dispatcher.dispatch(
+        dispatcher.dispatch_without_observer(
             time,
             |_| {
                 calls.set(calls.get() + 1);
@@ -369,7 +609,7 @@ mod tests {
         assert_eq!(dispatcher.action_states()[&Action::Jump].started_at, time);
         dispatcher.on_release(&keyboard());
         assert!(dispatcher.action_states().contains_key(&Action::Jump));
-        dispatcher.dispatch(
+        dispatcher.dispatch_without_observer(
             time,
             |_| panic!("release must not resolve current bindings"),
             &mut [],
@@ -511,7 +751,7 @@ mod tests {
             seen.push((event.kind, event.hold_transition));
             EventDisposition::Pass
         };
-        dispatcher.dispatch(start, |_| vec![Action::Jump], &mut [&mut handler]);
+        dispatcher.dispatch_without_observer(start, |_| vec![Action::Jump], &mut [&mut handler]);
         assert_eq!(
             seen,
             vec![
@@ -540,7 +780,11 @@ mod tests {
             count += 1;
             EventDisposition::Consume
         };
-        dispatcher.dispatch(Instant::now(), |_| vec![Action::Jump], &mut [&mut handler]);
+        dispatcher.dispatch_without_observer(
+            Instant::now(),
+            |_| vec![Action::Jump],
+            &mut [&mut handler],
+        );
         assert_eq!(count, 2);
     }
 
@@ -598,7 +842,7 @@ mod tests {
             EventDisposition::Pass
         };
         let time = Instant::now();
-        dispatcher.dispatch(
+        dispatcher.dispatch_without_observer(
             time,
             |_| vec![Action::Jump, Action::Use],
             &mut [&mut global, &mut menu, &mut gameplay],
@@ -614,7 +858,7 @@ mod tests {
             ]
         );
         assert_eq!(dispatcher.action_states().len(), 2);
-        dispatcher.dispatch(
+        dispatcher.dispatch_without_observer(
             time,
             |_| vec![Action::Jump],
             &mut [&mut global, &mut menu, &mut gameplay],
@@ -644,7 +888,7 @@ mod tests {
                 EventDisposition::Pass
             }
         };
-        dispatcher.dispatch(
+        dispatcher.dispatch_without_observer(
             Instant::now(),
             |_| vec![Action::OpenMenu, Action::Jump],
             &mut [&mut global, &mut menu],

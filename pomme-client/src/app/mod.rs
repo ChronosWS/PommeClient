@@ -406,24 +406,22 @@ impl ApplicationHandler for App {
                         self.core.input.on_key_event(&event);
                         return app;
                     }
-                    // F3 held suppresses global keys (vanilla
-                    // handleGlobalKeyPress); press only, no repeat.
+                    // The Debug Modifier suppresses global keys. Fullscreen
+                    // remains raw until its action migration.
+                    let debug_modifier_held =
+                        self.core.input.action_events.action_held_including_pending(
+                            crate::app::input::Action::DebugModifier,
+                            &self.core.menu.key_bindings,
+                        );
                     if let Some(Gfx { window, .. }) = app.gfx_mut()
                         && event.state.is_pressed()
                         && !event.repeat
-                        && !self.core.input.is_key_held(KeyCode::F3)
+                        && !debug_modifier_held
                         && let PhysicalKey::Code(KeyCode::F11) = event.physical_key
                     {
                         let display_mode = self.core.display_mode.cycle();
                         self.core.menu.set_display_mode(display_mode);
                         self.core.sync_display_mode(window);
-                    }
-                    // Filter F3 chords at input collection so releasing F3
-                    // before frame dispatch cannot revive a blocked screenshot.
-                    if event.state.is_pressed() && self.core.input.is_key_held(KeyCode::F3) {
-                        self.core
-                            .input
-                            .consume_latest_action(crate::app::input::Action::Screenshot);
                     }
 
                     self.core.input.on_key_event(&event);
@@ -497,9 +495,11 @@ impl ApplicationHandler for App {
                             if event.state.is_pressed()
                                 && let PhysicalKey::Code(code) = event.physical_key
                             {
+                                let debug_captured = crate::app::action_consumers::debug::DebugConsumer::captures_key(
+                                    code, &self.core.input, &self.core.menu.key_bindings,
+                                );
                                 if game.options_from_game {
-                                    let f3_held = self.core.input.is_key_held(KeyCode::F3);
-                                    if !game.handle_debug_key(code, f3_held, &connection) {
+                                    if !debug_captured {
                                         self.core.input.on_menu_key_event(&event);
                                     }
                                 } else if game.server_dialog.is_some()
@@ -529,8 +529,7 @@ impl ApplicationHandler for App {
                                             }
                                         }
                                         _ => {
-                                            let f3_held = self.core.input.is_key_held(KeyCode::F3);
-                                            if !game.handle_debug_key(code, f3_held, &connection) {
+                                            if !debug_captured {
                                                 self.core.input.on_menu_key_event(&event);
                                             }
                                         }
@@ -546,8 +545,7 @@ impl ApplicationHandler for App {
                                                 .apply_cursor_grab(&gfx.window, Some(&mut game));
                                         }
                                         _ => {
-                                            let f3_held = self.core.input.is_key_held(KeyCode::F3);
-                                            if !game.handle_debug_key(code, f3_held, &connection) {
+                                            if !debug_captured {
                                                 self.core.input.on_menu_key_event(&event);
                                             }
                                         }
@@ -556,49 +554,16 @@ impl ApplicationHandler for App {
                                     // A container text field (anvil rename) has
                                     // focus; keys type into it. Escape still
                                     // closes via the OpenMenu action.
-                                    let f3_held = self.core.input.is_key_held(KeyCode::F3);
-                                    if !game.handle_debug_key(code, f3_held, &connection) {
+                                    if !debug_captured {
                                         self.core.input.on_menu_key_event(&event);
                                     }
-                                } else {
-                                    match code {
-                                        // F3+Esc pauses without opening the
-                                        // menu (vanilla pauseGame(true)).
-                                        KeyCode::Escape
-                                            if self.core.input.is_key_held(KeyCode::F3)
-                                                && game.input_live() =>
-                                        {
-                                            game.paused = true;
-                                            game.pause_screen =
-                                                crate::ui::pause::PauseScreen::Hidden;
-                                            game.f3_chord_consumed = true;
-                                            self.core.input.consume_latest_action(
-                                                crate::app::input::Action::Close,
-                                            );
-                                            self.core
-                                                .apply_cursor_grab(&gfx.window, Some(&mut game));
-                                        }
-                                        KeyCode::Escape
-                                            if game.death_confirm
-                                                && crate::ui::death::buttons_ready(
-                                                    game.death_confirm_ticks,
-                                                ) =>
-                                        {
-                                            game.death_confirm = false;
-                                            self.core.send_respawn(&connection, &mut game);
-                                        }
-                                        _ => {
-                                            let f3_held = self.core.input.is_key_held(KeyCode::F3);
-                                            game.handle_debug_key(code, f3_held, &connection);
-                                        }
-                                    }
+                                } else if code == KeyCode::Escape
+                                    && game.death_confirm
+                                    && crate::ui::death::buttons_ready(game.death_confirm_ticks)
+                                {
+                                    game.death_confirm = false;
+                                    self.core.send_respawn(&connection, &mut game);
                                 }
-                            } else if !event.state.is_pressed()
-                                && matches!(event.physical_key, PhysicalKey::Code(KeyCode::F3))
-                            {
-                                // Overlay toggles on F3 release, unless a chord
-                                // consumed it; runs in every in-game sub-state.
-                                game.handle_f3_release(&connection);
                             }
 
                             AppPhase::InGame {
