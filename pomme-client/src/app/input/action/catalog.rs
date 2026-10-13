@@ -286,6 +286,22 @@ actions! {
         listed: true,
         defaults: [Keyboard(KeyCode::KeyF)],
     },
+    NextHotbarSlot => {
+        id: "key.hotbar.next",
+        translation_id: None,
+        fallback: "Next Hotbar Slot",
+        category: Inventory,
+        listed: true,
+        defaults: [Controller(Button::RightTrigger)],
+    },
+    PreviousHotbarSlot => {
+        id: "key.hotbar.previous",
+        translation_id: None,
+        fallback: "Previous Hotbar Slot",
+        category: Inventory,
+        listed: true,
+        defaults: [Controller(Button::LeftTrigger)],
+    },
     Hotbar1 => {
         id: "key.hotbar.1",
         translation_id: Some(StringId::new("key.hotbar.1")),

@@ -342,10 +342,6 @@ impl ApplicationHandler for App {
             .input
             .action_events
             .on_window_event(&event, binding_capture);
-        self.core
-            .action_consumers
-            .hotbar_slot
-            .process_arrivals(&mut self.core.input, &self.core.menu.key_bindings);
         match event {
             WindowEvent::CloseRequested | WindowEvent::Destroyed => {
                 // A world saves on the way out, so the window stays up for it
@@ -740,11 +736,7 @@ impl ApplicationHandler for App {
 
                 let core = &mut self.core;
 
-                core.input.collect_gamepad_events(|input| {
-                    core.action_consumers
-                        .hotbar_slot
-                        .process_arrivals(input, &core.menu.key_bindings);
-                });
+                core.input.collect_gamepad_events();
                 let should_apply_cursor_grab = core.action_consumers.process_actions(
                     &mut core.input,
                     &mut self.phase,

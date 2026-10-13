@@ -1,10 +1,10 @@
-//! Direct slot selection at input arrival, container swaps per frame, and
+//! Direct slot selection and container swaps per frame, and
 //! spectator selections per gameplay tick.
 
 use std::collections::HashMap;
 
-use crate::app::input::action::dispatcher::{ActionEvent, EventDisposition};
-use crate::app::input::{InputKey, InputState, KeyBindings};
+use crate::app::input::InputKey;
+use crate::app::input::action::dispatcher::{ActionEvent, ActionEventKind, EventDisposition};
 use crate::app::phases::in_game::GameState;
 use crate::net::sender::PacketSender;
 
@@ -15,47 +15,37 @@ pub struct HotbarSlotConsumer {
 }
 
 impl HotbarSlotConsumer {
-    /// Ordinary slots used to change inside the raw input callback. Applying
-    /// them here preserves ordering with wheel and gamepad slot cycling, which
-    /// have not migrated to action dispatch yet.
-    pub fn process_arrivals(&mut self, input: &mut InputState, bindings: &KeyBindings) {
-        for (key, repeat) in input.action_events.take_arrival_presses() {
-            if matches!(key, InputKey::Keyboard(winit::keyboard::KeyCode::Escape))
-                || (repeat && !matches!(key, InputKey::Keyboard(_)))
-            {
-                continue;
-            }
-            let mut slots: Vec<_> = bindings
-                .actions_for_input(&key)
-                .filter_map(|action| action.hotbar_slot())
-                .collect();
-            slots.sort_unstable();
-            for slot in slots {
-                self.select(slot, key, input);
-            }
+    pub fn handle_event(
+        &mut self,
+        event: &ActionEvent,
+        selected_slot: &mut u8,
+        text_capture: bool,
+        menu_capture: bool,
+        spectator: bool,
+        binding_capture: bool,
+    ) -> EventDisposition {
+        let Some(slot) = event.action.hotbar_slot() else {
+            return EventDisposition::Pass;
+        };
+        if binding_capture {
+            return EventDisposition::Pass;
         }
-    }
-
-    fn select(&mut self, slot: u8, key: InputKey, input: &mut InputState) {
-        // Container shortcuts previously read this frame's raw key presses,
-        // independently of whether they also selected a gameplay slot.
-        self.container_slots.insert(slot, key);
-        if !input.text_capture && !input.menu_capture {
-            if input.spectator {
-                self.spectator_slots.push(slot);
-            } else {
-                input.set_selected_slot(slot);
+        if event.kind == ActionEventKind::Press
+            || (event.kind == ActionEventKind::Repeat
+                && matches!(event.source.input, InputKey::Keyboard(_)))
+        {
+            // Container shortcuts are frame-scoped, independently of whether
+            // the same press also selects a gameplay slot.
+            self.container_slots.insert(slot, event.source.input);
+            if !text_capture && !menu_capture {
+                if spectator {
+                    self.spectator_slots.push(slot);
+                } else {
+                    *selected_slot = slot;
+                }
             }
         }
-    }
-
-    pub fn handle_event(event: &ActionEvent) -> EventDisposition {
-        if event.action.hotbar_slot().is_some() {
-            // Already applied through the capture-filtered arrival path.
-            EventDisposition::Consume
-        } else {
-            EventDisposition::Pass
-        }
+        EventDisposition::Consume
     }
 
     pub fn container_slot(&self) -> Option<u8> {
@@ -113,7 +103,8 @@ mod tests {
     use winit::keyboard::KeyCode;
 
     use super::*;
-    use crate::app::input::Action;
+    use crate::app::input::action::dispatcher::ActionStates;
+    use crate::app::input::{Action, InputState, KeyBindings};
 
     fn press(
         consumer: &mut HotbarSlotConsumer,
@@ -122,8 +113,33 @@ mod tests {
         key: InputKey,
         repeat: bool,
     ) {
+        if !repeat {
+            input.action_events.release_for_test(key);
+        }
         input.action_events.press_for_test(key, repeat);
-        consumer.process_arrivals(input, bindings);
+        dispatch(consumer, input, bindings);
+    }
+
+    fn dispatch(consumer: &mut HotbarSlotConsumer, input: &mut InputState, bindings: &KeyBindings) {
+        let mut selected_slot = input.selected_slot();
+        let text_capture = input.text_capture;
+        let menu_capture = input.menu_capture;
+        let spectator = input.spectator;
+        let binding_capture = input.binding_capture_active();
+        let mut handler = |event: &ActionEvent, _: &ActionStates| {
+            consumer.handle_event(
+                event,
+                &mut selected_slot,
+                text_capture,
+                menu_capture,
+                spectator,
+                binding_capture,
+            )
+        };
+        input
+            .action_events
+            .dispatch(std::time::Instant::now(), bindings, &mut [&mut handler]);
+        input.set_selected_slot(selected_slot);
     }
 
     #[test]
@@ -186,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn arrival_selection_preserves_order_with_scroll_and_container_scope() {
+    fn selection_waits_for_frame_dispatch_and_container_shortcuts_end_with_frame() {
         let mut bindings = KeyBindings::default();
         bindings.set(
             Action::Hotbar4,
@@ -194,15 +210,15 @@ mod tests {
         );
         let mut consumer = HotbarSlotConsumer::default();
         let mut input = InputState::released();
-        press(
-            &mut consumer,
-            &mut input,
-            &bindings,
-            InputKey::Mouse(MouseButton::Other(4)),
-            false,
-        );
+        input
+            .action_events
+            .press_for_test(InputKey::Mouse(MouseButton::Other(4)), false);
+        assert_eq!(input.selected_slot(), 0);
+        assert_eq!(consumer.container_slot(), None);
         input.on_scroll(-1.0);
-        assert_eq!(input.selected_slot(), 4);
+        assert_eq!(input.selected_slot(), 1);
+        dispatch(&mut consumer, &mut input, &bindings);
+        assert_eq!(input.selected_slot(), 3);
         consumer.end_frame();
         assert_eq!(consumer.container_slot(), None);
         input.on_scroll(-1.0);
@@ -235,13 +251,17 @@ mod tests {
         let mut consumer = HotbarSlotConsumer::default();
         let mut input = InputState::released();
         input.spectator = true;
-        for key in [KeyCode::Digit9, KeyCode::Digit1, KeyCode::Digit9] {
+        for (key, repeat) in [
+            (KeyCode::Digit9, false),
+            (KeyCode::Digit1, false),
+            (KeyCode::Digit9, true),
+        ] {
             press(
                 &mut consumer,
                 &mut input,
                 &bindings,
                 InputKey::Keyboard(key),
-                true,
+                repeat,
             );
         }
         consumer.end_frame();
@@ -289,11 +309,11 @@ mod tests {
         input
             .action_events
             .on_window_event(&event(ElementState::Pressed), true);
-        consumer.process_arrivals(&mut input, &bindings);
+        dispatch(&mut consumer, &mut input, &bindings);
         input
             .action_events
             .on_window_event(&event(ElementState::Pressed), false);
-        consumer.process_arrivals(&mut input, &bindings);
+        dispatch(&mut consumer, &mut input, &bindings);
         assert_eq!(input.selected_slot(), 0);
         assert!(consumer.container_slot().is_none());
         input
@@ -302,7 +322,7 @@ mod tests {
         input
             .action_events
             .on_window_event(&event(ElementState::Pressed), false);
-        consumer.process_arrivals(&mut input, &bindings);
+        dispatch(&mut consumer, &mut input, &bindings);
         assert_eq!(input.selected_slot(), 8);
     }
 }

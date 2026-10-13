@@ -1,6 +1,5 @@
 //! Queue-only physical input collection with capture filtering at arrival.
-//! Most action resolution happens at dispatch. Arrival-time hotbar selection
-//! observes the same capture-filtered presses to preserve raw event ordering.
+//! Action resolution happens at dispatch time.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -18,7 +17,6 @@ pub struct ActionCollector {
     // A captured input must not become a normal action if capture ends while
     // it is still down. This includes mouse and controller inputs, not just keys.
     captured_sources: HashSet<InputSource>,
-    arrival_presses: Vec<(InputKey, bool)>,
 }
 
 impl ActionCollector {
@@ -55,11 +53,6 @@ impl ActionCollector {
         );
     }
 
-    /// Presses accepted by capture filtering, in physical arrival order.
-    pub fn take_arrival_presses(&mut self) -> Vec<(InputKey, bool)> {
-        std::mem::take(&mut self.arrival_presses)
-    }
-
     #[cfg(test)]
     pub(crate) fn press_for_test(&mut self, input: InputKey, repeat: bool) {
         self.handle_input(
@@ -69,6 +62,19 @@ impl ActionCollector {
             },
             ElementState::Pressed,
             repeat,
+            false,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_for_test(&mut self, input: InputKey) {
+        self.handle_input(
+            InputSource {
+                device: InputDeviceId::Window(None),
+                input,
+            },
+            ElementState::Released,
+            false,
             false,
         );
     }
@@ -87,7 +93,6 @@ impl ActionCollector {
         } else if capturing {
             self.captured_sources.insert(source);
         } else if !self.captured_sources.contains(&source) {
-            self.arrival_presses.push((source.input, repeat));
             if repeat {
                 self.dispatcher.on_repeat(&source);
             } else {

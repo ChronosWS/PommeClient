@@ -3,6 +3,7 @@
 pub mod close;
 pub mod destroy;
 pub mod drop_item;
+pub mod hotbar_cycle;
 pub mod hotbar_slot;
 pub mod inventory;
 pub mod jump;
@@ -24,6 +25,7 @@ use std::time::Instant;
 use close::{CloseConsumer, CloseOutcome};
 use destroy::DestroyConsumer;
 use drop_item::DropItemConsumer;
+use hotbar_cycle::HotbarCycleConsumer;
 use hotbar_slot::HotbarSlotConsumer;
 use inventory::{InventoryConsumer, InventoryOutcome};
 use jump::JumpConsumer;
@@ -40,7 +42,7 @@ use sprint::SprintConsumer;
 use swap_offhand::SwapOffhandConsumer;
 use use_item::UseConsumer;
 
-use super::input::action::dispatcher::{ActionEvent, ActionStates};
+use super::input::action::dispatcher::{ActionEvent, ActionStates, EventDisposition};
 use super::input::{InputState, KeyBindings};
 use super::phases::AppPhase;
 use super::state_slot::StateSlot;
@@ -93,6 +95,8 @@ impl ActionConsumers {
         let binding_capture = input.binding_capture_active();
         let text_capture = input.text_capture;
         let menu_capture = input.menu_capture;
+        let spectator = input.spectator;
+        let mut selected_slot = input.selected_slot();
         let mut destroy_handler = |event: &ActionEvent, _: &ActionStates| {
             self.destroy
                 .handle_event(event, phase.get(), binding_capture)
@@ -169,8 +173,30 @@ impl ActionConsumers {
         let mut open_commands_handler =
             |event: &ActionEvent, _: &ActionStates| open_commands.handle_event(event);
         let mut player_list_handler = PlayerListConsumer::handle_event;
-        let mut hotbar_handler =
-            |event: &ActionEvent, _: &ActionStates| HotbarSlotConsumer::handle_event(event);
+        let mut hotbar_handler = |event: &ActionEvent, _: &ActionStates| {
+            let slot_disposition = self.hotbar_slot.handle_event(
+                event,
+                &mut selected_slot,
+                text_capture,
+                menu_capture,
+                spectator,
+                binding_capture,
+            );
+            let cycle_disposition = HotbarCycleConsumer::handle_event(
+                event,
+                &mut selected_slot,
+                menu_capture,
+                spectator,
+                binding_capture,
+            );
+            if slot_disposition == EventDisposition::Consume
+                || cycle_disposition == EventDisposition::Consume
+            {
+                EventDisposition::Consume
+            } else {
+                EventDisposition::Pass
+            }
+        };
         input.action_events.dispatch(
             frame_time,
             bindings,
@@ -195,6 +221,7 @@ impl ActionConsumers {
                 &mut spectator_hotbar_handler,
             ],
         );
+        input.set_selected_slot(selected_slot);
 
         if binding_capture {
             self.movement
@@ -269,5 +296,44 @@ impl ActionConsumers {
         self.spectator_hotbar.do_frame(phase.get(), binding_capture);
 
         should_apply_cursor_grab
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gilrs::Button;
+    use winit::keyboard::KeyCode;
+
+    use super::*;
+    use crate::app::input::InputKey;
+
+    #[test]
+    fn hotbar_selection_and_cycling_apply_once_in_frame_dispatch_order() {
+        let mut consumers = ActionConsumers::default();
+        let mut input = InputState::released();
+        let bindings = KeyBindings::default();
+        let mut phase = StateSlot::new(AppPhase::Setup {
+            quick_access_multiplayer: None,
+            pending_skin_uuid: None,
+        });
+        for key in [
+            InputKey::Keyboard(KeyCode::Digit9),
+            InputKey::Controller(Button::RightTrigger),
+            InputKey::Keyboard(KeyCode::Digit3),
+            InputKey::Controller(Button::RightTrigger),
+        ] {
+            input.action_events.press_for_test(key, false);
+            input.action_events.release_for_test(key);
+        }
+        assert_eq!(input.selected_slot(), 0);
+        assert_eq!(consumers.hotbar_slot.container_slot(), None);
+        input.on_scroll(-1.0);
+        assert_eq!(input.selected_slot(), 1);
+        consumers.process_actions(&mut input, &mut phase, Instant::now(), &bindings);
+        assert_eq!(input.selected_slot(), 3);
+        consumers.hotbar_slot.end_frame();
+        consumers.process_actions(&mut input, &mut phase, Instant::now(), &bindings);
+        assert_eq!(input.selected_slot(), 3);
+        assert_eq!(consumers.hotbar_slot.container_slot(), None);
     }
 }

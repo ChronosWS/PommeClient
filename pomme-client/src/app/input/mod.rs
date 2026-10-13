@@ -277,7 +277,7 @@ impl InputState {
         }
     }
 
-    pub fn collect_gamepad_events(&mut self, mut on_action_event: impl FnMut(&mut Self)) {
+    pub fn collect_gamepad_events(&mut self) {
         let events: Vec<gilrs::Event> = match self.gamepad_manager.as_mut() {
             Some(manager) => std::iter::from_fn(|| manager.next_event()).collect(),
             None => Vec::new(),
@@ -285,7 +285,6 @@ impl InputState {
         for event in &events {
             self.action_events
                 .on_gamepad_event(event, self.binding_capture);
-            on_action_event(self);
             self.on_gamepad_event(event);
         }
     }
@@ -333,22 +332,6 @@ impl InputState {
                     self.binding_presses.push(input);
                 }
             }
-            return;
-        }
-
-        // TODO: gamepad spectator-menu support (vanilla has none).
-        match event.event {
-            gilrs::EventType::ButtonPressed(Button::RightTrigger, _)
-                if !self.spectator && !self.menu_capture =>
-            {
-                self.selected_slot = (self.selected_slot + 1) % 9;
-            }
-            gilrs::EventType::ButtonPressed(Button::LeftTrigger, _)
-                if !self.spectator && !self.menu_capture =>
-            {
-                self.selected_slot = (self.selected_slot + 8) % 9;
-            }
-            _ => {}
         }
     }
 
