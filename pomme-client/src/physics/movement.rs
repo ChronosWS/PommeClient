@@ -3,7 +3,6 @@
 // fall distance resets every tick while flying
 
 use glam::{DVec3, dvec3};
-use winit::keyboard::KeyCode;
 
 use super::aabb::Aabb;
 use super::block_shape::CollisionContext;
@@ -67,6 +66,16 @@ const CLIMB_MAX_FALL_SPEED: f32 = 0.15;
 const DEG_TO_RAD: f32 = std::f32::consts::PI / 180.0_f32;
 const SIN_SCALE: f64 = 10_430.378_350_470_453;
 
+/// Keep opposing directions separate: physics cancels them, but packets report
+/// each held direction independently, including when an analog stick is active.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MovementInput {
+    pub forward: bool,
+    pub backward: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
 /// The vehicle the player rides, as the sprint and flight-toggle gates see it.
 #[derive(Clone, Copy)]
 pub struct Vehicle {
@@ -79,6 +88,7 @@ pub struct Vehicle {
 pub fn tick(
     player: &mut LocalPlayer,
     input: &InputState,
+    movement: MovementInput,
     raw_jump_held: bool,
     sneak_held: bool,
     sprint_held: bool,
@@ -115,12 +125,14 @@ pub fn tick(
     // Vanilla `LocalPlayer.modifyInput` keeps the entire input pipeline in
     // float: damping, item-use slowdown, sneaking slowdown, then square remap.
     let moving_slowly = is_moving_slowly(player);
-    let (mut forward, mut strafe) = movement_input(input, moving_slowly, use_speed_multiplier);
-    let forward_pressed = has_forward_impulse(input);
+    let (mut forward, mut strafe) =
+        movement_input(input, movement, moving_slowly, use_speed_multiplier);
+    let forward_pressed = has_forward_impulse(input, movement);
 
     update_sprint_state(
         player,
         input,
+        movement,
         sneak_held,
         sprint_held,
         forward_pressed,
@@ -268,7 +280,16 @@ pub fn tick_dead(
     // remains authoritative until Player.updatePlayerPose runs at tick end.
     let neutral = InputState::released();
     let vehicle = is_passenger.then_some(Vehicle { jumpable: false });
-    update_sprint_state(player, &neutral, false, false, false, false, vehicle);
+    update_sprint_state(
+        player,
+        &neutral,
+        MovementInput::default(),
+        false,
+        false,
+        false,
+        false,
+        vehicle,
+    );
     player.update_water_state(chunk_store, is_passenger);
     player.tick_eye_height();
 
@@ -654,9 +675,11 @@ fn apply_collision(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_sprint_state(
     player: &mut LocalPlayer,
     input: &InputState,
+    movement: MovementInput,
     sneak_held: bool,
     sprint_held: bool,
     forward_pressed: bool,
@@ -668,7 +691,7 @@ fn update_sprint_state(
     if player.sprint_toggle_timer > 0 {
         player.sprint_toggle_timer -= 1;
     }
-    let current_backward = input.is_key_held(KeyCode::KeyS)
+    let current_backward = movement.backward
         || input
             .get_gamepad_movement_axes()
             .map(|vec| vec.y < -input::STICK_MOVEMENT_THRESHOLD)
@@ -1087,22 +1110,22 @@ fn is_moving_slowly(player: &LocalPlayer) -> bool {
 
 /// `ClientInput.moveVector` as `(left, forward)`. Pomme's analog stick is
 /// already clamped to unit length; keys normalize like `KeyboardInput.tick`.
-fn move_vector(input: &InputState) -> (f32, f32) {
+fn move_vector(input: &InputState, movement: MovementInput) -> (f32, f32) {
     if let Some(analog) = input.get_gamepad_movement_axes() {
         (analog.x, analog.y)
     } else {
         let mut forward = 0.0_f32;
         let mut strafe = 0.0_f32;
-        if input.is_key_held(KeyCode::KeyW) {
+        if movement.forward {
             forward += 1.0;
         }
-        if input.is_key_held(KeyCode::KeyS) {
+        if movement.backward {
             forward -= 1.0;
         }
-        if input.is_key_held(KeyCode::KeyA) {
+        if movement.left {
             strafe += 1.0;
         }
-        if input.is_key_held(KeyCode::KeyD) {
+        if movement.right {
             strafe -= 1.0;
         }
         normalize_vec2(strafe, forward)
@@ -1110,17 +1133,18 @@ fn move_vector(input: &InputState) -> (f32, f32) {
 }
 
 /// `ClientInput.hasForwardImpulse`.
-fn has_forward_impulse(input: &InputState) -> bool {
-    move_vector(input).1 > 1.0e-5
+fn has_forward_impulse(input: &InputState, movement: MovementInput) -> bool {
+    move_vector(input, movement).1 > 1.0e-5
 }
 
 /// `strafe` follows vanilla xxa: positive is left.
 fn movement_input(
     input: &InputState,
+    movement: MovementInput,
     moving_slowly: bool,
     use_speed_multiplier: f32,
 ) -> (f32, f32) {
-    let (mut strafe, mut forward) = move_vector(input);
+    let (mut strafe, mut forward) = move_vector(input, movement);
     if strafe == 0.0 && forward == 0.0 {
         return (forward, strafe);
     }
@@ -1207,6 +1231,8 @@ fn vanilla_look_y(pitch_degrees: f32) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use winit::keyboard::KeyCode;
+
     use super::*;
     use crate::player::{CROUCH_EYE_HEIGHT, STANDING_EYE_HEIGHT};
     use crate::world::block::find_state;
@@ -1440,13 +1466,29 @@ mod tests {
 
     #[test]
     fn keyboard_input_math_matches_vanilla_float_pipeline() {
-        let (left, forward) = normalize_vec2(1.0, 1.0);
-        let (left, forward) = square_movement(left * INPUT_DAMPING, forward * INPUT_DAMPING);
+        let input = InputState::released();
+        let (forward, left) = movement_input(
+            &input,
+            MovementInput {
+                forward: true,
+                left: true,
+                ..MovementInput::default()
+            },
+            false,
+            1.0,
+        );
         assert_eq!(left.to_bits(), 0x3f3504f2);
         assert_eq!(forward.to_bits(), 0x3f3504f2);
 
-        let (left, forward) = normalize_vec2(0.0, 1.0);
-        let (left, forward) = square_movement(left * INPUT_DAMPING, forward * INPUT_DAMPING);
+        let (forward, left) = movement_input(
+            &input,
+            MovementInput {
+                forward: true,
+                ..MovementInput::default()
+            },
+            false,
+            1.0,
+        );
         assert_eq!(left.to_bits(), 0x00000000);
         assert_eq!(forward.to_bits(), 0x3f7ae148);
     }
@@ -1462,14 +1504,21 @@ mod tests {
         let mut plain = LocalPlayer::new();
         plain.position = shifted.position;
 
-        let mut shift_input = InputState::released();
-        shift_input.set_key_held_for_test(KeyCode::KeyW, true);
-        let mut plain_input = InputState::released();
-        plain_input.set_key_held_for_test(KeyCode::KeyW, true);
+        let shift_input = InputState::released();
+        let shift_input_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
+        let plain_input = InputState::released();
+        let plain_input_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
 
         tick(
             &mut shifted,
             &shift_input,
+            shift_input_movement,
             false,
             true,
             false,
@@ -1482,6 +1531,7 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
+            plain_input_movement,
             false,
             false,
             false,
@@ -1505,6 +1555,7 @@ mod tests {
         tick(
             &mut shifted,
             &shift_input,
+            shift_input_movement,
             false,
             true,
             false,
@@ -1522,6 +1573,7 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
+            plain_input_movement,
             false,
             false,
             false,
@@ -1543,6 +1595,7 @@ mod tests {
         tick(
             &mut shifted,
             &plain_input,
+            plain_input_movement,
             false,
             false,
             false,
@@ -1561,6 +1614,7 @@ mod tests {
         tick(
             &mut shifted,
             &plain_input,
+            plain_input_movement,
             false,
             false,
             false,
@@ -1592,6 +1646,7 @@ mod tests {
         tick(
             &mut shifted,
             &input,
+            MovementInput::default(),
             false,
             true,
             false,
@@ -1604,6 +1659,7 @@ mod tests {
         tick(
             &mut released,
             &input,
+            MovementInput::default(),
             false,
             false,
             false,
@@ -1639,6 +1695,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             false,
             true,
             false,
@@ -1729,13 +1786,17 @@ mod tests {
         player.eyes_in_water = true;
         player.food = 20;
 
-        let mut input = InputState::released();
-        input.set_key_held_for_test(KeyCode::KeyW, true);
+        let input = InputState::released();
+        let input_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
         let anim = BlockEntityAnimStore::default();
 
         tick(
             &mut player,
             &input,
+            input_movement,
             false,
             true,
             false,
@@ -1802,10 +1863,14 @@ mod tests {
             "Pose.SWIMMING outside water is vanilla isVisuallyCrawling()"
         );
 
-        let mut input = InputState::released();
-        input.set_key_held_for_test(KeyCode::KeyW, true);
-        let (slowed_forward, _) = movement_input(&input, is_moving_slowly(&player), 1.0);
-        let (full_forward, _) = movement_input(&input, false, 1.0);
+        let input = InputState::released();
+        let input_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
+        let (slowed_forward, _) =
+            movement_input(&input, input_movement, is_moving_slowly(&player), 1.0);
+        let (full_forward, _) = movement_input(&input, input_movement, false, 1.0);
 
         assert_eq!(full_forward.to_bits(), INPUT_DAMPING.to_bits());
         assert_eq!(
@@ -1934,21 +1999,48 @@ mod tests {
 
         let released = InputState::released();
         player.on_ground = true;
-        update_sprint_state(&mut player, &released, false, false, false, false, None);
+        update_sprint_state(
+            &mut player,
+            &released,
+            MovementInput::default(),
+            false,
+            false,
+            false,
+            false,
+            None,
+        );
         assert!(
             player.sprinting,
             "vanilla swim sprint ignores hard-wall collision and may persist without forward input on ground"
         );
 
         player.on_ground = false;
-        update_sprint_state(&mut player, &released, false, false, false, false, None);
+        update_sprint_state(
+            &mut player,
+            &released,
+            MovementInput::default(),
+            false,
+            false,
+            false,
+            false,
+            None,
+        );
         assert!(
             !player.sprinting,
             "airborne swim sprint stops when forward input is lost"
         );
 
         player.sprinting = true;
-        update_sprint_state(&mut player, &released, true, false, false, false, None);
+        update_sprint_state(
+            &mut player,
+            &released,
+            MovementInput::default(),
+            true,
+            false,
+            false,
+            false,
+            None,
+        );
         assert!(
             player.sprinting,
             "descending is the vanilla exception to the no-forward swim-sprint stop"
@@ -1962,9 +2054,21 @@ mod tests {
         player.sprint_toggle_timer = 4;
         player.was_shift_pressed = true;
 
-        let mut forward = InputState::released();
-        forward.set_key_held_for_test(KeyCode::KeyW, true);
-        update_sprint_state(&mut player, &forward, false, false, true, false, None);
+        let forward = InputState::released();
+        let forward_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
+        update_sprint_state(
+            &mut player,
+            &forward,
+            forward_movement,
+            false,
+            false,
+            true,
+            false,
+            None,
+        );
         assert_eq!(
             player.sprint_toggle_timer, DEFAULT_SPRINT_WINDOW,
             "previous shift clears the old window before the new forward edge arms a fresh one"
@@ -1974,30 +2078,72 @@ mod tests {
         player.sprint_toggle_timer = 4;
         player.was_shift_pressed = false;
         player.was_forward_pressed = true;
-        update_sprint_state(&mut player, &forward, true, false, true, false, None);
+        update_sprint_state(
+            &mut player,
+            &forward,
+            forward_movement,
+            true,
+            false,
+            true,
+            false,
+            None,
+        );
         assert_eq!(
             player.sprint_toggle_timer, 3,
             "current Sneak must not clear the window until it becomes previous-tick input"
         );
 
         player.sprint_toggle_timer = 4;
-        let mut backward = InputState::released();
-        backward.set_key_held_for_test(KeyCode::KeyS, true);
-        update_sprint_state(&mut player, &backward, false, false, false, false, None);
+        let backward = InputState::released();
+        let backward_movement = MovementInput {
+            backward: true,
+            ..MovementInput::default()
+        };
+        update_sprint_state(
+            &mut player,
+            &backward,
+            backward_movement,
+            false,
+            false,
+            false,
+            false,
+            None,
+        );
         assert_eq!(player.sprint_toggle_timer, 0);
     }
 
     #[test]
     fn explicit_sprint_hold_starts_without_raw_control_and_release_does_not_stop_run() {
         let mut input = InputState::released();
-        input.set_key_held_for_test(KeyCode::KeyW, true);
+        let input_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
         let mut player = LocalPlayer::new();
         player.food = 20;
         player.was_forward_pressed = true;
 
-        update_sprint_state(&mut player, &input, false, true, true, false, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            input_movement,
+            false,
+            true,
+            true,
+            false,
+            None,
+        );
         assert!(player.sprinting);
-        update_sprint_state(&mut player, &input, false, false, true, false, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            input_movement,
+            false,
+            false,
+            true,
+            false,
+            None,
+        );
         assert!(
             player.sprinting,
             "releasing Sprint alone does not stop a run"
@@ -2005,7 +2151,16 @@ mod tests {
 
         player.sprinting = false;
         input.set_key_held_for_test(KeyCode::ControlLeft, true);
-        update_sprint_state(&mut player, &input, false, false, true, false, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            input_movement,
+            false,
+            false,
+            true,
+            false,
+            None,
+        );
         assert!(
             !player.sprinting,
             "raw Control must not bypass the consumer"
@@ -2013,7 +2168,16 @@ mod tests {
 
         player.was_forward_pressed = false;
         player.sprint_toggle_timer = 2;
-        update_sprint_state(&mut player, &input, false, false, true, false, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            input_movement,
+            false,
+            false,
+            true,
+            false,
+            None,
+        );
         assert!(
             player.sprinting,
             "double-tap forward still starts sprint without a Sprint hold"
@@ -2022,17 +2186,38 @@ mod tests {
 
     #[test]
     fn item_slowdown_blocks_start_but_does_not_cancel_existing_sprint() {
-        let mut input = InputState::released();
-        input.set_key_held_for_test(KeyCode::KeyW, true);
+        let input = InputState::released();
+        let input_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
 
         let mut player = LocalPlayer::new();
         player.food = 20;
-        update_sprint_state(&mut player, &input, false, true, true, true, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            input_movement,
+            false,
+            true,
+            true,
+            true,
+            None,
+        );
         assert!(!player.sprinting, "item slowdown blocks canStartSprinting");
 
         player.sprinting = true;
         player.was_forward_pressed = true;
-        update_sprint_state(&mut player, &input, false, true, true, true, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            input_movement,
+            false,
+            true,
+            true,
+            true,
+            None,
+        );
         assert!(
             player.sprinting,
             "vanilla shouldStopRunSprinting does not cancel an already-active sprint solely for item slowdown"
@@ -2041,8 +2226,11 @@ mod tests {
 
     #[test]
     fn shallow_water_stops_existing_run_sprint_even_while_sprint_key_is_held() {
-        let mut input = InputState::released();
-        input.set_key_held_for_test(KeyCode::KeyW, true);
+        let input = InputState::released();
+        let input_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
 
         let mut player = LocalPlayer::new();
         player.sprinting = true;
@@ -2051,7 +2239,16 @@ mod tests {
         player.under_water = false;
         player.food = 20;
 
-        update_sprint_state(&mut player, &input, false, true, true, false, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            input_movement,
+            false,
+            true,
+            true,
+            false,
+            None,
+        );
 
         assert!(
             !player.sprinting,
@@ -2068,7 +2265,16 @@ mod tests {
         player.horizontal_collision = true;
         player.minor_horizontal_collision = false;
 
-        update_sprint_state(&mut player, &input, false, false, true, false, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            MovementInput::default(),
+            false,
+            false,
+            true,
+            false,
+            None,
+        );
         assert!(
             !player.sprinting,
             "vanilla shouldStopRunSprinting consumes the prior hard wall collision"
@@ -2076,7 +2282,16 @@ mod tests {
 
         player.sprinting = true;
         player.minor_horizontal_collision = true;
-        update_sprint_state(&mut player, &input, false, false, true, false, None);
+        update_sprint_state(
+            &mut player,
+            &input,
+            MovementInput::default(),
+            false,
+            false,
+            true,
+            false,
+            None,
+        );
         assert!(
             player.sprinting,
             "minorHorizontalCollision is the vanilla wall-sprint exemption"
@@ -2150,6 +2365,7 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
+            MovementInput::default(),
             true,
             false,
             false,
@@ -2224,11 +2440,14 @@ mod tests {
 
     #[test]
     fn forward_and_backward_cancel_the_forward_impulse() {
-        let mut input = InputState::released();
-        input.set_key_held_for_test(KeyCode::KeyW, true);
-        assert!(has_forward_impulse(&input));
-        input.set_key_held_for_test(KeyCode::KeyS, true);
-        assert!(!has_forward_impulse(&input));
+        let input = InputState::released();
+        let mut input_movement = MovementInput {
+            forward: true,
+            ..MovementInput::default()
+        };
+        assert!(has_forward_impulse(&input, input_movement));
+        input_movement.backward = true;
+        assert!(!has_forward_impulse(&input, input_movement));
     }
 
     #[test]
@@ -2244,6 +2463,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             true,
             false,
             false,
@@ -2260,6 +2480,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             true,
             false,
             false,
@@ -2275,6 +2496,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             false,
             false,
             false,
@@ -2288,6 +2510,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             true,
             false,
             false,
@@ -2316,6 +2539,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             true,
             false,
             false,
@@ -2336,6 +2560,7 @@ mod tests {
             tick(
                 &mut player,
                 &input,
+                MovementInput::default(),
                 true,
                 false,
                 false,
@@ -2357,6 +2582,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             false,
             false,
             false,
@@ -2373,6 +2599,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             true,
             false,
             false,
@@ -2397,6 +2624,7 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
+            MovementInput::default(),
             true,
             false,
             false,
@@ -2428,6 +2656,7 @@ mod tests {
         tick(
             &mut player,
             &input,
+            MovementInput::default(),
             true,
             false,
             false,
@@ -2457,6 +2686,7 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
+            MovementInput::default(),
             false,
             false,
             false,

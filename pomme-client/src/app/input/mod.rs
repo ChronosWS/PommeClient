@@ -40,20 +40,15 @@ pub(crate) fn gamepad_movement_axes(analog: glam::Vec2) -> glam::Vec2 {
 /// an "instant".
 pub const SHORT_RUMBLE_TIME: u32 = 5;
 
-pub const KEY_FORWARD: KeyCode = KeyCode::KeyW;
-pub const KEY_LEFT: KeyCode = KeyCode::KeyA;
-pub const KEY_BACK: KeyCode = KeyCode::KeyS;
-pub const KEY_RIGHT: KeyCode = KeyCode::KeyD;
-
 /// Label of key mapping `key`: Pomme's binding for the actions it has, else
 /// vanilla's default (`Options` key mappings). A lang key and its en_us
 /// fallback.
 pub fn keybind_label(key: &str) -> Option<(&'static str, &'static str)> {
     Some(match key {
-        "key.forward" => ("key.keyboard.w", "W"),
-        "key.left" => ("key.keyboard.a", "A"),
-        "key.back" => ("key.keyboard.s", "S"),
-        "key.right" => ("key.keyboard.d", "D"),
+        "key.forward" => action_label(Action::Forward)?,
+        "key.left" => action_label(Action::StrafeLeft)?,
+        "key.back" => action_label(Action::Backward)?,
+        "key.right" => action_label(Action::StrafeRight)?,
         "key.jump" => action_label(Action::Jump)?,
         "key.sneak" => action_label(Action::Sneak)?,
         "key.sprint" => action_label(Action::Sprint)?,
@@ -118,6 +113,10 @@ fn action_label(action: Action) -> Option<(&'static str, &'static str)> {
 
 fn keycode_translation(key: KeyCode) -> Option<(&'static str, &'static str)> {
     match key {
+        KeyCode::KeyW => Some(("key.keyboard.w", "W")),
+        KeyCode::KeyA => Some(("key.keyboard.a", "A")),
+        KeyCode::KeyS => Some(("key.keyboard.s", "S")),
+        KeyCode::KeyD => Some(("key.keyboard.d", "D")),
         KeyCode::Space => Some(("key.keyboard.space", "Space")),
         KeyCode::ShiftLeft => Some(("key.keyboard.left.shift", "Left Shift")),
         KeyCode::ControlLeft => Some(("key.keyboard.left.control", "Left Control")),

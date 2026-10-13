@@ -141,6 +141,38 @@ macro_rules! actions {
 }
 
 actions! {
+    Forward => {
+        id: "key.forward",
+        translation_id: Some(StringId::new("key.forward")),
+        fallback: "Walk Forward",
+        category: Movement,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyW)],
+    },
+    Backward => {
+        id: "key.back",
+        translation_id: Some(StringId::new("key.back")),
+        fallback: "Walk Backward",
+        category: Movement,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyS)],
+    },
+    StrafeLeft => {
+        id: "key.left",
+        translation_id: Some(StringId::new("key.left")),
+        fallback: "Strafe Left",
+        category: Movement,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyA)],
+    },
+    StrafeRight => {
+        id: "key.right",
+        translation_id: Some(StringId::new("key.right")),
+        fallback: "Strafe Right",
+        category: Movement,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyD)],
+    },
     Jump => {
         id: "key.jump",
         translation_id: Some(StringId::new("key.jump")),

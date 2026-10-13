@@ -13,9 +13,7 @@ use winit::monitor::MonitorHandle;
 use winit::window::{CursorGrabMode, Fullscreen, Window};
 
 use crate::app::action_consumers::ActionConsumers;
-use crate::app::input::{
-    InputState, KEY_BACK, KEY_FORWARD, KEY_LEFT, KEY_RIGHT, STICK_MOVEMENT_THRESHOLD,
-};
+use crate::app::input::{InputState, STICK_MOVEMENT_THRESHOLD};
 use crate::app::level_load::ReadyInputs;
 use crate::app::phases::in_game::GameState;
 use crate::app::phases::{ConnectionPhase, Gfx};
@@ -28,6 +26,7 @@ use crate::entity::components::{LookDirection, Position, Velocity};
 use crate::net::NetworkEvent;
 use crate::net::connection::ConnectionHandle;
 use crate::physics::movement;
+use crate::physics::movement::MovementInput;
 use crate::player::LocalPlayer;
 use crate::player::tab_list::{PlayerChatValidation, TabList};
 use crate::renderer::Renderer;
@@ -319,17 +318,17 @@ pub struct PlayerInputState {
 }
 
 fn player_input_state(
-    input: &InputState,
+    movement: MovementInput,
     jump_held: bool,
     sneak_held: bool,
     analog_move: glam::Vec2,
     sprint_held: bool,
 ) -> PlayerInputState {
     PlayerInputState {
-        forward: input.is_key_held(KEY_FORWARD) || analog_move.y > STICK_MOVEMENT_THRESHOLD,
-        backward: input.is_key_held(KEY_BACK) || analog_move.y < -STICK_MOVEMENT_THRESHOLD,
-        left: input.is_key_held(KEY_LEFT) || analog_move.x > STICK_MOVEMENT_THRESHOLD,
-        right: input.is_key_held(KEY_RIGHT) || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
+        forward: movement.forward || analog_move.y > STICK_MOVEMENT_THRESHOLD,
+        backward: movement.backward || analog_move.y < -STICK_MOVEMENT_THRESHOLD,
+        left: movement.left || analog_move.x > STICK_MOVEMENT_THRESHOLD,
+        right: movement.right || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
         jump: jump_held,
         shift: sneak_held,
         sprint: sprint_held,
@@ -2871,7 +2870,15 @@ impl AppCore {
 
             let neutral = InputState::released();
             Self::send_abilities_packet(connection, game);
-            Self::send_input_packet(&neutral, false, false, false, connection, game);
+            Self::send_input_packet(
+                &neutral,
+                MovementInput::default(),
+                false,
+                false,
+                false,
+                connection,
+                game,
+            );
             self.send_sprint_command(connection, game);
             self.send_position_packet(connection, game);
 
@@ -2908,6 +2915,11 @@ impl AppCore {
         // below), matching vanilla's wasJumping sampled before input.tick().
         // Equine jump cooldown is always 0, so the cooldown gate collapses
         // into the vehicle check.
+        let movement_input = self.action_consumers.movement.do_tick(
+            self.input.action_states(),
+            game,
+            self.input.binding_capture_active(),
+        );
         let jump_held = self.action_consumers.jump.do_tick(game);
         let sneak_held = self.action_consumers.sneak.do_tick(game);
         let sprint_held = self.action_consumers.sprint.do_tick(game);
@@ -3044,6 +3056,7 @@ impl AppCore {
         movement::tick(
             &mut game.player,
             input,
+            movement_input,
             jump_held,
             sneak_held,
             sprint_held,
@@ -3068,7 +3081,15 @@ impl AppCore {
             .tick_player_state(input.is_cursor_captured(), held_stack.as_ref());
 
         Self::send_abilities_packet(connection, game);
-        Self::send_input_packet(input, jump_held, sneak_held, sprint_held, connection, game);
+        Self::send_input_packet(
+            input,
+            movement_input,
+            jump_held,
+            sneak_held,
+            sprint_held,
+            connection,
+            game,
+        );
         self.send_sprint_command(connection, game);
         self.send_position_packet(connection, game);
         if !dirty.is_empty() {
@@ -3125,6 +3146,7 @@ impl AppCore {
 
     fn send_input_packet(
         input: &InputState,
+        movement: MovementInput,
         jump_held: bool,
         sneak_held: bool,
         sprint_held: bool,
@@ -3137,7 +3159,7 @@ impl AppCore {
             .get_gamepad_movement_axes()
             .unwrap_or(glam::Vec2::ZERO);
 
-        let current = player_input_state(input, jump_held, sneak_held, analog_move, sprint_held);
+        let current = player_input_state(movement, jump_held, sneak_held, analog_move, sprint_held);
 
         if current != game.last_sent_input {
             sender.send(ServerboundGamePacket::PlayerInput(
@@ -3413,13 +3435,14 @@ mod tests {
         server_view_distance_update, serverbound_player_input, sync_living_attribute_mirrors,
         sync_player_attribute_mirrors, sync_respawn_attributes,
     };
-    use crate::app::input::{InputState, gamepad_movement_axes};
+    use crate::app::input::gamepad_movement_axes;
     use crate::attribute::{
         AttributeKind, AttributeMap, AttributeModifier, AttributeModifierOperation,
         AttributeSnapshot,
     };
     use crate::entity::components::{LookDirection, Position, Velocity};
     use crate::net::chat_security::SignedChatBody;
+    use crate::physics::movement::MovementInput;
     use crate::player::tab_list::{PlayerInfoActions, PlayerInfoEntry, TabList};
     use crate::player::{LocalPlayer, valid_player_name};
     use crate::ui::chat::ChatMessageTag;
@@ -3570,10 +3593,8 @@ mod tests {
 
     #[test]
     fn controller_packet_directions_match_physical_stick_direction() {
-        let input = InputState::released();
-
         let right_state = player_input_state(
-            &input,
+            MovementInput::default(),
             false,
             false,
             gamepad_movement_axes(glam::vec2(1.0, 0.0)),
@@ -3584,7 +3605,7 @@ mod tests {
         assert!(!right.left);
 
         let left_state = player_input_state(
-            &input,
+            MovementInput::default(),
             false,
             false,
             gamepad_movement_axes(glam::vec2(-1.0, 0.0)),
@@ -3595,7 +3616,7 @@ mod tests {
         assert!(!left.right);
 
         let forward_right_state = player_input_state(
-            &input,
+            MovementInput::default(),
             false,
             false,
             gamepad_movement_axes(glam::vec2(0.8, 0.8)),
@@ -3606,6 +3627,37 @@ mod tests {
         assert!(forward_right.right);
         assert!(!forward_right.backward);
         assert!(!forward_right.left);
+    }
+
+    #[test]
+    fn player_input_packet_preserves_opposing_direction_holds() {
+        let movement = MovementInput {
+            forward: true,
+            backward: true,
+            left: true,
+            right: true,
+        };
+        let opposing = serverbound_player_input(&player_input_state(
+            movement,
+            false,
+            false,
+            glam::Vec2::ZERO,
+            false,
+        ));
+        assert!(opposing.forward && opposing.backward && opposing.left && opposing.right);
+
+        let mixed = serverbound_player_input(&player_input_state(
+            MovementInput {
+                backward: true,
+                right: true,
+                ..MovementInput::default()
+            },
+            false,
+            false,
+            glam::vec2(1.0, 1.0),
+            false,
+        ));
+        assert!(mixed.forward && mixed.backward && mixed.left && mixed.right);
     }
 
     #[test]
@@ -3754,16 +3806,15 @@ mod tests {
 
     #[test]
     fn player_input_packet_uses_explicit_sprint_hold() {
-        let input = InputState::released();
         let pressed = serverbound_player_input(&player_input_state(
-            &input,
+            MovementInput::default(),
             false,
             false,
             glam::Vec2::ZERO,
             true,
         ));
         let released = serverbound_player_input(&player_input_state(
-            &input,
+            MovementInput::default(),
             false,
             false,
             glam::Vec2::ZERO,
@@ -3774,23 +3825,17 @@ mod tests {
     }
 
     #[test]
-    fn player_input_packet_uses_consumer_jump_hold() {
-        let mut input = InputState::released();
-        input.set_key_held_for_test(winit::keyboard::KeyCode::Space, true);
+    fn player_input_packet_uses_explicit_jump_hold() {
         let released = serverbound_player_input(&player_input_state(
-            &input,
+            MovementInput::default(),
             false,
             false,
             glam::Vec2::ZERO,
             false,
         ));
-        assert!(
-            !released.jump,
-            "physical Space does not bypass the consumer"
-        );
-        input.set_key_held_for_test(winit::keyboard::KeyCode::Space, false);
+        assert!(!released.jump);
         let held = serverbound_player_input(&player_input_state(
-            &input,
+            MovementInput::default(),
             true,
             false,
             glam::Vec2::ZERO,
@@ -3800,23 +3845,17 @@ mod tests {
     }
 
     #[test]
-    fn player_input_packet_uses_consumer_sneak_hold() {
-        let mut input = InputState::released();
-        input.set_key_held_for_test(winit::keyboard::KeyCode::ShiftLeft, true);
+    fn player_input_packet_uses_explicit_sneak_hold() {
         let released = serverbound_player_input(&player_input_state(
-            &input,
+            MovementInput::default(),
             false,
             false,
             glam::Vec2::ZERO,
             false,
         ));
-        assert!(
-            !released.shift,
-            "physical Shift does not bypass the consumer"
-        );
-        input.set_key_held_for_test(winit::keyboard::KeyCode::ShiftLeft, false);
+        assert!(!released.shift);
         let held = serverbound_player_input(&player_input_state(
-            &input,
+            MovementInput::default(),
             false,
             true,
             glam::Vec2::ZERO,
