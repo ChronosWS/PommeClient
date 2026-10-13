@@ -2981,10 +2981,7 @@ pub fn update_game(
                 .then(|| core.action_consumers.hotbar_slot.container_slot())
                 .flatten(),
             swap_offhand: keys_live && core.action_consumers.swap_offhand.screen_requested(),
-            throw: keys_live
-                && core
-                    .input
-                    .has_pending_key_press(winit::keyboard::KeyCode::KeyQ),
+            throw: keys_live && core.action_consumers.drop_item.screen_requested(),
             throw_all: core.input.is_ctrl_held(),
         };
         // The anvil rename field consumes this frame's typing; a changed

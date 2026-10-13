@@ -1,4 +1,5 @@
-//! Drop requests collected during frame dispatch and drained by gameplay ticks.
+//! Drop requests collected during frame dispatch: container shortcuts are
+//! frame-local, while gameplay requests wait for a simulation tick.
 
 use crate::app::input::action::dispatcher::{ActionEvent, ActionEventKind, EventDisposition};
 use crate::app::input::{Action, InputKey, InputState};
@@ -9,9 +10,18 @@ use crate::net::sender::PacketSender;
 #[derive(Default)]
 pub struct DropItemConsumer {
     pending_requests: usize,
+    screen_requested: bool,
 }
 
 impl DropItemConsumer {
+    pub fn begin_frame(&mut self) {
+        self.screen_requested = false;
+    }
+
+    pub fn screen_requested(&self) -> bool {
+        self.screen_requested
+    }
+
     pub fn handle_event(
         &mut self,
         event: &ActionEvent,
@@ -20,14 +30,18 @@ impl DropItemConsumer {
         text_capture: bool,
         menu_capture: bool,
     ) -> EventDisposition {
-        let enabled = !binding_capture
-            && matches!(phase, AppPhase::InGame { .. })
-            && (!matches!(event.source.input, InputKey::Keyboard(_))
-                || (!text_capture && !menu_capture));
-        self.process_event(event, enabled)
+        let enabled = !binding_capture && matches!(phase, AppPhase::InGame { .. });
+        let gameplay_enabled = !matches!(event.source.input, InputKey::Keyboard(_))
+            || (!text_capture && !menu_capture);
+        self.process_event(event, enabled, gameplay_enabled)
     }
 
-    fn process_event(&mut self, event: &ActionEvent, enabled: bool) -> EventDisposition {
+    fn process_event(
+        &mut self,
+        event: &ActionEvent,
+        enabled: bool,
+        gameplay_enabled: bool,
+    ) -> EventDisposition {
         if !enabled || event.action != Action::DropItem {
             return EventDisposition::Pass;
         }
@@ -35,7 +49,12 @@ impl DropItemConsumer {
             || (event.kind == ActionEventKind::Repeat
                 && matches!(event.source.input, InputKey::Keyboard(_)))
         {
-            self.pending_requests = self.pending_requests.saturating_add(1);
+            // Container shortcuts keep their once-per-frame behavior and check
+            // text focus at application time, independently of the tick queue.
+            self.screen_requested = true;
+            if gameplay_enabled {
+                self.pending_requests = self.pending_requests.saturating_add(1);
+            }
         }
         EventDisposition::Consume
     }
@@ -43,10 +62,11 @@ impl DropItemConsumer {
     /// Reconcile after frame-local consumers, even when no input or tick
     /// occurs.
     pub fn do_frame(&mut self, phase: &AppPhase, binding_capture: bool) {
-        if binding_capture
-            || !matches!(phase, AppPhase::InGame { game, .. } if Self::gameplay_enabled(game))
-        {
+        if binding_capture || !matches!(phase, AppPhase::InGame { .. }) {
             self.clear();
+        } else if !matches!(phase, AppPhase::InGame { game, .. } if Self::gameplay_enabled(game)) {
+            // A screen request must survive while its gameplay work is discarded.
+            self.pending_requests = 0;
         }
     }
 
@@ -80,6 +100,7 @@ impl DropItemConsumer {
 
     pub fn clear(&mut self) {
         self.pending_requests = 0;
+        self.screen_requested = false;
     }
 }
 
@@ -88,11 +109,12 @@ mod tests {
     use std::time::Instant;
 
     use gilrs::Button;
-    use winit::event::MouseButton;
+    use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
     use winit::keyboard::KeyCode;
 
     use super::*;
     use crate::app::input::KeyBindings;
+    use crate::app::input::action::collector::ActionCollector;
     use crate::app::input::action::dispatcher::{
         ActionDispatcher, ActionStates, InputDeviceId, InputSource,
     };
@@ -114,9 +136,20 @@ mod tests {
         bindings: &KeyBindings,
         enabled: bool,
     ) -> Vec<ActionEvent> {
+        dispatch_to(consumer, dispatcher, bindings, enabled, enabled)
+    }
+
+    fn dispatch_to(
+        consumer: &mut DropItemConsumer,
+        dispatcher: &mut ActionDispatcher,
+        bindings: &KeyBindings,
+        enabled: bool,
+        gameplay_enabled: bool,
+    ) -> Vec<ActionEvent> {
         let mut passed = Vec::new();
-        let mut handler =
-            |event: &ActionEvent, _: &ActionStates| consumer.process_event(event, enabled);
+        let mut handler = |event: &ActionEvent, _: &ActionStates| {
+            consumer.process_event(event, enabled, gameplay_enabled)
+        };
         let mut later = |event: &ActionEvent, _: &ActionStates| {
             passed.push(event.clone());
             EventDisposition::Pass
@@ -127,6 +160,99 @@ mod tests {
             &mut [&mut handler, &mut later],
         );
         passed
+    }
+
+    #[test]
+    fn screen_rebindings_coalesce_per_frame_without_queuing_tick_work() {
+        for input in [
+            InputKey::Keyboard(KeyCode::KeyG),
+            InputKey::Mouse(MouseButton::Other(4)),
+            InputKey::Controller(Button::Select),
+        ] {
+            let mut bindings = KeyBindings::default();
+            bindings.set(Action::DropItem, vec![input]);
+            let mut consumer = DropItemConsumer::default();
+            let mut dispatcher = ActionDispatcher::new();
+            dispatcher.on_press(source(InputKey::Keyboard(KeyCode::KeyQ)));
+            dispatch_to(&mut consumer, &mut dispatcher, &bindings, true, false);
+            assert!(!consumer.screen_requested());
+            let source = source(input);
+            for _ in 0..2 {
+                dispatcher.on_press(source.clone());
+                dispatcher.on_repeat(&source);
+                dispatcher.on_release(&source);
+            }
+            dispatch_to(&mut consumer, &mut dispatcher, &bindings, true, false);
+            assert!(consumer.screen_requested());
+            assert_eq!(consumer.take_requests(), 0);
+            consumer.begin_frame();
+            dispatch_to(&mut consumer, &mut dispatcher, &bindings, true, false);
+            assert!(!consumer.screen_requested());
+            bindings.set(Action::DropItem, vec![]);
+            dispatcher.on_press(source.clone());
+            dispatch_to(&mut consumer, &mut dispatcher, &bindings, true, false);
+            assert!(!consumer.screen_requested());
+        }
+    }
+
+    #[test]
+    fn captured_mouse_binding_does_not_become_a_screen_request() {
+        let mut bindings = KeyBindings::default();
+        bindings.set(
+            Action::DropItem,
+            vec![InputKey::Mouse(MouseButton::Other(4))],
+        );
+        let mut collector = ActionCollector::new();
+        let mut consumer = DropItemConsumer::default();
+        let mouse = |state| WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button: MouseButton::Other(4),
+        };
+        collector.on_window_event(&mouse(ElementState::Pressed), true);
+        collector.on_window_event(&mouse(ElementState::Pressed), false);
+        collector.on_window_event(&mouse(ElementState::Released), false);
+        collector.dispatch_without_observer(
+            Instant::now(),
+            &bindings,
+            &mut [&mut |event: &ActionEvent, _: &ActionStates| {
+                consumer.process_event(event, true, false)
+            }],
+        );
+        assert!(!consumer.screen_requested());
+        collector.on_window_event(&mouse(ElementState::Pressed), false);
+        collector.dispatch_without_observer(
+            Instant::now(),
+            &bindings,
+            &mut [&mut |event: &ActionEvent, _: &ActionStates| {
+                consumer.process_event(event, true, false)
+            }],
+        );
+        assert!(consumer.screen_requested());
+        assert_eq!(consumer.take_requests(), 0);
+    }
+
+    #[test]
+    fn screen_lifetime_is_independent_of_tick_requests_and_disabled_input() {
+        let bindings = KeyBindings::default();
+        let mut consumer = DropItemConsumer::default();
+        let mut dispatcher = ActionDispatcher::new();
+        let key = source(InputKey::Keyboard(KeyCode::KeyQ));
+        dispatcher.on_press(key.clone());
+        dispatch(&mut consumer, &mut dispatcher, &bindings, true);
+        assert!(consumer.screen_requested());
+        consumer.begin_frame();
+        assert!(!consumer.screen_requested());
+        assert_eq!(consumer.pending_requests, 1);
+        dispatcher.on_release(&key);
+        dispatch_to(&mut consumer, &mut dispatcher, &bindings, true, false);
+        assert!(!consumer.screen_requested());
+        dispatcher.on_press(key.clone());
+        dispatch_to(&mut consumer, &mut dispatcher, &bindings, false, false);
+        assert!(!consumer.screen_requested());
+        consumer.clear();
+        assert_eq!(consumer.take_requests(), 0);
+        assert!(!consumer.screen_requested());
     }
 
     #[test]
@@ -218,9 +344,11 @@ mod tests {
         for binding_capture in [false, true] {
             let mut consumer = DropItemConsumer {
                 pending_requests: 2,
+                screen_requested: true,
             };
             consumer.do_frame(&phase, binding_capture);
             assert_eq!(consumer.take_requests(), 0);
+            assert!(!consumer.screen_requested());
         }
     }
 

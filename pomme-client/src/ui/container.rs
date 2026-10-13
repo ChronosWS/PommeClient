@@ -45,11 +45,12 @@ pub struct ContainerInput {
     pub shift: bool,
     /// Hotbar digit pressed this frame (vanilla `keyHotbarSlots` swap).
     pub hotbar_swap: Option<u8>,
-    /// F pressed: swap the hovered slot with the offhand.
+    /// Swap Offhand requested this frame: swap the hovered slot with the
+    /// offhand.
     pub swap_offhand: bool,
-    /// Q pressed: throw from the hovered slot.
+    /// Drop Item requested this frame: throw from the hovered slot.
     pub throw: bool,
-    /// Ctrl held with Q: throw the whole stack.
+    /// Ctrl held at frame application: throw the whole stack.
     pub throw_all: bool,
 }
 
