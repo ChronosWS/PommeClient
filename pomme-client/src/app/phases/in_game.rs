@@ -2980,10 +2980,7 @@ pub fn update_game(
             hotbar_swap: keys_live
                 .then(|| core.action_consumers.hotbar_slot.container_slot())
                 .flatten(),
-            swap_offhand: keys_live
-                && core
-                    .input
-                    .has_pending_key_press(winit::keyboard::KeyCode::KeyF),
+            swap_offhand: keys_live && core.action_consumers.swap_offhand.screen_requested(),
             throw: keys_live
                 && core
                     .input
@@ -3255,8 +3252,7 @@ pub fn update_game(
                 .has_pending_key_press(winit::keyboard::KeyCode::KeyT),
             hotbar_swap,
             hotbar_swap_key,
-            core.input
-                .has_pending_key_press(winit::keyboard::KeyCode::KeyF),
+            core.action_consumers.swap_offhand.screen_requested(),
             &game.player.inventory,
             gs,
             game.advanced_item_tooltips,

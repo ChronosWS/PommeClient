@@ -105,6 +105,7 @@ impl ActionConsumers {
         bindings: &KeyBindings,
     ) -> bool {
         let binding_capture = input.binding_capture_active();
+        self.swap_offhand.begin_frame();
         self.debug.begin_frame(phase.get(), binding_capture);
         self.toggle_gui = ToggleGuiConsumer::new(phase.get(), binding_capture);
         self.fullscreen = FullscreenConsumer::new(phase.get(), binding_capture);
