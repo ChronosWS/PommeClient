@@ -2183,14 +2183,7 @@ pub fn update_game(
     // calls `level.update()`.
     game.update_light(core.menu.chunk_detail);
 
-    // F1 (vanilla keyToggleGui); only while no screen or chat is open.
-    if core
-        .input
-        .has_pending_key_press(winit::keyboard::KeyCode::F1)
-        && game.input_live()
-    {
-        game.hide_gui = !game.hide_gui;
-    }
+    core.action_consumers.toggle_gui.do_frame(game);
     if std::mem::take(&mut game.stop_sleeping_requested) {
         core.send_stop_sleeping(connection, game);
     }

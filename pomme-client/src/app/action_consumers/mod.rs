@@ -18,6 +18,7 @@ pub mod sneak;
 pub mod spectator_hotbar;
 pub mod sprint;
 pub mod swap_offhand;
+pub mod toggle_gui;
 pub mod use_item;
 
 use std::time::Instant;
@@ -40,6 +41,7 @@ use sneak::SneakConsumer;
 use spectator_hotbar::SpectatorHotbarConsumer;
 use sprint::SprintConsumer;
 use swap_offhand::SwapOffhandConsumer;
+use toggle_gui::ToggleGuiConsumer;
 use use_item::UseConsumer;
 
 use super::input::action::dispatcher::{ActionEvent, ActionStates, EventDisposition};
@@ -52,6 +54,8 @@ use super::state_slot::StateSlot;
 /// requests here.
 #[derive(Default)]
 pub struct ActionConsumers {
+    // Frame-local handoff to update_game, not pending simulation work.
+    pub(super) toggle_gui: ToggleGuiConsumer,
     pub(super) movement: MovementConsumer,
     pub(super) hotbar_slot: HotbarSlotConsumer,
     pub(super) destroy: DestroyConsumer,
@@ -93,6 +97,9 @@ impl ActionConsumers {
         bindings: &KeyBindings,
     ) -> bool {
         let binding_capture = input.binding_capture_active();
+        self.toggle_gui = ToggleGuiConsumer::new(phase.get(), binding_capture);
+        let mut toggle_gui_handler =
+            |event: &ActionEvent, _: &ActionStates| self.toggle_gui.handle_event(event);
         let text_capture = input.text_capture;
         let menu_capture = input.menu_capture;
         let spectator = input.spectator;
@@ -205,6 +212,7 @@ impl ActionConsumers {
                 &mut open_menu_handler,
                 &mut close_handler,
                 &mut perspective_handler,
+                &mut toggle_gui_handler,
                 &mut open_chat_handler,
                 &mut open_commands_handler,
                 &mut player_list_handler,

@@ -237,6 +237,14 @@ actions! {
         listed: true,
         defaults: [Keyboard(KeyCode::Tab), Controller(Button::Select)],
     },
+    ToggleGui => {
+        id: "key.toggleGui",
+        translation_id: Some(StringId::new("key.toggleGui")),
+        fallback: "Toggle GUI",
+        category: Miscellaneous,
+        listed: true,
+        defaults: [Keyboard(KeyCode::F1)],
+    },
     ChangePerspective => {
         id: "key.togglePerspective",
         translation_id: Some(StringId::new("key.togglePerspective")),
