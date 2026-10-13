@@ -29,10 +29,13 @@ pub struct ActionMetadata {
     pub id: ActionId,
     pub display: DisplayText<'static>,
     pub category: ActionCategory,
-    /// Shown on the Key Binds screen. Pomme-only actions vanilla handles
-    /// outside its key mappings (Escape) stay off it.
+    /// Shown on the Key Binds screen.
     pub listed: bool,
+    /// Initial editable bindings, replaced by saved settings.
     pub defaults: &'static [InputKey],
+    /// Permanent assignments, independent of settings and not editable in the
+    /// UI.
+    pub fixed_inputs: &'static [InputKey],
 }
 
 impl Action {
@@ -71,6 +74,10 @@ impl Action {
 
     pub fn defaults(self) -> &'static [InputKey] {
         self.metadata().defaults
+    }
+
+    pub fn fixed_inputs(self) -> &'static [InputKey] {
+        self.metadata().fixed_inputs
     }
 
     /// The first default keyboard key, for the live input paths that still

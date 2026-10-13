@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use gilrs::{Button, Event, EventType};
 use winit::event::{ElementState, WindowEvent};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 
 use super::dispatcher::{
     ActionDispatcher, ActionEvent, ActionHandler, ActionStates, InputDeviceId, InputEvent,
@@ -69,12 +69,7 @@ impl ActionCollector {
     }
 
     fn resolve_bindings(input: &InputKey, bindings: &KeyBindings) -> Vec<Action> {
-        // Escape is reserved, not configurable. Capture filtering happens at arrival.
-        if matches!(input, InputKey::Keyboard(KeyCode::Escape)) {
-            vec![Action::Close]
-        } else {
-            bindings.actions_for_input(input).cloned().collect()
-        }
+        bindings.actions_for_input(input).copied().collect()
     }
 
     #[cfg(test)]

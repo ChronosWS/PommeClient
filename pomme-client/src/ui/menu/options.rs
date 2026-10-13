@@ -513,7 +513,9 @@ impl MainMenu {
 
             total_height += category_bindings
                 .iter()
-                .map(|entry| row_count(entry.action, entry.inputs.len()))
+                .map(|entry| {
+                    row_count(entry.action, entry.inputs.len()) + entry.action.fixed_inputs().len()
+                })
                 .sum::<usize>() as f32
                 * button_h;
         }
@@ -719,6 +721,29 @@ impl MainMenu {
                     }
 
                     line_y += BTN_H * gs;
+                }
+
+                // Fixed bindings use the normal disabled button, without edit controls.
+                for fixed_input in entry.action.fixed_inputs() {
+                    push_button_label_f(
+                        &mut elements,
+                        ctx,
+                        &mut any_hovered,
+                        row_cursor,
+                        row_clicked,
+                        buttons_left,
+                        line_y,
+                        binding_button_width,
+                        button_h,
+                        gs,
+                        common::WidgetLabel::Spans(vec![TextSpan::new(
+                            fixed_input.display_name().into_owned(),
+                            WHITE,
+                        )]),
+                        false,
+                        Some(&label_scroll),
+                    );
+                    line_y += button_h;
                 }
             }
         }
@@ -2204,14 +2229,18 @@ mod tests {
     }
 
     fn jump_elements(result: &MainMenuResult) -> &[MenuElement] {
+        action_elements(result, Action::Jump)
+    }
+
+    fn action_elements(result: &MainMenuResult, action: Action) -> &[MenuElement] {
         let label = result
             .elements
             .iter()
             .position(|element| {
                 matches!(element, MenuElement::Text { text, .. }
-                if text == Action::Jump.display_name().as_ref())
+                if text == action.display_name().as_ref())
             })
-            .expect("Jump label");
+            .expect("action label");
         let end = result.elements[label + 1..]
             .iter()
             .position(|element| {
@@ -2223,7 +2252,7 @@ mod tests {
                     } | MenuElement::ScissorPop
                 )
             })
-            .expect("end of Jump group")
+            .expect("end of action group")
             + label
             + 1;
         &result.elements[label..end]
@@ -2268,6 +2297,236 @@ mod tests {
         );
         assert!(result.clicked_button);
         assert!(menu.binding_capture_active());
+    }
+
+    fn render_close_bindings(menu: &mut MainMenu) -> MainMenuResult {
+        let result = render_keybinds(menu, &MenuInput::default());
+        let label_y = match action_elements(&result, Action::Close)[0] {
+            MenuElement::Text { y, .. } => y,
+            _ => unreachable!(),
+        };
+        menu.scroll_offset += label_y - 100.0;
+        render_keybinds(menu, &MenuInput::default())
+    }
+
+    fn close_button_cursor(result: &MainMenuResult, index: usize, column: usize) -> (f32, f32) {
+        match action_elements(result, Action::Close)
+            .iter()
+            .filter(|element| matches!(element, MenuElement::NineSlice { .. }))
+            .nth(index * 3 + column)
+            .expect("editable Close button")
+        {
+            MenuElement::NineSlice { x, y, w, h, .. } => (*x + *w / 2.0, *y + *h / 2.0),
+            _ => unreachable!(),
+        }
+    }
+
+    fn close_inputs(menu: &MainMenu) -> &[InputKey] {
+        menu.key_bindings
+            .iter()
+            .find(|entry| entry.action == Action::Close)
+            .unwrap()
+            .inputs
+    }
+
+    #[test]
+    fn fixed_close_escape_uses_disabled_binding_button_without_edit_controls_or_capture() {
+        let mut menu = test_menu("pomme-keybind-fixed-close-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        let result = render_close_bindings(&mut menu);
+        let group = action_elements(&result, Action::Close);
+        let fixed_text = InputKey::Keyboard(KeyCode::Escape).display_name();
+        let fixed_y = group
+            .iter()
+            .find_map(|element| match element {
+                MenuElement::TextSpans { spans, y, .. }
+                    if spans.iter().any(|span| span.text == fixed_text) =>
+                {
+                    Some(*y)
+                }
+                _ => None,
+            })
+            .expect("fixed Escape row");
+        let editable_y = group
+            .iter()
+            .find_map(|element| match element {
+                MenuElement::TextSpans { y, .. } => Some(*y),
+                _ => None,
+            })
+            .expect("editable Close label");
+        assert_eq!(fixed_y - editable_y, BTN_H);
+        assert_eq!(
+            group
+                .iter()
+                .filter(|element| matches!(element, MenuElement::NineSlice { .. }))
+                .count(),
+            4
+        );
+        let fixed_buttons: Vec<_> = group
+            .iter()
+            .filter(|element| {
+                matches!(element, MenuElement::NineSlice { y, h, .. }
+                if fixed_y >= *y && fixed_y < *y + *h)
+            })
+            .collect();
+        assert_eq!(fixed_buttons.len(), 1);
+        assert!(matches!(
+            fixed_buttons[0],
+            MenuElement::NineSlice {
+                sprite: SpriteId::ButtonDisabled,
+                ..
+            }
+        ));
+        let initial = close_inputs(&menu).to_vec();
+        for column in 0..3 {
+            let x = close_button_cursor(&result, 0, column).0;
+            let clicked = render_keybinds(
+                &mut menu,
+                &MenuInput {
+                    cursor: (x, fixed_y),
+                    clicked: true,
+                    ..MenuInput::default()
+                },
+            );
+            assert!(!clicked.clicked_button);
+            assert!(!clicked.cursor_pointer);
+            assert!(menu.action_binding.is_none());
+            assert!(!menu.settings_dirty);
+            assert_eq!(close_inputs(&menu), initial);
+        }
+    }
+
+    #[test]
+    fn fixed_rows_contribute_to_keybind_scroll_height_even_when_editable_inputs_are_unbound() {
+        let mut menu = test_menu("pomme-keybind-fixed-scroll-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        menu.key_bindings.set(Action::Close, Vec::new());
+        let result = menu.build_options_keybinds(
+            800.0,
+            200.0,
+            &MenuInput {
+                cursor: (400.0, 100.0),
+                scroll_delta: -10000.0,
+                ..MenuInput::default()
+            },
+            &|_, _| 0.0,
+        );
+        let categories = result
+            .elements
+            .iter()
+            .filter(|element| {
+                matches!(element, MenuElement::TextSpans { spans, .. }
+                if spans.len() == 1 && spans[0].bold && spans[0].underline)
+            })
+            .count();
+        let viewport_h = result
+            .elements
+            .iter()
+            .find_map(|element| match element {
+                MenuElement::ScissorPush { h, .. } => Some(*h),
+                _ => None,
+            })
+            .expect("keybind viewport");
+        let rows = menu
+            .key_bindings
+            .iter()
+            .filter(|entry| entry.action.listed())
+            .map(|entry| entry.inputs.len().max(1) + entry.action.fixed_inputs().len())
+            .sum::<usize>();
+        let total_height = categories as f32 * (16.0 + common::FONT_SIZE) + rows as f32 * BTN_H;
+        assert_eq!(menu.scroll_offset, (total_height - viewport_h).max(0.0));
+        assert!(!Action::Close.fixed_inputs().is_empty());
+    }
+
+    #[test]
+    fn editable_close_bindings_change_reset_and_unbind_without_affecting_fixed_escape() {
+        let mut menu = test_menu("pomme-keybind-editable-close-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        let changed = InputKey::Keyboard(KeyCode::KeyJ);
+        let secondary = InputKey::Keyboard(KeyCode::KeyK);
+        menu.key_bindings
+            .set(Action::Close, vec![changed, secondary]);
+        let result = render_close_bindings(&mut menu);
+        click_keybinds(&mut menu, 600.0, close_button_cursor(&result, 0, 0));
+        assert_eq!(menu.action_binding, Some((Action::Close, 0)));
+        let replacement = InputKey::Keyboard(KeyCode::KeyL);
+        render_keybinds(
+            &mut menu,
+            &MenuInput {
+                binding_capture: true,
+                binding_presses: vec![replacement],
+                ..MenuInput::default()
+            },
+        );
+        assert_eq!(close_inputs(&menu), &[replacement, secondary]);
+
+        let result = render_close_bindings(&mut menu);
+        click_keybinds(&mut menu, 600.0, close_button_cursor(&result, 0, 1));
+        let default = InputKey::Controller(gilrs::Button::East);
+        assert_eq!(close_inputs(&menu), &[default, secondary]);
+        let result = render_close_bindings(&mut menu);
+        click_keybinds(&mut menu, 600.0, close_button_cursor(&result, 1, 2));
+        assert_eq!(close_inputs(&menu), &[default]);
+
+        let result = render_close_bindings(&mut menu);
+        click_keybinds(&mut menu, 600.0, close_button_cursor(&result, 0, 0));
+        render_keybinds(
+            &mut menu,
+            &MenuInput {
+                binding_capture: true,
+                binding_presses: vec![InputKey::Keyboard(KeyCode::Escape)],
+                escape: true,
+                ..MenuInput::default()
+            },
+        );
+        assert!(close_inputs(&menu).is_empty());
+        assert!(menu.action_binding.is_none());
+        assert!(matches!(menu.screen, Screen::OptionsKeybinds));
+        let result = render_close_bindings(&mut menu);
+        assert!(action_elements(&result, Action::Close).iter().any(|element| {
+            matches!(element, MenuElement::TextSpans { spans, .. }
+                if spans.iter().any(|span| span.text == InputKey::Keyboard(KeyCode::Escape).display_name()))
+        }));
+        click_keybinds(&mut menu, 600.0, close_button_cursor(&result, 0, 1));
+        assert_eq!(close_inputs(&menu), &[default]);
+        assert_eq!(
+            Action::Close.fixed_inputs(),
+            &[InputKey::Keyboard(KeyCode::Escape)]
+        );
+    }
+
+    #[test]
+    fn escape_cancels_added_close_binding_without_removing_fixed_or_editable_inputs() {
+        let mut menu = test_menu("pomme-keybind-close-add-cancel-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        let initial = close_inputs(&menu).to_vec();
+        let result = render_close_bindings(&mut menu);
+        click_keybinds(&mut menu, 600.0, close_button_cursor(&result, 0, 2));
+        assert_eq!(menu.action_binding, Some((Action::Close, initial.len())));
+        render_keybinds(
+            &mut menu,
+            &MenuInput {
+                binding_capture: true,
+                binding_presses: vec![InputKey::Keyboard(KeyCode::Escape)],
+                escape: true,
+                ..MenuInput::default()
+            },
+        );
+        assert_eq!(close_inputs(&menu), initial);
+        assert_eq!(
+            Action::Close.fixed_inputs(),
+            &[InputKey::Keyboard(KeyCode::Escape)]
+        );
+        assert!(menu.action_binding.is_none());
+        assert!(matches!(menu.screen, Screen::OptionsKeybinds));
+        render_keybinds(
+            &mut menu,
+            &MenuInput {
+                escape: true,
+                ..MenuInput::default()
+            },
+        );
+        assert!(matches!(menu.screen, Screen::OptionsControls));
     }
 
     #[test]

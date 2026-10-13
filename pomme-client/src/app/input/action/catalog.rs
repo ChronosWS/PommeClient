@@ -100,6 +100,7 @@ macro_rules! actions {
             fallback: $fallback:literal,
             category: $category:ident,
             listed: $listed:literal,
+            $(fixed_inputs: [$($fixed:expr),* $(,)?],)?
             defaults: [$($default:expr),* $(,)?] $(,)?
         }),* $(,)?) => {
         // TODO: Reconcile Action catalog coverage with vanilla's configurable
@@ -123,6 +124,7 @@ macro_rules! actions {
                         category: ActionCategory::$category,
                         listed: $listed,
                         defaults: &[$($default,)*],
+                        fixed_inputs: &[$($($fixed,)*)?],
                     },)*
                 }
             }
@@ -299,13 +301,13 @@ actions! {
         listed: true,
         defaults: [Keyboard(KeyCode::Slash)],
     },
-    // Escape resolves to Close independently of configurable bindings.
     Close => {
         id: "key.close",
         translation_id: None,
         fallback: "Close",
         category: Miscellaneous,
-        listed: false,
+        listed: true,
+        fixed_inputs: [Keyboard(KeyCode::Escape)],
         defaults: [Controller(Button::East)],
     },
     DropItem => {

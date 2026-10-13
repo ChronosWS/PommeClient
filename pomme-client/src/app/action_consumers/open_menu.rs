@@ -212,7 +212,10 @@ mod tests {
         }
         let (requested, passed) = dispatch(&mut dispatcher, &bindings, true);
         assert!(requested);
-        assert!(passed.is_empty());
+        assert_eq!(passed.len(), 2);
+        assert!(passed.iter().all(|event| event.action == Action::Close));
+        assert_eq!(passed[0].kind, ActionEventKind::Press);
+        assert!(matches!(passed[1].kind, ActionEventKind::Release(_)));
         assert!(dispatcher.action_states().is_empty());
         assert!(!dispatch(&mut dispatcher, &bindings, true).0);
     }
