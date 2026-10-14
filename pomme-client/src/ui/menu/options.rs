@@ -4,6 +4,37 @@ use crate::resource_pack::PackCompat;
 use crate::ui::common::BTN_H;
 use crate::ui::text::TextSpan;
 
+fn binding_label_spans(binding: String, shared: bool, selected: bool) -> Vec<TextSpan> {
+    let mut label = TextSpan::new(binding, WHITE);
+    label.underline = selected;
+    let mut spans = Vec::new();
+    if selected {
+        spans.push(TextSpan::new("> ".into(), common::YELLOW));
+    }
+    if shared {
+        spans.push(TextSpan::new("[ ".into(), common::YELLOW));
+    }
+    spans.push(label);
+    if shared {
+        spans.push(TextSpan::new(" ]".into(), common::YELLOW));
+    }
+    if selected {
+        spans.push(TextSpan::new(" <".into(), common::YELLOW));
+    }
+    spans
+}
+
+fn push_binding_conflict_marker(elements: &mut Vec<MenuElement>, x: f32, y: f32, gs: f32) {
+    elements.push(MenuElement::Rect {
+        x: x - 6.0 * gs,
+        y,
+        w: 3.0 * gs,
+        h: BTN_H * gs,
+        corner_radius: 0.0,
+        color: common::YELLOW,
+    });
+}
+
 /// A row in a vanilla-style options list: 25px pitch, a 310px `Big` widget, or
 /// two 150px widgets per `Pair` (`PairLeft` for an odd trailing widget).
 pub(super) enum OptRow<'a> {
@@ -458,6 +489,11 @@ impl MainMenu {
             .filter(|entry| entry.action.listed())
             .collect();
         bindings.sort_by(|left, right| left.action.compare_ui(right.action));
+        // Defaults are intentional; only customized assignments receive warnings.
+        let conflicting_input = |action: Action, input: &InputKey| {
+            !action.defaults().contains(input)
+                && self.key_bindings.actions_for_input(input).take(2).count() > 1
+        };
 
         //
         // Draw the chrome (header with text plus space for footer)
@@ -610,18 +646,14 @@ impl MainMenu {
                     let selected = self.action_binding.is_some_and(|(action, index)| {
                         action == entry.action && index == binding_index
                     });
-                    let mut binding_span = TextSpan::new(binding.into_owned(), WHITE);
-                    binding_span.underline = selected;
-                    let spans = if selected {
-                        let yellow = common::rgb(0xffff55);
-                        vec![
-                            TextSpan::new("> ".into(), yellow),
-                            binding_span,
-                            TextSpan::new(" <".into(), yellow),
-                        ]
-                    } else {
-                        vec![binding_span]
-                    };
+                    let shared = entry
+                        .inputs
+                        .get(binding_index)
+                        .is_some_and(|input| conflicting_input(entry.action, input));
+                    let spans = binding_label_spans(binding.into_owned(), shared, selected);
+                    if shared {
+                        push_binding_conflict_marker(&mut elements, buttons_left, line_y, gs);
+                    }
                     let binding_clicked = push_button_label_f(
                         &mut elements,
                         ctx,
@@ -736,13 +768,15 @@ impl MainMenu {
                         binding_button_width,
                         button_h,
                         gs,
-                        common::WidgetLabel::Spans(vec![TextSpan::new(
+                        common::WidgetLabel::Spans(binding_label_spans(
                             fixed_input.display_name().into_owned(),
-                            WHITE,
-                        )]),
+                            false,
+                            false,
+                        )),
                         false,
                         Some(&label_scroll),
                     );
+
                     line_y += button_h;
                 }
             }
@@ -2062,6 +2096,138 @@ impl MainMenu {
 mod tests {
     use super::*;
     use crate::ui::text_edit::KeyMods;
+
+    #[test]
+    fn shared_binding_labels_preserve_key_color_and_capture_formatting() {
+        for (shared, selected, expected) in [
+            (false, false, "Space"),
+            (true, false, "[ Space ]"),
+            (false, true, "> Space <"),
+            (true, true, "> [ Space ] <"),
+        ] {
+            let spans = binding_label_spans("Space".into(), shared, selected);
+            assert_eq!(
+                spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>(),
+                expected
+            );
+            for span in spans {
+                if span.text == "Space" {
+                    assert_eq!(span.color, WHITE);
+                    assert_eq!(span.underline, selected);
+                } else {
+                    assert_eq!(span.color, common::YELLOW);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_binding_marker_scales_width_gap_and_height() {
+        for gs in [1.0, 2.0, 3.0] {
+            let mut elements = Vec::new();
+            push_binding_conflict_marker(&mut elements, 100.0, 50.0, gs);
+            assert!(
+                matches!(elements.as_slice(), [MenuElement::Rect { x, y, w, h, corner_radius, color }]
+                if *x == 100.0 - 6.0 * gs && *y == 50.0 && *w == 3.0 * gs
+                    && 100.0 - (*x + *w) == 3.0 * gs && *h == BTN_H * gs
+                    && *corner_radius == 0.0 && *color == common::YELLOW)
+            );
+        }
+    }
+
+    #[test]
+    fn shared_bindings_highlight_each_action_and_clear_after_unbinding() {
+        for input in [
+            InputKey::Keyboard(winit::keyboard::KeyCode::KeyJ),
+            InputKey::Mouse(winit::event::MouseButton::Middle),
+            InputKey::Controller(gilrs::Button::DPadUp),
+        ] {
+            let mut menu = test_menu("pomme-keybind-conflict-test");
+            menu.set_screen(Screen::OptionsKeybinds);
+            for &action in Action::ALL {
+                menu.key_bindings.set(action, vec![]);
+            }
+            // Repeating an assignment within one action is not another action.
+            menu.key_bindings.set(Action::Jump, vec![input, input]);
+            let result = render_keybinds(&mut menu, &MenuInput::default());
+            assert!(!jump_elements(&result).iter().any(|element| matches!(element, MenuElement::Rect { color, .. } if *color == common::YELLOW)));
+            menu.key_bindings.set(Action::Sprint, vec![input]);
+            let result = render_keybinds(&mut menu, &MenuInput::default());
+            for action in [Action::Jump, Action::Sprint] {
+                let elements = action_elements(&result, action);
+                assert!(elements.iter().any(
+                    |element| matches!(element, MenuElement::TextSpans { spans, .. }
+                    if spans.len() == 3 && spans[0].text == "[ " && spans[2].text == " ]"
+                        && spans[0].color == common::YELLOW && spans[2].color == common::YELLOW)
+                ));
+                let (button_x, button_y) = elements
+                    .iter()
+                    .find_map(|element| match element {
+                        MenuElement::NineSlice { x, y, .. } => Some((*x, *y)),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!(elements.iter().any(|element| matches!(element, MenuElement::Rect { x, y, w, h, color, .. }
+                    if *x == button_x - 6.0 && *y == button_y && *w == 3.0 && *h == BTN_H && *color == common::YELLOW)));
+            }
+            menu.key_bindings.set(Action::Sprint, vec![]);
+            let result = render_keybinds(&mut menu, &MenuInput::default());
+            assert!(!jump_elements(&result).iter().any(|element| matches!(element, MenuElement::Rect { color, .. } if *color == common::YELLOW)));
+        }
+    }
+
+    #[test]
+    fn default_and_fixed_bindings_have_no_conflict_highlights() {
+        let mut menu = test_menu("pomme-keybind-fixed-conflict-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        let result = render_keybinds(&mut menu, &MenuInput::default());
+        for action in [Action::Close, Action::OpenMenu] {
+            let elements = action_elements(&result, action);
+            assert!(elements.iter().any(
+                |element| matches!(element, MenuElement::TextSpans { spans, .. }
+                if spans.len() == 1 && spans[0].color == common::COL_DISABLED)
+            ));
+            assert!(elements.iter().any(|element| matches!(
+                element,
+                MenuElement::NineSlice {
+                    sprite: SpriteId::ButtonDisabled,
+                    ..
+                }
+            )));
+        }
+        assert!(!result.elements.iter().any(
+            |element| matches!(element, MenuElement::Rect { color, .. } if *color == common::YELLOW)
+        ));
+        assert!(!result.elements.iter().any(|element| matches!(element, MenuElement::TextSpans { spans, .. } if spans.iter().any(|span| span.text == "[ "))));
+    }
+
+    #[test]
+    fn custom_binding_conflicting_with_default_only_highlights_custom_assignment() {
+        let mut menu = test_menu("pomme-keybind-custom-default-conflict-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        let space = InputKey::Keyboard(winit::keyboard::KeyCode::Space);
+        // The exemption is per input, not per action or vector position.
+        menu.key_bindings.set(
+            Action::Jump,
+            vec![InputKey::Keyboard(winit::keyboard::KeyCode::KeyJ), space],
+        );
+        menu.key_bindings.set(Action::Sprint, vec![space]);
+        let result = render_keybinds(&mut menu, &MenuInput::default());
+        assert!(!jump_elements(&result).iter().any(
+            |element| matches!(element, MenuElement::TextSpans { spans, .. }
+            if spans.iter().any(|span| span.text == "[ "))
+        ));
+        assert!(!jump_elements(&result).iter().any(
+            |element| matches!(element, MenuElement::Rect { color, .. } if *color == common::YELLOW)
+        ));
+        assert!(action_elements(&result, Action::Sprint).iter().any(
+            |element| matches!(element, MenuElement::TextSpans { spans, .. }
+            if spans.len() == 3 && spans[0].text == "[ " && spans[2].text == " ]")
+        ));
+    }
 
     #[test]
     fn disabled_prefixes_match_dynamic_option_labels() {
