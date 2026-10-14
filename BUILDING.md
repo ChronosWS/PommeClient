@@ -111,6 +111,15 @@ Running the standalone client requires minecraft assets, for which you have 2 op
      --game-dir $PWD/reference/game-dir
    ```
 
+`--width` and `--height` set the window's starting size in logical pixels
+(default 854 × 480), for example to test the UI at a fixed size:
+
+```bash
+just client-dev -- --width 1280 --height 720
+```
+
+They only apply on desktop, and don't change saved settings or fullscreen.
+
 ### Data folder
 
 The client and launcher share one per-user folder: `%LOCALAPPDATA%\Pomme` on

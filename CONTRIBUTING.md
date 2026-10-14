@@ -22,15 +22,6 @@ Thanks for your interest in contributing to Pomme!
    just launcher-dev
    ```
 
-For UI testing, set the client's initial window size with command-line arguments:
-
-```bash
-cargo run -p pomme-client -- --width 1280 --height 720
-```
-
-Dimensions are positive integers in logical pixels and default independently to
-854 × 480. These options do not change saved settings or override fullscreen mode.
-
 ## Before Submitting a PR
 
 All of these must pass. CI will reject your PR if they don't.
