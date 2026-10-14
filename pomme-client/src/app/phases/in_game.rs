@@ -2952,6 +2952,10 @@ pub fn update_game(
             left_pressed: core.input.has_pending_left_mouse_press(),
             right_pressed: core.input.has_pending_right_mouse_press(),
             middle_pressed: core.input.has_pending_middle_mouse_press(),
+            pick_requested: core
+                .action_consumers
+                .pick_block
+                .screen_requested(!keys_live),
             left_held: core.input.is_left_mouse_held(),
             right_held: core.input.is_right_mouse_held(),
             shift: core.input.is_shift_held(),
@@ -3204,7 +3208,10 @@ pub fn update_game(
     if game.creative_inventory_open && !dialog_open {
         let cursor = core.input.cursor_pos();
         let clicked = core.input.has_pending_left_mouse_press();
-        let middle_clicked = core.input.has_pending_middle_mouse_press();
+        let pick_requested = core
+            .action_consumers
+            .pick_block
+            .screen_requested(game.wants_text_input());
         let right_clicked = core.input.has_pending_right_mouse_press();
         let scroll_delta = core.input.consume_menu_scroll();
         let hotbar_swap = core.action_consumers.hotbar_slot.container_slot();
@@ -3219,7 +3226,7 @@ pub fn update_game(
             sh,
             cursor,
             clicked,
-            middle_clicked,
+            pick_requested,
             right_clicked,
             scroll_delta,
             &text_events,

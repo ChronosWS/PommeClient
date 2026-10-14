@@ -39,11 +39,15 @@ pub struct ContainerResult {
 pub struct ContainerInput {
     pub left_pressed: bool,
     pub right_pressed: bool,
+    /// Physical middle-button click for widgets accepting any mouse button
+    /// (enchantment options), independent of the Pick Block clone binding.
     pub middle_pressed: bool,
+    /// Pick Block requested this frame: clone the hovered filled slot.
+    pub pick_requested: bool,
     pub left_held: bool,
     pub right_held: bool,
     pub shift: bool,
-    /// Hotbar digit pressed this frame (vanilla `keyHotbarSlots` swap).
+    /// Hotbar slot requested this frame (vanilla `keyHotbarSlots` swap).
     pub hotbar_swap: Option<u8>,
     /// Swap Offhand requested this frame: swap the hovered slot with the
     /// offhand.
@@ -350,10 +354,10 @@ pub fn push_cursor_stack(
     }
 }
 
-/// Keyboard shortcuts on the hovered slot, vanilla
-/// `AbstractContainerScreen.keyPressed`: with an empty cursor, F / 1-9 swap it
-/// with the offhand / a hotbar slot; over an item, middle-click CLONEs and
-/// Q THROWs (Ctrl = whole stack).
+/// Frame action requests on the hovered slot: with an empty cursor, Swap
+/// Offhand / Hotbar Slot swap it with the offhand / a hotbar slot; over an
+/// item, Pick Block CLONEs and takes precedence over Drop Item THROW
+/// (Ctrl at frame application = whole stack).
 fn resolve_key_ops(
     input: &ContainerInput,
     hovered: Option<u16>,
@@ -378,7 +382,7 @@ fn resolve_key_ops(
         }
     }
     if slots.get(slot as usize).is_some_and(ItemStack::is_present) {
-        if input.middle_pressed {
+        if input.pick_requested {
             ops.push(ClickOperation::Clone(CloneClick { slot }));
         } else if input.throw {
             ops.push(ClickOperation::Throw(if input.throw_all {
@@ -529,4 +533,109 @@ fn quick_craft(kind: &QuickCraftKind, status: QuickCraftStatus) -> ClickOperatio
         kind: kind.clone(),
         status,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use azalea_registry::builtin::ItemKind;
+
+    use super::*;
+
+    fn pick_input() -> ContainerInput {
+        ContainerInput {
+            left_pressed: false,
+            right_pressed: false,
+            middle_pressed: false,
+            pick_requested: true,
+            left_held: false,
+            right_held: false,
+            shift: false,
+            hotbar_swap: None,
+            swap_offhand: false,
+            throw: false,
+            throw_all: false,
+        }
+    }
+
+    #[test]
+    fn pick_request_clones_only_hovered_filled_slots() {
+        let input = pick_input();
+        let slots = [ItemStack::new(ItemKind::Stone, 3), ItemStack::Empty];
+        let ops = resolve_key_ops(&input, Some(0), &slots, &ItemStack::Empty);
+        assert!(matches!(
+            ops.as_slice(),
+            [ClickOperation::Clone(CloneClick { slot: 0 })]
+        ));
+        for hovered in [None, Some(1), Some(2)] {
+            assert!(resolve_key_ops(&input, hovered, &slots, &ItemStack::Empty).is_empty());
+        }
+        let mut input = input;
+        input.pick_requested = false;
+        assert!(resolve_key_ops(&input, Some(0), &slots, &ItemStack::Empty).is_empty());
+    }
+
+    #[test]
+    fn pick_request_clones_with_either_cursor_and_precedes_throw() {
+        let slots = [ItemStack::new(ItemKind::Stone, 3)];
+        for cursor in [ItemStack::Empty, ItemStack::new(ItemKind::Dirt, 2)] {
+            for throw_all in [false, true] {
+                let mut input = pick_input();
+                input.throw = true;
+                input.throw_all = throw_all;
+                let ops = resolve_key_ops(&input, Some(0), &slots, &cursor);
+                assert!(matches!(
+                    ops.as_slice(),
+                    [ClickOperation::Clone(CloneClick { slot: 0 })]
+                ));
+                input.pick_requested = false;
+                let ops = resolve_key_ops(&input, Some(0), &slots, &cursor);
+                assert!(
+                    matches!(
+                        ops.as_slice(),
+                        [ClickOperation::Throw(ThrowClick::All { slot: 0 })]
+                    ) && throw_all
+                        || matches!(
+                            ops.as_slice(),
+                            [ClickOperation::Throw(ThrowClick::Single { slot: 0 })]
+                        ) && !throw_all
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn swap_priority_and_cursor_eligibility_are_preserved_with_pick_request() {
+        let slots = [ItemStack::new(ItemKind::Stone, 3)];
+        let mut input = pick_input();
+        input.swap_offhand = true;
+        input.hotbar_swap = Some(2);
+        let ops = resolve_key_ops(&input, Some(0), &slots, &ItemStack::Empty);
+        assert!(matches!(
+            ops.as_slice(),
+            [
+                ClickOperation::Swap(SwapClick {
+                    source_slot: 0,
+                    target_slot: 40
+                }),
+                ClickOperation::Clone(CloneClick { slot: 0 }),
+            ]
+        ));
+        input.swap_offhand = false;
+        let ops = resolve_key_ops(&input, Some(0), &slots, &ItemStack::Empty);
+        assert!(matches!(
+            ops.as_slice(),
+            [
+                ClickOperation::Swap(SwapClick {
+                    source_slot: 0,
+                    target_slot: 2
+                }),
+                ClickOperation::Clone(CloneClick { slot: 0 }),
+            ]
+        ));
+        let ops = resolve_key_ops(&input, Some(0), &slots, &ItemStack::new(ItemKind::Dirt, 2));
+        assert!(matches!(
+            ops.as_slice(),
+            [ClickOperation::Clone(CloneClick { slot: 0 })]
+        ));
+    }
 }

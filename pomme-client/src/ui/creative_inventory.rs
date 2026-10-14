@@ -404,7 +404,7 @@ pub fn build_creative_inventory(
     screen_h: f32,
     cursor: (f32, f32),
     clicked: bool,
-    middle_clicked: bool,
+    pick_requested: bool,
     right_clicked: bool,
     scroll_delta: f32,
     events: &[crate::ui::text_edit::TextInputEvent],
@@ -427,7 +427,8 @@ pub fn build_creative_inventory(
     }
 
     // Hovered-slot hotbar swap (vanilla checkHotbarKeyPressed / the creative
-    // slotClicked SWAP branch). The search tab only uses slot bindings; F types.
+    // slotClicked SWAP branch). The search tab only uses hotbar slot bindings;
+    // the Swap Offhand binding can still type.
     let swap_target: Option<u16> = if state.cursor_item.is_present() {
         None
     } else {
@@ -562,7 +563,7 @@ pub fn build_creative_inventory(
                             stack_with_count(data, data.kind.max_stack_size()),
                         );
                         swap_consumed_digit = hotbar_swap.is_some();
-                    } else if middle_clicked
+                    } else if pick_requested
                         && state.cursor_item.is_empty()
                         && let ItemStack::Present(data) = &item
                     {
@@ -670,11 +671,12 @@ pub fn build_creative_inventory(
         }
     }
 
-    // TODO: Q over a hovered item should drop it into the world (vanilla
+    // TODO: Drop Item over a hovered item should drop it into the world (vanilla
     // sends SetCreativeModeSlot with slot -1 via handleCreativeModeItemDrop).
 
-    // Keyboard hotbar swap on a hovered real slot (vanilla routes it through
-    // AbstractContainerScreen.checkHotbarKeyPressed → inventoryMenu SWAP).
+    // Hotbar slot / Swap Offhand requests on a hovered real slot (vanilla routes
+    // them through AbstractContainerScreen.checkHotbarKeyPressed →
+    // inventoryMenu SWAP).
     if let Some(target) = swap_target
         && matches!(action, CreativeAction::None)
         && state.drag.is_none()
@@ -1568,6 +1570,122 @@ fn search_items_cached() -> &'static [ItemKind] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request_pick(
+        state: &mut CreativeState,
+        inventory: &Inventory,
+        slot_pos: (f32, f32),
+        hotbar_swap: Option<u8>,
+    ) -> CreativeAction {
+        build_creative_inventory(
+            &mut Vec::new(),
+            state,
+            390.0,
+            272.0,
+            (slot_pos.0 * 2.0 + 1.0, slot_pos.1 * 2.0 + 1.0),
+            false,
+            true,
+            false,
+            0.0,
+            &[],
+            false,
+            hotbar_swap,
+            None,
+            false,
+            inventory,
+            2.0,
+            false,
+            false,
+            false,
+            &|text, scale| text.len() as f32 * scale,
+        )
+    }
+
+    #[test]
+    fn pick_request_clones_display_item_only_with_empty_cursor() {
+        let mut state = CreativeState::new();
+        let item = visible_items(&state)[0].clone();
+        let ItemStack::Present(data) = &item else {
+            panic!("first building blocks display slot must be filled");
+        };
+        let expected = stack_with_count(data, data.kind.max_stack_size());
+        let inventory = Inventory::new();
+        let pos = (GRID_ORIGIN_X, GRID_ORIGIN_Y);
+        let action = request_pick(&mut state, &inventory, pos, None);
+        assert!(matches!(action, CreativeAction::None));
+        assert_eq!(state.cursor_item, expected);
+
+        state.cursor_item = ItemStack::new(ItemKind::Dirt, 2);
+        let carried = state.cursor_item.clone();
+        let action = request_pick(&mut state, &inventory, pos, None);
+        assert!(matches!(action, CreativeAction::None));
+        assert_eq!(state.cursor_item, carried);
+    }
+
+    #[test]
+    fn pick_request_over_empty_display_slot_leaves_cursor_unchanged() {
+        let mut state = CreativeState::new();
+        state.tab = CreativeTab::Hotbar;
+        assert!(visible_items(&state).is_empty());
+        for cursor in [ItemStack::Empty, ItemStack::new(ItemKind::Dirt, 2)] {
+            state.cursor_item = cursor.clone();
+            let action = request_pick(
+                &mut state,
+                &Inventory::new(),
+                (GRID_ORIGIN_X, GRID_ORIGIN_Y),
+                None,
+            );
+            assert!(matches!(action, CreativeAction::None));
+            assert_eq!(state.cursor_item, cursor);
+        }
+    }
+
+    #[test]
+    fn display_hotbar_swap_takes_precedence_over_pick_request() {
+        let mut state = CreativeState::new();
+        let ItemStack::Present(data) = visible_items(&state)[0].clone() else {
+            panic!("first building blocks display slot must be filled");
+        };
+        let expected = stack_with_count(&data, data.kind.max_stack_size());
+        let action = request_pick(
+            &mut state,
+            &Inventory::new(),
+            (GRID_ORIGIN_X, GRID_ORIGIN_Y),
+            Some(2),
+        );
+        let CreativeAction::SetSlot(slot, stack) = action else {
+            panic!("hotbar swap must win over display cloning");
+        };
+        assert_eq!(slot, SLOT_HOTBAR_BASE + 2);
+        assert_eq!(stack, expected);
+        assert!(state.cursor_item.is_empty());
+    }
+
+    #[test]
+    fn inventory_tab_pick_request_preserves_existing_no_clone_behavior() {
+        // Unlike display slots, real creative inventory slots do not currently
+        // handle Pick Block. This input migration must not add that behavior.
+        for filled in [false, true] {
+            for cursor in [ItemStack::Empty, ItemStack::new(ItemKind::Dirt, 2)] {
+                let mut state = CreativeState::new();
+                state.tab = CreativeTab::SurvivalInventory;
+                state.cursor_item = cursor.clone();
+                let mut inventory = Inventory::new();
+                let item = if filled {
+                    ItemStack::new(ItemKind::Stone, 3)
+                } else {
+                    ItemStack::Empty
+                };
+                inventory.set_slot(SLOT_MAIN_BASE as usize, item.clone());
+                let action =
+                    request_pick(&mut state, &inventory, (GRID_ORIGIN_X, INV_MAIN_Y), None);
+                assert!(matches!(action, CreativeAction::None));
+                assert_eq!(state.cursor_item, cursor);
+                assert_eq!(inventory.slot(SLOT_MAIN_BASE as usize), &item);
+                assert!(state.drag.is_none());
+            }
+        }
+    }
 
     #[test]
     fn hotbar_shortcut_suppresses_the_bound_keys_character_not_the_slot_digit() {
