@@ -100,6 +100,7 @@ macro_rules! actions {
             fallback: $fallback:literal,
             category: $category:ident,
             listed: $listed:literal,
+            $(ui_order: $ui_order:expr,)?
             $(fixed_inputs: [$($fixed:expr),* $(,)?],)?
             defaults: [$($default:expr),* $(,)?] $(,)?
         }),* $(,)?) => {
@@ -123,6 +124,7 @@ macro_rules! actions {
                         },
                         category: ActionCategory::$category,
                         listed: $listed,
+                        ui_order: 0 $(+ $ui_order)?,
                         defaults: &[$($default,)*],
                         fixed_inputs: &[$($($fixed,)*)?],
                     },)*
@@ -268,6 +270,7 @@ actions! {
         fallback: "Toggle Overlay",
         category: Debug,
         listed: true,
+        ui_order: -2,
         defaults: [Keyboard(KeyCode::F3)],
     },
     DebugModifier => {
@@ -276,7 +279,90 @@ actions! {
         fallback: "Debug Modifier Key",
         category: Debug,
         listed: true,
+        ui_order: -1,
         defaults: [Keyboard(KeyCode::F3)],
+    },
+    // Debug shortcuts are normal bindings. Modifier qualification temporarily
+    // belongs to the consumer until input layers are available.
+    DebugReloadChunks => {
+        id: "key.debug.reloadChunk",
+        translation_id: Some(StringId::new("key.debug.reloadChunk")),
+        fallback: "Reload Chunks",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyA)],
+    },
+    DebugCopyLocation => {
+        id: "key.debug.copyLocation",
+        translation_id: Some(StringId::new("key.debug.copyLocation")),
+        fallback: "Copy Location",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyC)],
+    },
+    DebugClearChat => {
+        id: "key.debug.clearChat",
+        translation_id: Some(StringId::new("key.debug.clearChat")),
+        fallback: "Clear Chat",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyD)],
+    },
+    DebugChunkBorders => {
+        id: "key.debug.showChunkBorders",
+        translation_id: Some(StringId::new("key.debug.showChunkBorders")),
+        fallback: "Show Chunk Boundaries",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyG)],
+    },
+    DebugAdvancedTooltips => {
+        id: "key.debug.showAdvancedTooltips",
+        translation_id: Some(StringId::new("key.debug.showAdvancedTooltips")),
+        fallback: "Show Advanced Tooltips",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyH)],
+    },
+    DebugCopyData => {
+        id: "key.debug.copyRecreateCommand",
+        translation_id: Some(StringId::new("key.debug.copyRecreateCommand")),
+        fallback: "Copy Data",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyI)],
+    },
+    DebugGameModeSwitcher => {
+        id: "key.debug.switchGameMode",
+        translation_id: Some(StringId::new("key.debug.switchGameMode")),
+        fallback: "Game Mode Switcher",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::F4)],
+    },
+    DebugSpectate => {
+        id: "key.debug.spectate",
+        translation_id: Some(StringId::new("key.debug.spectate")),
+        fallback: "Cycle Spectator",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyN)],
+    },
+    DebugChunkOcclusion => {
+        id: "key.debug.chunkOcclusion",
+        translation_id: None,
+        fallback: "Toggle Chunk Occlusion",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyO)],
+    },
+    DebugDumpVersion => {
+        id: "key.debug.dumpVersion",
+        translation_id: Some(StringId::new("key.debug.dumpVersion")),
+        fallback: "Dump Version Info",
+        category: Debug,
+        listed: true,
+        defaults: [Keyboard(KeyCode::KeyV)],
     },
     ChangePerspective => {
         id: "key.togglePerspective",
@@ -431,4 +517,153 @@ actions! {
         listed: true,
         defaults: [Mouse(MouseButton::Middle)],
     },
+}
+
+impl Action {
+    pub const fn is_debug_shortcut(self) -> bool {
+        matches!(
+            self,
+            Self::DebugReloadChunks
+                | Self::DebugCopyLocation
+                | Self::DebugClearChat
+                | Self::DebugChunkBorders
+                | Self::DebugAdvancedTooltips
+                | Self::DebugCopyData
+                | Self::DebugGameModeSwitcher
+                | Self::DebugSpectate
+                | Self::DebugChunkOcclusion
+                | Self::DebugDumpVersion
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::input::KeyBindings;
+
+    const DEBUG_SHORTCUTS: &[(Action, &str, KeyCode)] = &[
+        (
+            Action::DebugReloadChunks,
+            "key.debug.reloadChunk",
+            KeyCode::KeyA,
+        ),
+        (
+            Action::DebugCopyLocation,
+            "key.debug.copyLocation",
+            KeyCode::KeyC,
+        ),
+        (Action::DebugClearChat, "key.debug.clearChat", KeyCode::KeyD),
+        (
+            Action::DebugChunkBorders,
+            "key.debug.showChunkBorders",
+            KeyCode::KeyG,
+        ),
+        (
+            Action::DebugAdvancedTooltips,
+            "key.debug.showAdvancedTooltips",
+            KeyCode::KeyH,
+        ),
+        (
+            Action::DebugCopyData,
+            "key.debug.copyRecreateCommand",
+            KeyCode::KeyI,
+        ),
+        (
+            Action::DebugGameModeSwitcher,
+            "key.debug.switchGameMode",
+            KeyCode::F4,
+        ),
+        (Action::DebugSpectate, "key.debug.spectate", KeyCode::KeyN),
+        (
+            Action::DebugChunkOcclusion,
+            "key.debug.chunkOcclusion",
+            KeyCode::KeyO,
+        ),
+        (
+            Action::DebugDumpVersion,
+            "key.debug.dumpVersion",
+            KeyCode::KeyV,
+        ),
+    ];
+
+    #[test]
+    fn debug_shortcut_catalog_metadata_and_classification() {
+        for &(action, id, key) in DEBUG_SHORTCUTS {
+            assert_eq!(action.id().as_str(), id);
+            assert_eq!(Action::from_id(id), Some(action));
+            assert!(Action::ALL.contains(&action));
+            assert_eq!(action.category(), ActionCategory::Debug);
+            assert!(action.listed());
+            assert_eq!(action.defaults(), &[Keyboard(key)]);
+            assert_eq!(action.default_key(), Some(key));
+            assert!(action.fixed_inputs().is_empty());
+            assert_eq!(
+                action
+                    .metadata()
+                    .display
+                    .translation_id
+                    .map(StringId::as_str),
+                (action != Action::DebugChunkOcclusion).then_some(id),
+            );
+        }
+        for &action in Action::ALL {
+            assert_eq!(
+                action.is_debug_shortcut(),
+                DEBUG_SHORTCUTS
+                    .iter()
+                    .any(|&(shortcut, _, _)| shortcut == action),
+            );
+        }
+        assert!(!Action::DebugModifier.is_debug_shortcut());
+        assert!(!Action::ToggleOverlay.is_debug_shortcut());
+    }
+
+    #[test]
+    fn debug_shortcut_bindings_are_defaulted_editable_and_persistent() {
+        let mut bindings = KeyBindings::default();
+        for &(action, id, key) in DEBUG_SHORTCUTS {
+            assert!(
+                bindings
+                    .actions_for_input(&Keyboard(key))
+                    .any(|&a| a == action)
+            );
+            assert!(bindings.is_default(action));
+            assert_eq!(
+                crate::app::input::keybind_label(id),
+                crate::app::input::action_label(action)
+            );
+            bindings.set(action, vec![Keyboard(KeyCode::KeyZ)]);
+        }
+        let saved = serde_json::to_value(&bindings).unwrap();
+        let restored: KeyBindings = serde_json::from_value(saved.clone()).unwrap();
+        for &(action, id, key) in DEBUG_SHORTCUTS {
+            assert_eq!(saved[id], serde_json::json!(["key.keyboard.z"]));
+            assert!(
+                restored
+                    .actions_for_input(&Keyboard(KeyCode::KeyZ))
+                    .any(|&a| a == action)
+            );
+            assert!(
+                !restored
+                    .actions_for_input(&Keyboard(key))
+                    .any(|&a| a == action)
+            );
+            bindings.set(action, vec![]);
+            assert!(
+                !bindings
+                    .actions_for_input(&Keyboard(key))
+                    .any(|&a| a == action)
+            );
+        }
+        bindings.reset_all();
+        for &(action, _, key) in DEBUG_SHORTCUTS {
+            assert!(
+                bindings
+                    .actions_for_input(&Keyboard(key))
+                    .any(|&a| a == action)
+            );
+            assert!(bindings.is_default(action));
+        }
+    }
 }

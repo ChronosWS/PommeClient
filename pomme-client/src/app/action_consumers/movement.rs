@@ -192,7 +192,8 @@ mod tests {
                     &KeyBindings::default(),
                     true
                 )
-                .is_empty()
+                .iter()
+                .all(|action| action.is_debug_shortcut())
             );
             assert_eq!(consumer.held, only(action));
         }

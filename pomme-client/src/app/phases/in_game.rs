@@ -721,20 +721,20 @@ impl GameState {
     /// Apply an existing debug shortcut selected by the Debug consumer.
     // TODO: vanilla gates hitbox/border/copy chords on the server's
     // reducedDebugInfo flag, which pomme doesn't track yet.
-    pub fn handle_debug_shortcut(
+    pub fn handle_debug_action(
         &mut self,
-        code: winit::keyboard::KeyCode,
+        action: crate::app::input::Action,
         connection: &ConnectionHandle,
     ) -> bool {
-        use winit::keyboard::KeyCode;
-        match code {
-            KeyCode::KeyA => {
+        use crate::app::input::Action;
+        match action {
+            Action::DebugReloadChunks => {
                 self.pending_chunk_reload = true;
                 self.debug_feedback("Reloading all chunks");
                 true
             }
             // TODO: F3+B show hitboxes (no entity hitbox renderer yet)
-            KeyCode::KeyC => {
+            Action::DebugCopyLocation => {
                 // Vanilla also crashes the game when held for 10s; not ported.
                 let p = &self.player;
                 let cmd = format!(
@@ -751,11 +751,11 @@ impl GameState {
                 }
                 true
             }
-            KeyCode::KeyD => {
+            Action::DebugClearChat => {
                 self.chat.clear_messages();
                 true
             }
-            KeyCode::KeyG => {
+            Action::DebugChunkBorders => {
                 self.show_chunk_borders = !self.show_chunk_borders;
                 self.debug_feedback(if self.show_chunk_borders {
                     "Chunk borders: shown"
@@ -764,7 +764,7 @@ impl GameState {
                 });
                 true
             }
-            KeyCode::KeyH => {
+            Action::DebugAdvancedTooltips => {
                 self.advanced_item_tooltips = !self.advanced_item_tooltips;
                 self.debug_feedback(if self.advanced_item_tooltips {
                     "Advanced tooltips: shown"
@@ -773,7 +773,7 @@ impl GameState {
                 });
                 true
             }
-            KeyCode::KeyI => {
+            Action::DebugCopyData => {
                 // TODO: entity variant and server-side NBT query (vanilla
                 // copyRecreateCommand with addNbt/pullFromServer)
                 if let Some(HitResult::Block(t)) = self.interaction.target {
@@ -803,7 +803,7 @@ impl GameState {
                 }
                 true
             }
-            KeyCode::F4 => {
+            Action::DebugGameModeSwitcher => {
                 if let Some(switcher) = &mut self.game_mode_switcher {
                     switcher.cycle();
                 } else if self.input_live() {
@@ -819,7 +819,7 @@ impl GameState {
                 }
                 true
             }
-            KeyCode::KeyN => {
+            Action::DebugSpectate => {
                 // Sent unconditionally; the server refuses without permission.
                 use azalea_core::game_type::GameMode;
                 let target = if self.player.game_mode != 3 {
@@ -838,7 +838,7 @@ impl GameState {
                 ));
                 true
             }
-            KeyCode::KeyO => {
+            Action::DebugChunkOcclusion => {
                 // Pomme-specific: chunk occlusion culling toggle.
                 self.chunk_occlusion_enabled = !self.chunk_occlusion_enabled;
                 // Force the throttled recompute to run next frame so the
@@ -847,7 +847,7 @@ impl GameState {
                 tracing::info!("Chunk occlusion: {}", self.chunk_occlusion_enabled);
                 true
             }
-            KeyCode::KeyV => {
+            Action::DebugDumpVersion => {
                 self.debug_feedback("Client version info:");
                 self.chat.push_message(vec![crate::ui::text::TextSpan::new(
                     format!("Pomme Client {}", env!("CARGO_PKG_VERSION")),

@@ -3,7 +3,9 @@
 //! Input occurrences accumulate without changing held state. Dispatch resolves
 //! the entire batch using one frame timestamp and bindings resolver, then
 //! offers historical action events alongside the final held state to consumers.
-//! Consuming an event never changes held state. Events are discarded after
+//! Handler consumption never changes held state. Occurrence policy can also
+//! suppress response holds without losing physical release bookkeeping.
+//! Events are discarded after
 //! dispatch; consumers own any work that must wait for a later gameplay tick.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -32,6 +34,8 @@ pub enum ReleaseReason {
     Released,
     FocusLost,
     DeviceDisconnected,
+    /// A higher-priority response claimed this source, not a physical release.
+    Suppressed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,10 +103,39 @@ struct QueuedInput {
     consumed_action: Option<Action>,
 }
 
+/// Application-owned priority policy for one physical occurrence. This is a
+/// small bridge to future input layers; the dispatcher knows no layer
+/// semantics.
+#[derive(Default)]
+pub struct OccurrenceDisposition {
+    /// Hide delivery without changing response holds (legacy observation).
+    pub filtered: Vec<Action>,
+    /// Hide delivery and remove this source from the action's response hold.
+    pub suppressed: Vec<Action>,
+}
+
+impl OccurrenceDisposition {
+    pub fn blocks(&self, action: Action) -> bool {
+        self.filtered.contains(&action) || self.suppressed.contains(&action)
+    }
+}
+
+impl From<Vec<Action>> for OccurrenceDisposition {
+    fn from(filtered: Vec<Action>) -> Self {
+        Self {
+            filtered,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ActionDispatcher {
     input_queue: VecDeque<QueuedInput>,
-    action_states: ActionStates,
+    // Physical mapping state is retained for qualification and releases even
+    // when an occurrence is claimed. Consumers see only response-eligible holds.
+    physical_states: ActionStates,
+    response_states: ActionStates,
 }
 
 impl ActionDispatcher {
@@ -110,22 +143,22 @@ impl ActionDispatcher {
         Self::default()
     }
 
-    /// Current held state from the last dispatch, not pending input
-    /// occurrences.
+    /// Response-eligible held state from the last dispatch. Claimed sources
+    /// are excluded; physical state remains available to occurrence policy.
     pub fn action_states(&self) -> &ActionStates {
-        &self.action_states
+        &self.response_states
     }
 
-    /// Query held state after replaying pending input without draining the
-    /// queue or changing dispatched state. Existing sources retain their
-    /// active mappings.
+    /// Query physical held state after replaying pending input without draining
+    /// the queue or applying response priority. Existing sources retain their
+    /// active mappings; use this for collection-time modifier qualification.
     pub fn action_held_including_pending(
         &self,
         action: Action,
         mut resolve_bindings: impl FnMut(&InputKey) -> Vec<Action>,
     ) -> bool {
         let mut sources: HashMap<InputSource, Vec<Action>> = HashMap::new();
-        for (active_action, state) in &self.action_states {
+        for (active_action, state) in &self.physical_states {
             for source in &state.active_sources {
                 sources
                     .entry(source.clone())
@@ -201,7 +234,7 @@ impl ActionDispatcher {
         events: &mut Vec<ActionEvent>,
     ) {
         if self
-            .action_states
+            .physical_states
             .values()
             .any(|state| state.active_sources.contains(&source))
         {
@@ -209,7 +242,7 @@ impl ActionDispatcher {
         }
         for action in resolve_bindings(&source.input) {
             let state = self
-                .action_states
+                .physical_states
                 .entry(action)
                 .or_insert_with(|| ActionState {
                     started_at: timestamp,
@@ -234,7 +267,7 @@ impl ActionDispatcher {
     }
 
     fn repeat(&self, source: &InputSource, timestamp: Instant, events: &mut Vec<ActionEvent>) {
-        for (action, state) in &self.action_states {
+        for (action, state) in &self.physical_states {
             if state.active_sources.contains(source) {
                 events.push(ActionEvent {
                     action: *action,
@@ -254,7 +287,7 @@ impl ActionDispatcher {
         timestamp: Instant,
         events: &mut Vec<ActionEvent>,
     ) {
-        self.action_states.retain(|action, state| {
+        self.physical_states.retain(|action, state| {
             if !state.active_sources.remove(source) {
                 return true;
             }
@@ -286,7 +319,7 @@ impl ActionDispatcher {
         events: &mut Vec<ActionEvent>,
     ) {
         let sources: HashSet<_> = self
-            .action_states
+            .physical_states
             .values()
             .flat_map(|state| &state.active_sources)
             .filter(|source| device.is_none_or(|device| source.device == device))
@@ -294,6 +327,40 @@ impl ActionDispatcher {
             .collect();
         for source in sources {
             self.release(&source, reason, timestamp, events);
+        }
+    }
+
+    fn press_response(&mut self, event: &ActionEvent) -> HoldTransition {
+        let state = self
+            .response_states
+            .entry(event.action)
+            .or_insert_with(|| ActionState {
+                started_at: event.timestamp,
+                active_sources: HashSet::new(),
+            });
+        let transition = if state.active_sources.is_empty() {
+            HoldTransition::Started
+        } else {
+            HoldTransition::Unchanged
+        };
+        state.active_sources.insert(event.source.clone());
+        transition
+    }
+
+    fn release_response(&mut self, event: &ActionEvent) -> Option<HoldTransition> {
+        let state = self.response_states.get_mut(&event.action)?;
+        if !state.active_sources.remove(&event.source) {
+            return None;
+        }
+        if state.active_sources.is_empty() {
+            let transition = HoldTransition::Ended {
+                started_at: state.started_at,
+                ended_at: event.timestamp,
+            };
+            self.response_states.remove(&event.action);
+            Some(transition)
+        } else {
+            Some(HoldTransition::Unchanged)
         }
     }
 
@@ -318,13 +385,14 @@ impl ActionDispatcher {
     /// Observe each resolved physical occurrence after raw-handler consumption,
     /// even when it produces no deliverable action events. Observer states are
     /// occurrence-time; handlers still receive final frame state. Returned
-    /// actions suppress only this occurrence's delivery, never its
-    /// held-state effects.
-    pub fn dispatch(
+    /// policy can suppress delivery alone, or response holds for the source.
+    /// Physical state always tracks releases independently of response
+    /// priority.
+    pub fn dispatch<D: Into<OccurrenceDisposition>>(
         &mut self,
         frame_time: Instant,
         mut resolve_bindings: impl FnMut(&InputKey) -> Vec<Action>,
-        mut observer: impl FnMut(&InputEvent, &[ActionEvent], &ActionStates) -> Vec<Action>,
+        mut observer: impl FnMut(&InputEvent, &[ActionEvent], &ActionStates) -> D,
         handlers: &mut [&mut ActionHandler<'_>],
     ) {
         let mut events = Vec::new();
@@ -355,18 +423,43 @@ impl ActionDispatcher {
                     self.cancel(None, ReleaseReason::FocusLost, frame_time, &mut events)
                 }
             }
-            let mut occurrence = events.split_off(occurrence_start);
-            occurrence.retain(|event| Some(event.action) != consumed);
-            let filtered = observer(&input, &occurrence, &self.action_states);
-            events.extend(
-                occurrence
-                    .into_iter()
-                    .filter(|event| !filtered.contains(&event.action)),
-            );
+            let occurrence = events.split_off(occurrence_start);
+            let observed: Vec<_> = occurrence
+                .iter()
+                .filter(|event| Some(event.action) != consumed)
+                .cloned()
+                .collect();
+            let disposition = observer(&input, &observed, &self.physical_states).into();
+            for mut event in occurrence {
+                let suppressed = disposition.suppressed.contains(&event.action);
+                let release = match event.kind {
+                    ActionEventKind::Release(reason) => Some(reason),
+                    _ if suppressed => Some(ReleaseReason::Suppressed),
+                    _ => None,
+                };
+                if let Some(reason) = release {
+                    if let Some(transition) = self.release_response(&event) {
+                        event.kind = ActionEventKind::Release(reason);
+                        event.hold_transition = transition;
+                        // Suppression must balance an already delivered hold.
+                        // Physical releases for never-admitted holds are omitted.
+                        if reason == ReleaseReason::Suppressed
+                            || (Some(event.action) != consumed && !disposition.blocks(event.action))
+                        {
+                            events.push(event);
+                        }
+                    }
+                } else {
+                    event.hold_transition = self.press_response(&event);
+                    if Some(event.action) != consumed && !disposition.blocks(event.action) {
+                        events.push(event);
+                    }
+                }
+            }
         }
         for event in events {
             for handler in handlers.iter_mut() {
-                if handler(&event, &self.action_states) == EventDisposition::Consume {
+                if handler(&event, &self.response_states) == EventDisposition::Consume {
                     break;
                 }
             }
@@ -410,6 +503,130 @@ mod tests {
         };
         dispatcher.dispatch_without_observer(time, |_| actions.to_vec(), &mut [&mut handler]);
         events
+    }
+
+    fn dispatch_policy(
+        dispatcher: &mut ActionDispatcher,
+        suppressed_source: Option<&InputSource>,
+    ) -> Vec<ActionEvent> {
+        let mut events = Vec::new();
+        let mut handler = |event: &ActionEvent, _: &ActionStates| {
+            events.push(event.clone());
+            EventDisposition::Pass
+        };
+        dispatcher.dispatch(
+            Instant::now(),
+            |_| vec![Action::Jump, Action::Destroy],
+            |input, _, states| {
+                if let InputEvent::Press(source) | InputEvent::Repeat(source) = input
+                    && Some(source) == suppressed_source
+                {
+                    // Qualification sees physical holds even when responses are blocked.
+                    assert!(states[&Action::Jump].active_sources().contains(source));
+                    OccurrenceDisposition {
+                        suppressed: vec![Action::Jump],
+                        ..Default::default()
+                    }
+                } else {
+                    OccurrenceDisposition::default()
+                }
+            },
+            &mut [&mut handler],
+        );
+        events
+    }
+
+    #[test]
+    fn occurrence_suppression_blocks_only_selected_response_and_keeps_physical_release_tracking() {
+        let mut dispatcher = ActionDispatcher::new();
+        let key = keyboard();
+        dispatcher.on_press(key.clone());
+        let events = dispatch_policy(&mut dispatcher, Some(&key));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, Action::Destroy);
+        assert!(!dispatcher.action_states().contains_key(&Action::Jump));
+        assert!(dispatcher.action_states().contains_key(&Action::Destroy));
+        assert!(dispatcher.action_held_including_pending(Action::Jump, |_| vec![]));
+        // Another press without physical release cannot create a new response.
+        dispatcher.on_press(key.clone());
+        assert!(dispatch_policy(&mut dispatcher, None).is_empty());
+        dispatcher.on_release(&key);
+        let events = dispatch_policy(&mut dispatcher, None);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].action, Action::Destroy);
+        assert!(dispatcher.action_states().is_empty());
+        assert!(!dispatcher.action_held_including_pending(Action::Jump, |_| vec![]));
+        dispatcher.on_press(key);
+        let events = dispatch_policy(&mut dispatcher, None);
+        assert_eq!(events.len(), 2);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.hold_transition == HoldTransition::Started)
+        );
+    }
+
+    #[test]
+    fn suppression_balances_prior_hold_without_cancelling_other_devices() {
+        let mut dispatcher = ActionDispatcher::new();
+        let key = keyboard();
+        let pad = gamepad(1);
+        dispatcher.on_press(key.clone());
+        dispatcher.on_press(pad.clone());
+        dispatch_policy(&mut dispatcher, None);
+        dispatcher.on_repeat(&key);
+        let events = dispatch_policy(&mut dispatcher, Some(&key));
+        let release = events
+            .iter()
+            .find(|event| event.action == Action::Jump)
+            .unwrap();
+        assert_eq!(
+            release.kind,
+            ActionEventKind::Release(ReleaseReason::Suppressed)
+        );
+        assert_eq!(release.hold_transition, HoldTransition::Unchanged);
+        assert_eq!(
+            dispatcher.action_states()[&Action::Jump].active_sources(),
+            &HashSet::from([pad.clone()])
+        );
+        dispatcher.on_release(&key);
+        let events = dispatch_policy(&mut dispatcher, None);
+        assert!(events.iter().all(|event| event.action != Action::Jump));
+        dispatcher.on_device_disconnected(pad.device);
+        let events = dispatch_policy(&mut dispatcher, None);
+        assert!(events.iter().any(|event| event.action == Action::Jump
+            && event.kind == ActionEventKind::Release(ReleaseReason::DeviceDisconnected)
+            && matches!(event.hold_transition, HoldTransition::Ended { .. })));
+        assert!(dispatcher.action_states().is_empty());
+    }
+
+    #[test]
+    fn unmatched_repeat_can_resume_response_and_focus_loss_clears_both_state_views() {
+        let mut dispatcher = ActionDispatcher::new();
+        let key = keyboard();
+        dispatcher.on_press(key.clone());
+        dispatch_policy(&mut dispatcher, Some(&key));
+        dispatcher.on_repeat(&key);
+        let events = dispatch_policy(&mut dispatcher, None);
+        assert!(events.iter().any(|event| event.action == Action::Jump
+            && event.kind == ActionEventKind::Repeat
+            && event.hold_transition == HoldTransition::Started));
+        dispatcher.on_focus_lost();
+        let events = dispatch_policy(&mut dispatcher, None);
+        assert_eq!(events.len(), 2);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind == ActionEventKind::Release(ReleaseReason::FocusLost))
+        );
+        assert!(dispatcher.action_states().is_empty());
+        assert!(!dispatcher.action_held_including_pending(Action::Jump, |_| vec![]));
+        dispatcher.on_press(key.clone());
+        dispatch_policy(&mut dispatcher, Some(&key));
+        dispatcher.on_focus_lost();
+        let events = dispatch_policy(&mut dispatcher, None);
+        assert!(events.iter().all(|event| event.action != Action::Jump));
+        assert!(dispatcher.action_states().is_empty());
     }
 
     #[test]

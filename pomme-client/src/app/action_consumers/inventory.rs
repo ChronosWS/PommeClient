@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn text_capture_passes_keyboard_but_not_controller_or_mouse() {
         for input in [
-            InputKey::Keyboard(KeyCode::KeyI),
+            InputKey::Keyboard(KeyCode::KeyJ),
             InputKey::Mouse(MouseButton::Other(4)),
             InputKey::Controller(Button::North),
         ] {

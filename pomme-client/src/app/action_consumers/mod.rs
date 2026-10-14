@@ -226,15 +226,21 @@ impl ActionConsumers {
             frame_time,
             bindings,
             |input, events, states| {
-                let filtered = self.debug.observe(input, events, states);
+                let disposition = self.debug.observe(input, events, states);
+                let blocked: Vec<_> = disposition
+                    .filtered
+                    .iter()
+                    .chain(&disposition.suppressed)
+                    .copied()
+                    .collect();
                 self.navigation.observe(
                     input,
                     events,
-                    &filtered,
+                    &blocked,
                     binding_capture,
                     self.debug.projected_switcher_open(),
                 );
-                filtered
+                disposition
             },
             &mut [
                 &mut inventory_handler,

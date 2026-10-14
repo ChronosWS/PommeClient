@@ -4,7 +4,8 @@
 use winit::keyboard::KeyCode;
 
 use crate::app::input::action::dispatcher::{
-    ActionEvent, ActionEventKind, ActionStates, HoldTransition, InputEvent, ReleaseReason,
+    ActionEvent, ActionEventKind, ActionStates, HoldTransition, InputEvent, OccurrenceDisposition,
+    ReleaseReason,
 };
 use crate::app::input::{Action, InputKey, InputState, KeyBindings};
 use crate::app::phases::AppPhase;
@@ -13,7 +14,7 @@ use crate::net::connection::ConnectionHandle;
 
 #[derive(Debug, PartialEq, Eq)]
 enum DebugRequest {
-    Shortcut(KeyCode),
+    Shortcut(Action),
     PauseHidden,
     CancelSwitcher,
     ApplyGameMode,
@@ -67,30 +68,14 @@ impl DebugConsumer {
             || (input
                 .action_events
                 .action_held_including_pending(Action::DebugModifier, bindings)
-                && Self::is_shortcut(code))
-    }
-
-    // TODO: These are hardcoded key chords. Add a general way to represent
-    // chords in the action input system rather than handling them piecemeal here.
-    fn is_shortcut(code: KeyCode) -> bool {
-        matches!(
-            code,
-            KeyCode::KeyA
-                | KeyCode::KeyC
-                | KeyCode::KeyD
-                | KeyCode::KeyG
-                | KeyCode::KeyH
-                | KeyCode::KeyI
-                | KeyCode::F4
-                | KeyCode::KeyN
-                | KeyCode::KeyO
-                | KeyCode::KeyV
-        )
+                && bindings
+                    .actions_for_input(&key)
+                    .any(|action| action.is_debug_shortcut()))
     }
 
     /// Observe each physical occurrence during frame dispatch, using held state
     /// immediately after that occurrence rather than the frame's final state.
-    /// Includes unbound shortcut keys; raw-consumed action events are excluded.
+    /// Raw-consumed action events are excluded.
     ///
     /// 1. Queue ordinary last-source modifier/overlay release responses;
     ///    synthetic releases do not apply the game-mode switcher or toggle the
@@ -103,8 +88,9 @@ impl DebugConsumer {
     ///    pause or Close cancels the switcher, without changing held action
     ///    state.
     /// 4. Project screen changes from earlier requests in the batch so later
-    ///    occurrences are routed correctly (for example, F4 followed by
-    ///    Escape).
+    ///    occurrences are routed correctly (for example, the switcher followed
+    ///    by Close).
+    /// 5. Claim competing response holds only for qualified debug shortcuts.
     ///
     /// Responses are collected here and executed afterward by `do_frame()`.
     pub fn observe(
@@ -112,7 +98,17 @@ impl DebugConsumer {
         input: &InputEvent,
         events: &[ActionEvent],
         states: &ActionStates,
-    ) -> Vec<Action> {
+    ) -> OccurrenceDisposition {
+        // Debug-qualified actions emulate an input layer; future InputSystem
+        // layers should simplify this occurrence-time qualification and claiming.
+        let mut disposition = OccurrenceDisposition {
+            filtered: events
+                .iter()
+                .filter(|event| event.action.is_debug_shortcut())
+                .map(|event| event.action)
+                .collect(),
+            ..Default::default()
+        };
         let overlay_started = events.iter().any(|event| {
             event.action == Action::ToggleOverlay
                 && event.hold_transition == HoldTransition::Started
@@ -150,17 +146,17 @@ impl DebugConsumer {
 
         let source = match input {
             InputEvent::Press(source) | InputEvent::Repeat(source) => source,
-            _ => return Vec::new(),
+            _ => return disposition,
         };
         let modifier = states.get(&Action::DebugModifier);
-        let mut filtered = if modifier.is_some() {
-            vec![Action::Screenshot, Action::ToggleFullscreen]
-        } else {
-            Vec::new()
-        };
+        if modifier.is_some() {
+            disposition
+                .filtered
+                .extend([Action::Screenshot, Action::ToggleFullscreen]);
+        }
         // Cancellation must execute before a later modifier release in this
         // batch, rather than waiting for the separate navigation response pass.
-        if self.enabled
+        let cancelled_switcher = self.enabled
             && self.input_live_without_switcher
             && self.switcher_open
             && events.iter().any(|event| {
@@ -168,11 +164,13 @@ impl DebugConsumer {
                     && (event.kind == ActionEventKind::Press
                         || (event.kind == ActionEventKind::Repeat
                             && matches!(source.input, InputKey::Keyboard(_))))
-            })
-        {
+            });
+        if cancelled_switcher {
             self.requests.push(DebugRequest::CancelSwitcher);
             self.switcher_open = false;
-            filtered.extend([Action::Close, Action::OpenMenu]);
+            disposition
+                .filtered
+                .extend([Action::Close, Action::OpenMenu]);
             if states.get(&Action::ToggleOverlay).is_some_and(|overlay| {
                 modifier.is_some_and(|modifier| {
                     !overlay
@@ -182,44 +180,66 @@ impl DebugConsumer {
             }) {
                 self.overlay_consumed = true;
             }
-            return filtered;
         }
         let Some(modifier) = modifier else {
-            return filtered;
+            return disposition;
         };
         if !self.shortcuts_enabled {
-            return filtered;
+            return disposition;
         }
-        // An overlay/modifier binding itself is not a shortcut, even if it
-        // replaces one of the legacy shortcut letters.
+        // A shared overlay/modifier source cannot qualify itself as a shortcut.
         if states
             .get(&Action::ToggleOverlay)
             .is_some_and(|state| state.active_sources().contains(source))
             || modifier.active_sources().contains(source)
         {
-            return filtered;
+            return disposition;
         }
-        let handled = if self.input_live_without_switcher
+        let mut handled = false;
+        if self.input_live_without_switcher
             && !self.switcher_open
+            && !cancelled_switcher
             && events.iter().any(|event| event.action == Action::OpenMenu)
         {
             self.requests.push(DebugRequest::PauseHidden);
             self.input_live_without_switcher = false;
-            filtered.extend([Action::Close, Action::OpenMenu]);
-            true
-        } else if let InputKey::Keyboard(code) = source.input
-            && Self::is_shortcut(code)
-        {
-            self.requests.push(DebugRequest::Shortcut(code));
-            // Project only the screen changes that affect later debug routing
-            // in this batch; application still happens in do_frame.
-            if code == KeyCode::F4 && self.input_live_without_switcher {
-                self.switcher_open = true;
+            disposition
+                .filtered
+                .extend([Action::Close, Action::OpenMenu]);
+            handled = true;
+        }
+        let mut shortcut_handled = false;
+        // Navigation takes precedence over shortcuts on shared bindings.
+        if !handled && !cancelled_switcher {
+            for &action in Action::ALL {
+                if action.is_debug_shortcut()
+                    && events.iter().any(|event| {
+                        event.action == action
+                            && (event.kind == ActionEventKind::Press
+                                || (event.kind == ActionEventKind::Repeat
+                                    && matches!(source.input, InputKey::Keyboard(_))))
+                    })
+                {
+                    self.requests.push(DebugRequest::Shortcut(action));
+                    // Project routing changes now; responses still execute in do_frame.
+                    if action == Action::DebugGameModeSwitcher && self.input_live_without_switcher {
+                        self.switcher_open = true;
+                    }
+                    shortcut_handled = true;
+                }
             }
-            true
-        } else {
-            false
-        };
+        }
+        if shortcut_handled {
+            // A handled occurrence claims ordinary responses; unmatched inputs pass.
+            disposition
+                .suppressed
+                .extend(events.iter().filter_map(|event| {
+                    (!event.action.is_debug_shortcut()
+                        && !matches!(event.action, Action::DebugModifier | Action::ToggleOverlay))
+                    .then_some(event.action)
+                }));
+            handled = true;
+        }
         if handled
             && states.get(&Action::ToggleOverlay).is_some_and(|overlay| {
                 !overlay
@@ -229,7 +249,7 @@ impl DebugConsumer {
         {
             self.overlay_consumed = true;
         }
-        filtered
+        disposition
     }
 
     pub fn do_frame(&mut self, game: &mut GameState, connection: &ConnectionHandle) -> bool {
@@ -237,8 +257,8 @@ impl DebugConsumer {
         let mut refresh_cursor = false;
         for request in self.requests.drain(..) {
             match request {
-                DebugRequest::Shortcut(code) => {
-                    game.handle_debug_shortcut(code, connection);
+                DebugRequest::Shortcut(action) => {
+                    game.handle_debug_action(action, connection);
                 }
                 DebugRequest::PauseHidden => {
                     if game.input_live() {
@@ -327,8 +347,8 @@ mod tests {
         assert_eq!(
             consumer.requests,
             [
-                DebugRequest::Shortcut(KeyCode::KeyG),
-                DebugRequest::Shortcut(KeyCode::KeyG)
+                DebugRequest::Shortcut(Action::DebugChunkBorders),
+                DebugRequest::Shortcut(Action::DebugChunkBorders)
             ]
         );
         consumer.requests.clear();
@@ -364,7 +384,7 @@ mod tests {
         assert_eq!(
             consumer.requests,
             [
-                DebugRequest::Shortcut(KeyCode::KeyG),
+                DebugRequest::Shortcut(Action::DebugChunkBorders),
                 DebugRequest::ToggleOverlay,
                 DebugRequest::ApplyGameMode
             ]
@@ -408,8 +428,8 @@ mod tests {
         assert_eq!(
             consumer.requests,
             [
-                DebugRequest::Shortcut(KeyCode::F4),
-                DebugRequest::Shortcut(KeyCode::F4),
+                DebugRequest::Shortcut(Action::DebugGameModeSwitcher),
+                DebugRequest::Shortcut(Action::DebugGameModeSwitcher),
                 DebugRequest::ApplyGameMode
             ]
         );
@@ -464,7 +484,7 @@ mod tests {
         assert_eq!(
             consumer.requests,
             [
-                DebugRequest::Shortcut(KeyCode::F4),
+                DebugRequest::Shortcut(Action::DebugGameModeSwitcher),
                 DebugRequest::CancelSwitcher
             ]
         );
@@ -538,7 +558,7 @@ mod tests {
                 let delivered = dispatch(&mut consumer, &mut collector, &bindings);
                 let mut expected = Vec::new();
                 if !already_open {
-                    expected.push(DebugRequest::Shortcut(KeyCode::F4));
+                    expected.push(DebugRequest::Shortcut(Action::DebugGameModeSwitcher));
                 }
                 // ApplyGameMode is harmless after CancelSwitcher has removed
                 // the actual selection; no overlay toggle or pause is queued.
@@ -681,6 +701,437 @@ mod tests {
         consumer.shortcuts_enabled = false;
         dispatch(&mut consumer, &mut collector, &bindings);
         assert!(consumer.requests.is_empty());
+    }
+
+    #[test]
+    fn rebound_shortcuts_claim_competing_responses_only_with_modifier() {
+        for key in [
+            InputKey::Keyboard(KeyCode::KeyJ),
+            InputKey::Mouse(MouseButton::Other(4)),
+            InputKey::Controller(Button::Select),
+        ] {
+            for qualified in [false, true] {
+                let mut bindings = KeyBindings::default();
+                bindings.set(Action::DebugChunkBorders, vec![key]);
+                bindings.set(Action::Forward, vec![key]);
+                bindings.set(Action::Destroy, vec![key]);
+                let mut collector = ActionCollector::new();
+                let mut consumer = consumer();
+                if qualified {
+                    press(&mut collector, KeyCode::F3);
+                }
+                collector.press_for_test(key, false);
+                let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+                assert_eq!(
+                    consumer.requests,
+                    if qualified {
+                        vec![DebugRequest::Shortcut(Action::DebugChunkBorders)]
+                    } else {
+                        Vec::new()
+                    }
+                );
+                assert!(
+                    !delivered
+                        .iter()
+                        .any(|event| event.action.is_debug_shortcut())
+                );
+                for action in [Action::Forward, Action::Destroy] {
+                    assert_eq!(
+                        delivered.iter().any(|event| event.action == action),
+                        !qualified
+                    );
+                    assert_eq!(
+                        collector.dispatcher().action_states().contains_key(&action),
+                        !qualified
+                    );
+                }
+                consumer.requests.clear();
+                collector.release_for_test(key);
+                let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+                assert!(consumer.requests.is_empty());
+                assert_eq!(
+                    delivered
+                        .iter()
+                        .any(|event| event.action == Action::Forward),
+                    !qualified
+                );
+                assert!(
+                    !collector
+                        .dispatcher()
+                        .action_states()
+                        .contains_key(&Action::Forward)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unmatched_movement_passes_and_does_not_consume_shared_overlay() {
+        let bindings = KeyBindings::default();
+        let mut collector = ActionCollector::new();
+        let mut consumer = consumer();
+        press(&mut collector, KeyCode::F3);
+        press(&mut collector, KeyCode::KeyW);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        assert!(consumer.requests.is_empty());
+        assert!(
+            delivered
+                .iter()
+                .any(|event| event.action == Action::Forward)
+        );
+        assert!(
+            collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::Forward)
+        );
+        release(&mut collector, KeyCode::F3);
+        release(&mut collector, KeyCode::KeyW);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        assert_eq!(
+            consumer.requests,
+            [DebugRequest::ApplyGameMode, DebugRequest::ToggleOverlay]
+        );
+        assert!(delivered.iter().any(|event| {
+            event.action == Action::Forward
+                && event.kind == ActionEventKind::Release(ReleaseReason::Released)
+        }));
+    }
+
+    #[test]
+    fn shared_debug_bindings_execute_all_matches_in_catalog_order_on_repeats() {
+        let mut bindings = KeyBindings::default();
+        let key = InputKey::Keyboard(KeyCode::KeyJ);
+        for &action in Action::ALL.iter().rev() {
+            if action.is_debug_shortcut() {
+                bindings.set(action, vec![key]);
+            }
+        }
+        bindings.set(Action::Forward, vec![key]);
+        let mut collector = ActionCollector::new();
+        let mut consumer = consumer();
+        press(&mut collector, KeyCode::F3);
+        collector.press_for_test(key, false);
+        collector.press_for_test(key, true);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        let expected: Vec<_> = Action::ALL
+            .iter()
+            .copied()
+            .filter(|action| action.is_debug_shortcut())
+            .map(DebugRequest::Shortcut)
+            .collect();
+        assert_eq!(consumer.requests.len(), expected.len() * 2);
+        assert_eq!(&consumer.requests[..expected.len()], expected.as_slice());
+        assert_eq!(&consumer.requests[expected.len()..], expected.as_slice());
+        assert!(
+            !delivered.iter().any(|event| {
+                event.action.is_debug_shortcut() || event.action == Action::Forward
+            })
+        );
+        assert!(
+            !collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::Forward)
+        );
+    }
+
+    #[test]
+    fn qualification_order_and_preexisting_hold_suppression_across_frames() {
+        for same_frame in [false, true] {
+            let mut bindings = KeyBindings::default();
+            let key = InputKey::Keyboard(KeyCode::KeyW);
+            bindings.set(Action::DebugChunkBorders, vec![key]);
+            let mut collector = ActionCollector::new();
+            let mut consumer = consumer();
+            press(&mut collector, KeyCode::KeyW);
+            if !same_frame {
+                dispatch(&mut consumer, &mut collector, &bindings);
+                assert!(
+                    collector
+                        .dispatcher()
+                        .action_states()
+                        .contains_key(&Action::Forward)
+                );
+            }
+            press(&mut collector, KeyCode::F3);
+            collector.press_for_test(key, true);
+            let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+            assert_eq!(
+                consumer.requests,
+                [DebugRequest::Shortcut(Action::DebugChunkBorders)]
+            );
+            assert!(delivered.iter().any(|event| {
+                event.action == Action::Forward
+                    && event.kind == ActionEventKind::Release(ReleaseReason::Suppressed)
+            }));
+            assert!(
+                !collector
+                    .dispatcher()
+                    .action_states()
+                    .contains_key(&Action::Forward)
+            );
+            consumer.requests.clear();
+            release(&mut collector, KeyCode::F3);
+            collector.press_for_test(key, true);
+            release(&mut collector, KeyCode::KeyW);
+            let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+            assert_eq!(consumer.requests, [DebugRequest::ApplyGameMode]);
+            let forward: Vec<_> = delivered
+                .iter()
+                .filter(|event| event.action == Action::Forward)
+                .collect();
+            assert_eq!(forward.len(), 2);
+            assert_eq!(forward[0].kind, ActionEventKind::Repeat);
+            assert_eq!(forward[0].hold_transition, HoldTransition::Started);
+            assert_eq!(
+                forward[1].kind,
+                ActionEventKind::Release(ReleaseReason::Released)
+            );
+            assert!(matches!(
+                forward[1].hold_transition,
+                HoldTransition::Ended { .. }
+            ));
+            assert!(
+                !collector
+                    .dispatcher()
+                    .action_states()
+                    .contains_key(&Action::Forward)
+            );
+            // A fresh unqualified press restores the ordinary response.
+            press(&mut collector, KeyCode::KeyW);
+            let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+            assert!(delivered.iter().any(|event| {
+                event.action == Action::Forward && event.kind == ActionEventKind::Press
+            }));
+        }
+    }
+
+    #[test]
+    fn modifier_release_alone_does_not_reactivate_claimed_response() {
+        let mut bindings = KeyBindings::default();
+        bindings.set(
+            Action::DebugChunkBorders,
+            vec![InputKey::Keyboard(KeyCode::KeyW)],
+        );
+        let mut collector = ActionCollector::new();
+        let mut consumer = consumer();
+        press(&mut collector, KeyCode::F3);
+        press(&mut collector, KeyCode::KeyW);
+        dispatch(&mut consumer, &mut collector, &bindings);
+        consumer.requests.clear();
+        release(&mut collector, KeyCode::F3);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        assert_eq!(consumer.requests, [DebugRequest::ApplyGameMode]);
+        assert!(
+            !delivered
+                .iter()
+                .any(|event| event.action == Action::Forward)
+        );
+        assert!(
+            !collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::Forward)
+        );
+        release(&mut collector, KeyCode::KeyW);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        assert!(
+            !delivered
+                .iter()
+                .any(|event| event.action == Action::Forward)
+        );
+    }
+
+    #[test]
+    fn non_keyboard_repeats_do_not_execute_or_claim_debug_shortcuts() {
+        for key in [
+            InputKey::Mouse(MouseButton::Other(4)),
+            InputKey::Controller(Button::Select),
+        ] {
+            let mut bindings = KeyBindings::default();
+            bindings.set(Action::DebugChunkBorders, vec![key]);
+            bindings.set(Action::Forward, vec![key]);
+            let mut collector = ActionCollector::new();
+            let mut consumer = consumer();
+            collector.press_for_test(key, false);
+            dispatch(&mut consumer, &mut collector, &bindings);
+            press(&mut collector, KeyCode::F3);
+            collector.press_for_test(key, true);
+            let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+            assert!(consumer.requests.is_empty());
+            assert!(delivered.iter().any(|event| {
+                event.action == Action::Forward && event.kind == ActionEventKind::Repeat
+            }));
+            assert!(
+                collector
+                    .dispatcher()
+                    .action_states()
+                    .contains_key(&Action::Forward)
+            );
+        }
+    }
+
+    #[test]
+    fn hidden_pause_takes_precedence_over_shared_debug_shortcuts() {
+        let mut bindings = KeyBindings::default();
+        let key = InputKey::Keyboard(KeyCode::KeyJ);
+        bindings.set(Action::OpenMenu, vec![key]);
+        bindings.set(Action::DebugChunkBorders, vec![key]);
+        bindings.set(Action::DebugGameModeSwitcher, vec![key]);
+        bindings.set(Action::Forward, vec![key]);
+        let mut collector = ActionCollector::new();
+        let mut consumer = consumer();
+        press(&mut collector, KeyCode::F3);
+        collector.press_for_test(key, false);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        assert_eq!(consumer.requests, [DebugRequest::PauseHidden]);
+        assert!(!consumer.projected_switcher_open());
+        assert!(
+            !delivered.iter().any(|event| {
+                event.action == Action::OpenMenu || event.action.is_debug_shortcut()
+            })
+        );
+        assert!(
+            collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::OpenMenu)
+        );
+        assert!(
+            collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::Forward)
+        );
+    }
+
+    #[test]
+    fn same_frame_modifier_release_does_not_requalify_later_shortcut_presses() {
+        let mut bindings = KeyBindings::default();
+        bindings.set(
+            Action::DebugChunkBorders,
+            vec![InputKey::Keyboard(KeyCode::KeyW)],
+        );
+        let mut collector = ActionCollector::new();
+        let mut consumer = consumer();
+        press(&mut collector, KeyCode::F3);
+        press(&mut collector, KeyCode::KeyW);
+        release(&mut collector, KeyCode::KeyW);
+        release(&mut collector, KeyCode::F3);
+        press(&mut collector, KeyCode::KeyW);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        assert_eq!(
+            consumer.requests,
+            [
+                DebugRequest::Shortcut(Action::DebugChunkBorders),
+                DebugRequest::ApplyGameMode,
+            ]
+        );
+        assert_eq!(
+            delivered
+                .iter()
+                .filter(|event| {
+                    event.action == Action::Forward && event.kind == ActionEventKind::Press
+                })
+                .count(),
+            1
+        );
+        assert!(
+            collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::Forward)
+        );
+    }
+
+    #[test]
+    fn blocked_shortcuts_leave_competing_responses_unclaimed() {
+        let mut bindings = KeyBindings::default();
+        bindings.set(
+            Action::DebugChunkBorders,
+            vec![InputKey::Keyboard(KeyCode::KeyW)],
+        );
+        let mut collector = ActionCollector::new();
+        let mut consumer = consumer();
+        consumer.shortcuts_enabled = false;
+        press(&mut collector, KeyCode::F3);
+        press(&mut collector, KeyCode::KeyW);
+        let delivered = dispatch(&mut consumer, &mut collector, &bindings);
+        assert!(consumer.requests.is_empty());
+        assert!(
+            delivered
+                .iter()
+                .any(|event| event.action == Action::Forward)
+        );
+        assert!(
+            !delivered
+                .iter()
+                .any(|event| event.action.is_debug_shortcut())
+        );
+        assert!(
+            collector
+                .dispatcher()
+                .action_states()
+                .contains_key(&Action::Forward)
+        );
+    }
+
+    #[test]
+    fn modifier_and_overlay_sources_cannot_qualify_themselves() {
+        for action in [Action::DebugModifier, Action::ToggleOverlay] {
+            let mut bindings = KeyBindings::default();
+            bindings.set(action, vec![InputKey::Keyboard(KeyCode::KeyG)]);
+            let mut collector = ActionCollector::new();
+            let mut consumer = consumer();
+            if action == Action::ToggleOverlay {
+                press(&mut collector, KeyCode::F3);
+            }
+            press(&mut collector, KeyCode::KeyG);
+            dispatch(&mut consumer, &mut collector, &bindings);
+            assert!(consumer.requests.is_empty());
+        }
+    }
+
+    #[test]
+    fn text_capture_tracks_shortcut_rebinding_and_pending_modifier_release() {
+        let mut bindings = KeyBindings::default();
+        bindings.set(
+            Action::DebugChunkBorders,
+            vec![InputKey::Keyboard(KeyCode::KeyZ)],
+        );
+        let mut input = InputState::released();
+        assert!(!DebugConsumer::captures_key(
+            KeyCode::KeyZ,
+            &input,
+            &bindings
+        ));
+        input
+            .action_events
+            .press_for_test(InputKey::Keyboard(KeyCode::F3), false);
+        assert!(DebugConsumer::captures_key(
+            KeyCode::KeyZ,
+            &input,
+            &bindings
+        ));
+        assert!(!DebugConsumer::captures_key(
+            KeyCode::KeyG,
+            &input,
+            &bindings
+        ));
+        assert!(!DebugConsumer::captures_key(
+            KeyCode::KeyW,
+            &input,
+            &bindings
+        ));
+        input
+            .action_events
+            .release_for_test(InputKey::Keyboard(KeyCode::F3));
+        assert!(!DebugConsumer::captures_key(
+            KeyCode::KeyZ,
+            &input,
+            &bindings
+        ));
     }
 
     #[test]

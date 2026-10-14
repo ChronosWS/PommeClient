@@ -31,6 +31,8 @@ pub struct ActionMetadata {
     pub category: ActionCategory,
     /// Shown on the Key Binds screen.
     pub listed: bool,
+    /// Priority within the category; equal priorities sort by localized name.
+    pub ui_order: i32,
     /// Initial editable bindings, replaced by saved settings.
     pub defaults: &'static [InputKey],
     /// Permanent assignments, independent of settings and not editable in the
@@ -89,11 +91,38 @@ impl Action {
         })
     }
 
-    /// `KeyMapping.compareTo`: category order, then localized name.
+    /// `KeyMapping.compareTo`: category, action priority, then localized name.
     pub fn compare_ui(self, other: Self) -> std::cmp::Ordering {
         self.category()
             .ui_order()
             .cmp(&other.category().ui_order())
+            .then_with(|| self.metadata().ui_order.cmp(&other.metadata().ui_order))
             .then_with(|| self.display_name().cmp(&other.display_name()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_overlay_and_modifier_sort_first_in_that_order() {
+        let mut actions: Vec<_> = Action::ALL
+            .iter()
+            .copied()
+            .filter(|action| action.listed() && action.category() == ActionCategory::Debug)
+            .collect();
+        actions.reverse();
+        actions.sort_by(|left, right| left.compare_ui(*right));
+        assert_eq!(
+            &actions[..2],
+            &[Action::ToggleOverlay, Action::DebugModifier]
+        );
+        assert!(
+            actions[2..]
+                .windows(2)
+                .all(|pair| pair[0].display_name() <= pair[1].display_name())
+        );
+        assert!(Action::Hotbar1.compare_ui(Action::ToggleOverlay).is_lt());
     }
 }

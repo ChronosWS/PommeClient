@@ -10,7 +10,7 @@ use winit::keyboard::PhysicalKey;
 
 use super::dispatcher::{
     ActionDispatcher, ActionEvent, ActionHandler, ActionStates, InputDeviceId, InputEvent,
-    InputSource,
+    InputSource, OccurrenceDisposition,
 };
 use crate::app::input::{Action, InputKey, KeyBindings};
 
@@ -48,11 +48,11 @@ impl ActionCollector {
         self.dispatch(frame_time, bindings, |_, _, _| Vec::new(), handlers);
     }
 
-    pub fn dispatch(
+    pub fn dispatch<D: Into<OccurrenceDisposition>>(
         &mut self,
         frame_time: Instant,
         bindings: &KeyBindings,
-        observer: impl FnMut(&InputEvent, &[ActionEvent], &ActionStates) -> Vec<Action>,
+        observer: impl FnMut(&InputEvent, &[ActionEvent], &ActionStates) -> D,
         handlers: &mut [&mut ActionHandler<'_>],
     ) {
         self.dispatcher.dispatch(
