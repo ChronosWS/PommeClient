@@ -21,8 +21,6 @@ pub struct ActionBindingsRef<'a> {
 pub struct KeyBindings(HashMap<Action, Vec<InputKey>>);
 
 impl Default for KeyBindings {
-    // TODO: Migrate the live input paths to these bindings; until then the
-    // defaults mirror InputState's hardcoded mouse/controller handling.
     fn default() -> Self {
         Self(
             Action::ALL
@@ -96,6 +94,22 @@ impl<'de> Deserialize<'de> for KeyBindings {
 }
 
 impl KeyBindings {
+    /// Configured physical inputs followed by permanent assignments.
+    pub fn inputs_for_action(&self, action: Action) -> impl Iterator<Item = &InputKey> {
+        self.0
+            .get(&action)
+            .map(Vec::as_slice)
+            .unwrap_or_else(|| action.defaults())
+            .iter()
+            .chain(action.fixed_inputs())
+    }
+
+    /// Whether a physical input is assigned to this action.
+    pub fn matches(&self, action: Action, input: &InputKey) -> bool {
+        self.inputs_for_action(action)
+            .any(|assigned| assigned == input)
+    }
+
     /// Replace editable inputs; an empty vector leaves only fixed assignments.
     pub fn set(&mut self, action: Action, mut inputs: Vec<InputKey>) {
         // Fixed inputs are reserved across actions. In particular, saved Escape
