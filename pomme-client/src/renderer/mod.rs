@@ -1,5 +1,6 @@
 pub mod block_entity_model;
 pub mod boot;
+mod buffer_pool;
 pub mod camera;
 pub mod chunk;
 mod context;
@@ -71,6 +72,9 @@ pub enum RendererError {
 
     #[error("failed to initialize Minecraft fonts: {0}")]
     Font(String),
+
+    #[error("failed to upload menu geometry: {0}")]
+    MenuBuffer(String),
 }
 
 #[derive(Clone)]
@@ -236,7 +240,11 @@ impl Renderer {
         let sh = swapchain_extent.height as f32;
 
         let splash = |menu: &mut MenuOverlayPipeline, progress: f32, status: &str| {
-            let _ = Self::render_splash(&ctx, &swapchain_state, menu, sw, sh, progress, status);
+            if let Err(error) =
+                Self::render_splash(&ctx, &swapchain_state, menu, sw, sh, progress, status)
+            {
+                tracing::error!("Splash render error: {error}");
+            }
         };
 
         splash(&mut menu_pipeline, 0.0, "Loading block models...");
@@ -570,6 +578,7 @@ impl Renderer {
 
         ctx.device.reset_fences(&[fence])?;
         cmd.reset(vk::CommandBufferResetFlags::empty())?;
+        menu.begin_frame(&ctx.device, &ctx.allocator, 0);
 
         let begin_info = vk::CommandBufferBeginInfo {
             flags: vk::CommandBufferUsageFlags::OneTimeSubmit,
@@ -622,7 +631,18 @@ impl Renderer {
         cmd.set_scissor(0, &[scissor]);
 
         let empty_uvs: HashMap<String, [f32; 4]> = HashMap::new();
-        menu.draw(cmd, sw, sh, &elements, &empty_uvs);
+        let menu_upload_result = menu
+            .draw(
+                &ctx.device,
+                &ctx.allocator,
+                cmd,
+                0,
+                sw,
+                sh,
+                &elements,
+                &empty_uvs,
+            )
+            .map_err(RendererError::MenuBuffer);
 
         cmd.end_render_pass();
         cmd.end()?;
@@ -652,7 +672,7 @@ impl Renderer {
         let _ = ctx.present_queue.present(&present_info);
         let _ = ctx.present_queue.wait_idle();
 
-        Ok(())
+        menu_upload_result
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -1578,6 +1598,8 @@ impl Renderer {
 
         self.ctx.device.reset_fences(&[fence])?;
         cmd.reset(vk::CommandBufferResetFlags::empty())?;
+        self.menu_pipeline
+            .begin_frame(&self.ctx.device, &self.ctx.allocator, frame);
 
         let begin_info = vk::CommandBufferBeginInfo {
             flags: vk::CommandBufferUsageFlags::OneTimeSubmit,
@@ -1814,6 +1836,9 @@ impl Renderer {
         let sh = self.swapchain.extent.height as f32;
 
         let frame_start = std::time::Instant::now();
+        // A menu allocation failure must not abandon an acquired image and a
+        // reset fence. Finish submission/presentation before reporting it.
+        let mut menu_upload_result = Ok(());
 
         match &mode {
             RenderMode::World {
@@ -1989,8 +2014,19 @@ impl Renderer {
                     }
                 }
 
-                self.menu_pipeline
-                    .draw(cmd, sw, sh, overlay, &item_atlas_uvs);
+                menu_upload_result = self
+                    .menu_pipeline
+                    .draw(
+                        &self.ctx.device,
+                        &self.ctx.allocator,
+                        cmd,
+                        frame,
+                        sw,
+                        sh,
+                        overlay,
+                        &item_atlas_uvs,
+                    )
+                    .map_err(RendererError::MenuBuffer);
 
                 // Each preview box gets its depth cleared and its own scissor
                 // while the 3D content draws.
@@ -2043,16 +2079,20 @@ impl Renderer {
                 let split = elements
                     .iter()
                     .position(|e| matches!(e, MenuElement::BlurBackdrop));
-                let mut vbase = 0u32;
                 if let Some(i) = split {
-                    vbase = self.menu_pipeline.draw_from(
-                        cmd,
-                        sw,
-                        sh,
-                        &elements[..i],
-                        &item_atlas_uvs,
-                        0,
-                    );
+                    menu_upload_result = self
+                        .menu_pipeline
+                        .draw(
+                            &self.ctx.device,
+                            &self.ctx.allocator,
+                            cmd,
+                            frame,
+                            sw,
+                            sh,
+                            &elements[..i],
+                            &item_atlas_uvs,
+                        )
+                        .map_err(RendererError::MenuBuffer);
                 }
 
                 if *blur > 0.01 {
@@ -2103,8 +2143,20 @@ impl Renderer {
                     Some(i) => &elements[i + 1..],
                     None => &elements[..],
                 };
-                self.menu_pipeline
-                    .draw_from(cmd, sw, sh, fg, &item_atlas_uvs, vbase);
+                menu_upload_result = menu_upload_result.and(
+                    self.menu_pipeline
+                        .draw(
+                            &self.ctx.device,
+                            &self.ctx.allocator,
+                            cmd,
+                            frame,
+                            sw,
+                            sh,
+                            fg,
+                            &item_atlas_uvs,
+                        )
+                        .map_err(RendererError::MenuBuffer),
+                );
             }
         }
 
@@ -2169,7 +2221,7 @@ impl Renderer {
         self.last_timings.present_ms = present_ms;
 
         self.ctx.advance_frame();
-        Ok(())
+        menu_upload_result
     }
 }
 
