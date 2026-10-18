@@ -15,7 +15,7 @@ use crate::renderer::chunk::mesher::{CUBE_FACE_DIRS, cube_face_geometry};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, shader, util};
 use crate::world::block::block_position_offset;
 use crate::world::block::model::{BakedQuad, Direction, direction_from_positions};
-use crate::world::block::registry::BlockRegistry;
+use crate::world::block::render_registry::BlockRenderRegistry;
 
 const STAGE_COUNT: u32 = 10;
 /// Vertex-buffer capacity (a multiple of 6). Block models stay well under this;
@@ -246,7 +246,7 @@ impl BlockOverlayPipeline {
         &mut self,
         cmd: vk::CommandBuffer,
         frame: usize,
-        registry: &BlockRegistry,
+        registry: &BlockRenderRegistry,
         state: BlockState,
         block_pos: &BlockPos,
         anchor: glam::DVec3,
@@ -341,7 +341,7 @@ fn overlay_origin(state: BlockState, pos: &BlockPos, anchor: glam::DVec3) -> [f3
 /// is no geometry inflation: the overlay sits exactly on the block and relies
 /// on the pipeline's polygon offset to avoid z-fighting, matching vanilla.
 fn build_overlay_vertices(
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     state: BlockState,
     pos: &BlockPos,
     anchor: glam::DVec3,

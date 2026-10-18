@@ -90,7 +90,7 @@ struct StateRender {
 }
 
 #[derive(Clone)]
-pub struct BlockRegistry {
+pub struct BlockRenderRegistry {
     textures: HashMap<String, FaceTextures>,
     baked: HashMap<String, HashMap<String, Arc<BakedModel>>>,
     /// Per block-state table slot, every state's resolved model lookups,
@@ -106,7 +106,7 @@ pub struct BlockRegistry {
     item_tint_sources: HashMap<String, Vec<model::ItemTintSource>>,
 }
 
-impl BlockRegistry {
+impl BlockRenderRegistry {
     pub fn load(
         jar_assets_dir: &Path,
         asset_index: &Option<AssetIndex>,

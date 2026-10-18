@@ -1,5 +1,16 @@
+//! Block state data and shared runtime rules.
+//!
+//! Implement `Block` and select implementations by name in
+//! `block_registry::BlockBehaviorCatalog`. The app-owned registry
+//! constructs a definition for every block in the shared mining data.
+//! Level-owned `BlockBindings` map property states to shared rules;
+//! unregistered states use the no-op default. Rules receive
+//! current world queries and a per-pass RNG, independent of coordinate
+//! sampling.
+
+pub(crate) mod block_registry;
 pub mod model;
-pub mod registry;
+pub mod render_registry;
 pub mod sound;
 
 use std::collections::{HashMap, HashSet};
@@ -7,6 +18,7 @@ use std::sync::{LazyLock, OnceLock, RwLock, RwLockReadGuard};
 
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
+pub use block_registry::{Block, BlockProperties};
 use glam::{DVec3, dvec3};
 
 use crate::physics::block_shape::{LocalBox, compute_outline, compute_shape};
@@ -244,6 +256,23 @@ struct BlockEntry {
 struct BehaviorEntry {
     destroy_time: f32,
     requires_correct_tool: bool,
+}
+
+impl BehaviorEntry {
+    fn properties(&self) -> BlockProperties {
+        BlockProperties {
+            destroy_time: self.destroy_time,
+            requires_correct_tool_for_drops: self.requires_correct_tool,
+        }
+    }
+
+    fn behavior(&self) -> BlockBehavior {
+        let properties = self.properties();
+        BlockBehavior {
+            destroy_time: properties.destroy_time,
+            requires_correct_tool_for_drops: properties.requires_correct_tool_for_drops,
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -485,9 +514,12 @@ fn block_data_slot(protocol: i32) -> Option<usize> {
     BLOCK_DATA.iter().position(|d| d.protocol == protocol)
 }
 
-fn load_behaviors() -> HashMap<String, BehaviorEntry> {
-    serde_json::from_str(include_str!("data/block_behavior.json"))
-        .expect("invalid block-behavior data")
+fn load_behaviors() -> &'static HashMap<String, BehaviorEntry> {
+    static BEHAVIORS: OnceLock<HashMap<String, BehaviorEntry>> = OnceLock::new();
+    BEHAVIORS.get_or_init(|| {
+        serde_json::from_str(include_str!("data/block_behavior.json"))
+            .expect("invalid block-behavior data")
+    })
 }
 
 fn build_table(data: &EmbeddedBlocks) -> Vec<BlockData> {
@@ -568,10 +600,7 @@ fn build_table(data: &EmbeddedBlocks) -> Vec<BlockData> {
         );
         let name = intern(&block.name);
         let behavior = match behaviors.get(&block.name) {
-            Some(b) => BlockBehavior {
-                destroy_time: b.destroy_time,
-                requires_correct_tool_for_drops: b.requires_correct_tool,
-            },
+            Some(b) => b.behavior(),
             None => {
                 tracing::warn!("no behavior entry for block '{}', using defaults", name);
                 DEFAULT_BEHAVIOR

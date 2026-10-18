@@ -19,7 +19,7 @@ use crate::renderer::chunk::mesher::{
     tint_sample_y, world_brightness,
 };
 use crate::renderer::pipelines::particle::MAX_PARTICLE_QUADS as MAX_PARTICLES;
-use crate::world::block::registry::{BlockRegistry, Tint};
+use crate::world::block::render_registry::{BlockRenderRegistry, Tint};
 use crate::world::block::{block_id, is_air, outline_shape_position};
 use crate::world::chunk::ChunkStore;
 
@@ -325,7 +325,7 @@ impl ParticleStore {
         &mut self,
         pos: BlockPos,
         state: BlockState,
-        registry: &BlockRegistry,
+        registry: &BlockRenderRegistry,
         chunks: &ChunkStore,
         biome_climate: &HashMap<u32, BiomeClimate>,
     ) {

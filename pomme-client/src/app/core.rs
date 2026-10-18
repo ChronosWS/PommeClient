@@ -36,6 +36,7 @@ use crate::ui::menu::{
 };
 use crate::ui::text::InlineObject;
 use crate::user::UserData;
+use crate::world::block::block_registry::BlockRegistry;
 use crate::world::chunk::ChunkStore;
 
 pub struct PendingPackDownload {
@@ -487,6 +488,7 @@ pub struct AppCore {
     pub data_dirs: DataDirs,
     pub version: String,
     pub resource_packs: ResourcePackManager,
+    pub(crate) block_registry: BlockRegistry,
     pub pending_pack_download: Option<PendingPackDownload>,
     pub asset_index: Option<AssetIndex>,
     pub audio: crate::audio::AudioEngine,
@@ -651,6 +653,7 @@ impl AppCore {
             data_dirs,
             version,
             resource_packs,
+            block_registry: BlockRegistry::new(),
             pending_pack_download: None,
             asset_index,
             audio,

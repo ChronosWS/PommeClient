@@ -59,7 +59,7 @@ use crate::entity::components::{LookDirection, Position};
 use crate::renderer::pipelines::chunk_borders::ChunkBorderPipeline;
 use crate::renderer::pipelines::item_entity::ItemEntityPipeline;
 use crate::ui::font::{FontOptions, FontSources};
-use crate::world::block::registry::BlockRegistry;
+use crate::world::block::render_registry::BlockRenderRegistry;
 
 #[derive(Error, Debug)]
 pub enum RendererError {
@@ -159,7 +159,7 @@ pub struct Renderer {
     swapchain: Swapchain,
     camera: Camera,
 
-    registry: BlockRegistry,
+    registry: BlockRenderRegistry,
     jar_assets_dir: PathBuf,
     asset_index: Option<AssetIndex>,
 
@@ -222,7 +222,7 @@ impl Renderer {
             let asset_index = asset_index.clone();
             let cache_dir = cache_dir.to_path_buf();
             std::thread::spawn(move || {
-                BlockRegistry::load(&jar_assets_dir, &asset_index, Some(&cache_dir), None)
+                BlockRenderRegistry::load(&jar_assets_dir, &asset_index, Some(&cache_dir), None)
             })
         };
 
@@ -1115,7 +1115,7 @@ impl Renderer {
         self.chunk_buffers.clear();
     }
 
-    pub fn registry(&self) -> &BlockRegistry {
+    pub fn registry(&self) -> &BlockRenderRegistry {
         &self.registry
     }
 
@@ -1258,7 +1258,7 @@ impl Renderer {
         self.ctx.device.wait_idle().unwrap();
 
         self.registry =
-            BlockRegistry::load(&self.jar_assets_dir, &self.asset_index, None, Some(packs));
+            BlockRenderRegistry::load(&self.jar_assets_dir, &self.asset_index, None, Some(packs));
 
         self.item_entity_pipeline
             .clear_meshes(&self.ctx.device, &self.ctx.allocator);
@@ -2197,7 +2197,7 @@ fn warm_item_meshes(
     allocator: &Arc<std::sync::Mutex<pomme_gpu_allocator::vulkan::Allocator>>,
     item_entity_pipeline: &mut ItemEntityPipeline,
     uv_map: &chunk::atlas::AtlasUVMap,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
 ) {
     for name in registry.item_names() {
         if let Some(model) = registry.get_item_model(name) {

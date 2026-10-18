@@ -31,7 +31,7 @@ use crate::physics::block_shape::{self, LocalBox};
 use crate::player::inventory::item_resource_name;
 use crate::renderer::pipelines::held_item::UseAnim;
 use crate::tool::{LegacyMiningEnchantments, stack_tool, sword_instantly_mines_legacy};
-use crate::world::block::registry::BlockRegistry;
+use crate::world::block::render_registry::BlockRenderRegistry;
 use crate::world::block::sound::block_sounds;
 use crate::world::block::{block_tags, has_collision, is_air, outline_shape_position};
 use crate::world::chunk::ChunkStore;
@@ -50,7 +50,7 @@ const MAX_FOOD_LEVEL: u32 = 20;
 /// break particles alongside the sound).
 pub struct BreakEffects<'a> {
     pub particles: &'a mut ParticleStore,
-    pub registry: &'a BlockRegistry,
+    pub registry: &'a BlockRenderRegistry,
     pub biome_climate: &'a HashMap<u32, crate::renderer::chunk::mesher::BiomeClimate>,
 }
 

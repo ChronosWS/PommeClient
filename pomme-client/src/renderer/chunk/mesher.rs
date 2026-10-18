@@ -11,7 +11,7 @@ use crate::renderer::chunk::atlas::{AtlasRegion, AtlasUVMap};
 use crate::world::block::model::{
     BakedModel, CardinalLighting, Direction, face_positions, face_uvs,
 };
-use crate::world::block::registry::{BlockRegistry, Tint};
+use crate::world::block::render_registry::{BlockRenderRegistry, Tint};
 use crate::world::block::{FluidKind, block_outline, fluid, is_air, legacy_solid, light_props};
 use crate::world::chunk;
 use crate::world::chunk::ChunkStore;
@@ -691,7 +691,7 @@ pub struct MeshDispatcher {
     // Monotonic per-enqueue stamp; see `ChunkMeshData::upload_epoch`. Starts at 1
     // so 0 means "never uploaded" on the buffer side.
     next_epoch: AtomicU64,
-    registry: Arc<BlockRegistry>,
+    registry: Arc<BlockRenderRegistry>,
     uv_map: Arc<AtlasUVMap>,
     grass_colormap: Arc<Colormap>,
     foliage_colormap: Arc<Colormap>,
@@ -707,7 +707,7 @@ impl MeshDispatcher {
     /// [`Self::new`] with the grass, foliage and dry-foliage colormaps loaded
     /// from the assets (and resource packs).
     pub fn load(
-        registry: BlockRegistry,
+        registry: BlockRenderRegistry,
         uv_map: AtlasUVMap,
         jar_assets_dir: &std::path::Path,
         asset_index: &Option<crate::assets::AssetIndex>,
@@ -736,7 +736,7 @@ impl MeshDispatcher {
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        registry: BlockRegistry,
+        registry: BlockRenderRegistry,
         uv_map: AtlasUVMap,
         grass_colormap: Colormap,
         foliage_colormap: Colormap,
@@ -947,7 +947,7 @@ struct PendingJob {
     is_recompile: bool,
     enqueued_at: std::time::Instant,
     snapshot: ChunkStoreSnapshot,
-    registry: Arc<BlockRegistry>,
+    registry: Arc<BlockRenderRegistry>,
     uv_map: Arc<AtlasUVMap>,
     tx: crossbeam_channel::Sender<ChunkMeshData>,
     pool: Arc<BufferPool>,
@@ -1520,7 +1520,10 @@ pub fn world_brightness(chunks: &ChunkStore, x: i32, y: i32, z: i32) -> f32 {
 /// Whether a section provably emits nothing: every block is hidden once
 /// enclosed, and every block touching it from outside occludes. `at` reads
 /// section-relative coordinates.
-fn section_hidden(registry: &BlockRegistry, at: impl Fn(i32, i32, i32) -> BlockState) -> bool {
+fn section_hidden(
+    registry: &BlockRenderRegistry,
+    at: impl Fn(i32, i32, i32) -> BlockState,
+) -> bool {
     let occludes = |x, y, z| registry.occludes_neighbor(at(x, y, z));
     let border_occludes = (0..16).all(|a| {
         (0..16).all(|b| {
@@ -1540,7 +1543,7 @@ fn section_hidden(registry: &BlockRegistry, at: impl Fn(i32, i32, i32) -> BlockS
 fn mesh_chunk_snapshot(
     snapshot: &mut ChunkStoreSnapshot,
     pos: ChunkPos,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     uv_map: &AtlasUVMap,
     lod: u32,
     sections_to_mesh: std::ops::Range<i32>,
@@ -1743,7 +1746,7 @@ fn emit_baked_model(
     state: azalea_block::BlockState,
     model: &BakedModel,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -1782,9 +1785,9 @@ fn emit_cube_faces(
     sink: &mut MeshSink,
     block_pos: [f32; 3],
     state: BlockState,
-    textures: &crate::world::block::registry::FaceTextures,
+    textures: &crate::world::block::render_registry::FaceTextures,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2001,7 +2004,7 @@ fn block_face_tex_tint(
     dir: Direction,
     uv_map: &AtlasUVMap,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     bx: i32,
     by: i32,
     bz: i32,
@@ -2038,7 +2041,7 @@ fn emit_fluid(
     block_pos: [f32; 3],
     state: azalea_block::BlockState,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2165,7 +2168,7 @@ fn emit_multipart(
     state: azalea_block::BlockState,
     quads: &[&crate::world::block::model::BakedQuad],
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2200,7 +2203,7 @@ fn emit_lod_cube(
     block_pos: [f32; 3],
     state: azalea_block::BlockState,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2272,7 +2275,7 @@ fn emit_missing_cube(
     sink: &mut MeshSink,
     block_pos: [f32; 3],
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2373,7 +2376,7 @@ fn emit_face_into(
     }
 }
 
-fn shade_brightness(state: azalea_block::BlockState, registry: &BlockRegistry) -> f32 {
+fn shade_brightness(state: azalea_block::BlockState, registry: &BlockRenderRegistry) -> f32 {
     // TODO: non-occluding full cubes (leaves, glass, ice) still darken adjacent
     // faces here. Vanilla's are `isViewBlocking=never` and don't contribute AO.
     if registry.is_opaque_full_cube(state) {
@@ -2408,7 +2411,7 @@ fn corners0_offset(dir: Direction) -> [i32; 3] {
 #[allow(clippy::too_many_arguments)]
 fn compute_face_ao(
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRegistry,
+    registry: &BlockRenderRegistry,
     bx: i32,
     by: i32,
     bz: i32,
@@ -2613,7 +2616,7 @@ mod terrain_uv_tests {
 #[cfg(test)]
 mod tint_tests {
     use super::{blend_color_with_radius, tint_sample_y};
-    use crate::world::block::registry::Tint;
+    use crate::world::block::render_registry::Tint;
 
     #[test]
     fn biome_blend_matches_vanilla_integer_channel_division() {

@@ -265,6 +265,7 @@ pub struct GameState {
     pub server_simulation_distance: u32,
     pub item_entity_store: ItemEntityStore,
     pub particle_store: crate::particle::ParticleStore,
+    pub level_runtime: crate::world::level::LevelRuntime,
     pub block_entity_anim: BlockEntityAnimStore,
     pub benchmark: Option<Benchmark>,
     pub benchmark_result: Option<BenchmarkResult>,
@@ -399,6 +400,7 @@ impl GameState {
                 )
             },
             block_entity_anim: BlockEntityAnimStore::default(),
+            level_runtime: crate::world::level::LevelRuntime::new(),
             player: LocalPlayer::new(),
             last_bubble_pop_sound_played: 0,
             biome_climate: Arc::new(HashMap::new()),
@@ -2274,6 +2276,11 @@ pub fn update_game(
             game.player.tick_sleep();
         }
         game.item_entity_store.tick(&game.chunk_store);
+        game.level_runtime.animate_tick(
+            &core.block_registry,
+            &game.chunk_store,
+            *game.player.position,
+        );
         game.particle_store.tick(&game.chunk_store);
         game.block_entity_anim.tick();
         game.title.tick();
@@ -4384,7 +4391,7 @@ fn dropped_item_geometry(renderer: &Renderer, item_name: &str) -> (glam::Mat4, f
 #[allow(clippy::too_many_arguments)]
 fn emit_item_copies(
     infos: &mut Vec<crate::renderer::pipelines::item_entity::ItemRenderInfo>,
-    registry: &crate::world::block::registry::BlockRegistry,
+    registry: &crate::world::block::render_registry::BlockRenderRegistry,
     item_name: &str,
     item_id: u32,
     damage: i32,

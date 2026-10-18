@@ -12,13 +12,13 @@ use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
 use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_names};
 use crate::world::block::find_state;
-use crate::world::block::registry::BlockRegistry;
+use crate::world::block::render_registry::BlockRenderRegistry;
 use crate::world::chunk::{ChunkLightData, ChunkStore};
 
 pub struct Assets {
     pub jar_assets_dir: PathBuf,
     pub asset_index: Option<AssetIndex>,
-    pub registry: BlockRegistry,
+    pub registry: BlockRenderRegistry,
     pub uv_map: AtlasUVMap,
 }
 
@@ -35,7 +35,7 @@ impl Assets {
         // No block cache, so the bench neither reads a stale one nor rewrites
         // the real one.
         eprintln!("cpu-bench: loading block models...");
-        let registry = BlockRegistry::load(&dirs.jar_assets_dir, &asset_index, None, None);
+        let registry = BlockRenderRegistry::load(&dirs.jar_assets_dir, &asset_index, None, None);
 
         eprintln!("cpu-bench: packing texture atlas...");
         let (texture_names, generated_item_textures) = atlas_texture_names(&registry);
