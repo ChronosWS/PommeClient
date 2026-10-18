@@ -1145,7 +1145,11 @@ impl AppCore {
         renderer.remove_player_entity_skin(uuid);
     }
 
-    fn reload_live_resource_assets(&mut self, game: &mut GameState, renderer: &mut Renderer) {
+    fn reload_live_resource_assets(
+        &mut self,
+        game: &mut GameState,
+        renderer: &mut Renderer,
+    ) -> Result<(), String> {
         // The shared atlas bakes UVs into chunk vertices, so a live pack swap
         // must retire chunk geometry before repacking the atlas. Recreate the
         // CPU mesher and particle atlas state from the same freshly-reloaded
@@ -1159,13 +1163,22 @@ impl AppCore {
             game.cardinal_light,
         );
         let (grass, foliage, dry_foliage) = mesh_dispatcher.colormaps();
-        game.mesh_dispatcher = mesh_dispatcher;
-        game.particle_store = crate::particle::ParticleStore::new(
+        let particle_store = crate::particle::ParticleStore::new(
             renderer.atlas_uv_map().clone(),
             grass,
             foliage,
             dry_foliage,
         );
+        particle_store
+            .and_then(|particles| game.level_runtime.rebind(particles))
+            .map_err(|error| {
+                tracing::error!(
+                    ?error,
+                    "Failed to initialize level particles after resource reload"
+                );
+                format!("Level resource reload failed: {error:?}")
+            })?;
+        game.mesh_dispatcher = mesh_dispatcher;
 
         game.meshed.clear();
         game.section_vis.clear();
@@ -1175,6 +1188,7 @@ impl AppCore {
         game.vis_task = None;
         game.vis_valid = false;
         game.pending_load_rescan = true;
+        Ok(())
     }
 
     fn clear_server_ui(&mut self, game: &mut GameState, renderer: &mut Renderer) {
@@ -2259,7 +2273,7 @@ impl AppCore {
                         if !crate::world::block::is_air(state) {
                             crate::player::interaction::play_break_sound(&self.audio, state, pos);
                         }
-                        game.particle_store.add_destroy_block_effect(
+                        game.level_runtime.particles_mut().add_destroy_block_effect(
                             pos,
                             state,
                             renderer.registry(),
@@ -2278,15 +2292,17 @@ impl AppCore {
                     max_speed,
                     count,
                 } => {
-                    game.particle_store.add_particles_from_packet(
-                        kind,
-                        override_limiter,
-                        pos,
-                        glam::dvec3(x_dist as f64, y_dist as f64, z_dist as f64),
-                        max_speed as f64,
-                        count,
-                        renderer.camera_render_position(),
-                    );
+                    game.level_runtime
+                        .particles_mut()
+                        .add_particles_from_packet(
+                            kind,
+                            override_limiter,
+                            pos,
+                            glam::dvec3(x_dist as f64, y_dist as f64, z_dist as f64),
+                            max_speed as f64,
+                            count,
+                            renderer.camera_render_position(),
+                        );
                 }
                 NetworkEvent::EntitiesRemoved { ids } => {
                     for id in &ids {
@@ -2375,7 +2391,7 @@ impl AppCore {
                     if id == game.player.entity_id {
                         game.interaction.complete_using(
                             &self.audio,
-                            &mut game.particle_store,
+                            game.level_runtime.particles_mut(),
                             &game.chunk_store,
                             game.player.position.into(),
                             game.player.eye_pos().into(),
@@ -2575,8 +2591,9 @@ impl AppCore {
                         Some(id) => self.resource_packs.remove_server_pack(&id),
                         None => self.resource_packs.clear_server_packs(),
                     };
-                    if removed {
-                        self.reload_live_resource_assets(game, renderer);
+                    if removed && let Err(reason) = self.reload_live_resource_assets(game, renderer)
+                    {
+                        disconnect_reason = Some(reason);
                     }
                 }
                 NetworkEvent::Reconfiguring => {
@@ -2658,9 +2675,16 @@ impl AppCore {
                     // Vanilla acknowledges SuccessfullyLoaded only after the
                     // resources have been applied. Rebuild the live renderer
                     // (including shared-atlas chunk geometry) before replying.
-                    self.reload_live_resource_assets(game, renderer);
-                    tracing::info!("Resource pack {} loaded successfully", pending.id);
-                    s_resource_pack::Action::SuccessfullyLoaded
+                    match self.reload_live_resource_assets(game, renderer) {
+                        Ok(()) => {
+                            tracing::info!("Resource pack {} loaded successfully", pending.id);
+                            s_resource_pack::Action::SuccessfullyLoaded
+                        }
+                        Err(reason) => {
+                            disconnect_reason = Some(reason);
+                            s_resource_pack::Action::FailedReload
+                        }
+                    }
                 }
             };
 
@@ -2881,7 +2905,7 @@ impl AppCore {
                 game.player.eye_pos().into(),
                 game.player.look_dir,
                 &mut crate::player::interaction::BreakEffects {
-                    particles: &mut game.particle_store,
+                    particles: game.level_runtime.particles_mut(),
                     registry: renderer.registry(),
                     biome_climate: &game.biome_climate,
                 },
@@ -3062,7 +3086,7 @@ impl AppCore {
         let hands_empty = held_stack.is_none() && game.player.inventory.offhand().is_empty();
         let player_aabb = game.player.bounding_box();
         let mut effects = crate::player::interaction::BreakEffects {
-            particles: &mut game.particle_store,
+            particles: game.level_runtime.particles_mut(),
             registry: renderer.registry(),
             biome_climate: &game.biome_climate,
         };

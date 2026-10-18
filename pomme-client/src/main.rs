@@ -23,6 +23,8 @@ mod logging;
 mod mob_effect;
 mod net;
 mod particle;
+#[cfg(test)]
+mod particle_extension_tests;
 mod physics;
 mod player;
 mod recipe;

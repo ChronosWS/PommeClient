@@ -333,6 +333,13 @@ pub struct Colormap {
 }
 
 impl Colormap {
+    #[cfg(test)]
+    pub(crate) fn constant(color: [u8; 3]) -> Self {
+        Self {
+            pixels: vec![color; 256 * 256],
+        }
+    }
+
     pub fn load(
         jar_assets_dir: &std::path::Path,
         asset_index: &Option<crate::assets::AssetIndex>,
@@ -1515,6 +1522,28 @@ pub fn world_brightness(chunks: &ChunkStore, x: i32, y: i32, z: i32) -> f32 {
         .get_sky_light(x, y, z)
         .max(chunks.get_block_light(x, y, z));
     LIGHT_TABLE[level as usize]
+}
+
+/// Scalar approximation of vanilla smooth block emission: add packed 0..240
+/// emission to block light only, then collapse sky/block and interpolate the
+/// table.
+/// TODO: Reconcile with future lighting updates that preserve separate
+/// sky/block channels and apply a time-of-day-aware lightmap.
+pub fn world_brightness_with_block_emission(
+    chunks: &ChunkStore,
+    x: i32,
+    y: i32,
+    z: i32,
+    emission: f32,
+) -> f32 {
+    let sky = u16::from(chunks.get_sky_light(x, y, z)) * 16;
+    let block = (u16::from(chunks.get_block_light(x, y, z)) * 16
+        + emission.clamp(0.0, 240.0) as u16)
+        .min(240);
+    let level = f32::from(sky.max(block)) / 16.0;
+    let lower = level as usize;
+    let upper = (lower + 1).min(15);
+    LIGHT_TABLE[lower] + (LIGHT_TABLE[upper] - LIGHT_TABLE[lower]) * level.fract()
 }
 
 /// Whether a section provably emits nothing: every block is hidden once

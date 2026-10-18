@@ -313,6 +313,20 @@ impl ApplicationHandler for App {
                         fps_counter: FpsCounter::new(),
                     };
 
+                    let game = match game {
+                        Ok(game) => game,
+                        Err(error) => {
+                            tracing::error!(?error, "Level initialization failed");
+                            self.core
+                                .menu
+                                .show_disconnect(format!("Level initialization failed: {error:?}"));
+                            return AppPhase::InMenu {
+                                gfx,
+                                panorama: Panorama::new(),
+                            };
+                        }
+                    };
+
                     AppPhase::Connecting {
                         gfx,
                         panorama: Panorama::new(),
@@ -777,13 +791,22 @@ impl ApplicationHandler for App {
                                 };
                                 let connection = spawn_connection(&core.tokio_rt, connect_args);
 
-                                let game = GameState::new(
+                                let game = match GameState::new(
                                     &gfx.renderer,
                                     &core.resource_packs,
                                     core.menu.render_distance,
                                     world.is_some(),
                                     core.menu.chat_options,
-                                );
+                                ) {
+                                    Ok(game) => game,
+                                    Err(error) => {
+                                        tracing::error!(?error, "Level initialization failed");
+                                        core.menu.show_disconnect(format!(
+                                            "Level initialization failed: {error:?}"
+                                        ));
+                                        return AppPhase::InMenu { gfx, panorama };
+                                    }
+                                };
                                 core.apply_cursor_grab(&gfx.window, None);
 
                                 AppPhase::Connecting {

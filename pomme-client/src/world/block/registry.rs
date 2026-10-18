@@ -110,6 +110,24 @@ pub struct BlockRegistry {
 }
 
 impl BlockRegistry {
+    /// Minimal texture-only fixture for source-effect tests; no asset loading.
+    #[cfg(test)]
+    pub(crate) fn with_textures(textures: HashMap<String, FaceTextures>) -> Self {
+        Self {
+            textures,
+            baked: HashMap::new(),
+            state_render: Arc::new([const { OnceLock::new() }; super::TABLE_SLOTS]),
+            multipart: HashMap::new(),
+            item_models: HashMap::new(),
+            flat_item_textures: Default::default(),
+            flat_item_texture_keys: HashMap::new(),
+            item_gui_transforms: HashMap::new(),
+            item_ground_transforms: HashMap::new(),
+            item_tint_sources: HashMap::new(),
+            placeable_blocks: HashMap::new(),
+        }
+    }
+
     pub fn load(
         jar_assets_dir: &Path,
         asset_index: &Option<AssetIndex>,

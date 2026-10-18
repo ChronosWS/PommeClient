@@ -257,7 +257,7 @@ pub struct GameState {
     pub server_render_distance: u32,
     pub server_simulation_distance: u32,
     pub item_entity_store: ItemEntityStore,
-    pub particle_store: crate::particle::ParticleStore,
+    pub level_runtime: crate::world::level::LevelRuntime,
     pub block_entity_anim: BlockEntityAnimStore,
     pub benchmark: Option<Benchmark>,
     pub benchmark_result: Option<BenchmarkResult>,
@@ -341,7 +341,7 @@ impl GameState {
         render_distance: u32,
         singleplayer: bool,
         chat_options: crate::ui::chat::ChatOptions,
-    ) -> Self {
+    ) -> Result<Self, crate::particle::RegistrationError> {
         let biome_climate = Arc::new(HashMap::new());
         // The dimension's shade table arrives with `DimensionInfo`, which
         // builds a fresh dispatcher.
@@ -352,7 +352,15 @@ impl GameState {
         );
 
         let chunk_store = ChunkStore::new(render_distance);
-        Self {
+        let (grass, foliage, dry_foliage) = mesh_dispatcher.colormaps();
+        let particle_store = crate::particle::ParticleStore::new(
+            renderer.atlas_uv_map().clone(),
+            grass,
+            foliage,
+            dry_foliage,
+        )?;
+        let level_runtime = crate::world::level::LevelRuntime::new(particle_store)?;
+        Ok(Self {
             light_engine: crate::world::light::LevelLightEngine::new(
                 chunk_store.height(),
                 chunk_store.min_y(),
@@ -373,16 +381,8 @@ impl GameState {
             server_render_distance: 0,
             server_simulation_distance: 0,
             item_entity_store: ItemEntityStore::new(),
-            particle_store: {
-                let (grass, foliage, dry_foliage) = mesh_dispatcher.colormaps();
-                crate::particle::ParticleStore::new(
-                    renderer.atlas_uv_map().clone(),
-                    grass,
-                    foliage,
-                    dry_foliage,
-                )
-            },
             block_entity_anim: BlockEntityAnimStore::default(),
+            level_runtime,
             player: LocalPlayer::new(),
             last_bubble_pop_sound_played: 0,
             biome_climate: Arc::new(HashMap::new()),
@@ -488,7 +488,7 @@ impl GameState {
             last_vis_cam: (i32::MIN, i32::MIN, i32::MIN),
             vis_task: None,
             chunk_occlusion_enabled: true,
-        }
+        })
     }
 
     /// Vanilla `LocalPlayer.jumpableVehicle() != null`: controlling a saddled
@@ -2201,7 +2201,10 @@ pub fn update_game(
             game.player.tick_sleep();
         }
         game.item_entity_store.tick(&game.chunk_store);
-        game.particle_store.tick(&game.chunk_store);
+        let camera_pos = gfx.renderer.camera_render_position();
+        game.level_runtime
+            .animate_tick(&game.chunk_store, *game.player.position, camera_pos);
+        game.level_runtime.particles_mut().tick(&game.chunk_store);
         game.block_entity_anim.tick();
         game.title.tick();
         tick_tool_highlight(core, game);
@@ -3874,8 +3877,11 @@ pub fn update_game(
     let particle_quads = if benchmark_running {
         Vec::new()
     } else {
-        game.particle_store
-            .extract(partial_tick, gfx.renderer.camera_anchor())
+        game.level_runtime.particles().extract(
+            partial_tick,
+            gfx.renderer.camera_anchor(),
+            &game.chunk_store,
+        )
     };
 
     let effective_rd = if game.server_render_distance > 0 {

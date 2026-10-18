@@ -45,6 +45,26 @@ pub struct AtlasUVMap {
 }
 
 impl AtlasUVMap {
+    #[cfg(test)]
+    pub(crate) fn with_missing_region(missing: AtlasRegion) -> Self {
+        Self {
+            regions: HashMap::new(),
+            sprite_alpha_masks: HashMap::new(),
+            rects: vec![missing.pixel_rect.map(u32::from)],
+            missing,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_regions(
+        missing: AtlasRegion,
+        regions: impl IntoIterator<Item = (String, AtlasRegion)>,
+    ) -> Self {
+        let mut map = Self::with_missing_region(missing);
+        map.regions.extend(regions);
+        map
+    }
+
     pub fn get_region(&self, name: &str) -> AtlasRegion {
         self.regions.get(name).copied().unwrap_or(self.missing)
     }
@@ -467,7 +487,7 @@ pub(crate) fn atlas_texture_names(registry: &BlockRegistry) -> (HashSet<&str>, H
     let texture_names = registry
         .texture_names()
         .chain(generated_item_textures.iter().copied())
-        .chain(crate::particle::END_ROD_SPRITES)
+        .chain(crate::particle::sprite_names())
         .collect();
     (texture_names, generated_item_textures)
 }

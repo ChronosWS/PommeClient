@@ -1,3 +1,22 @@
+//! Block state data and shared runtime rules.
+//!
+//! # Adding block behavior
+//!
+//! Add a family module under `block_defs` implementing `Block`; override
+//! `Block::animate_tick` as needed, using `LevelContext` and the supplied RNG.
+//! Keep constructors and dependency acquisition in that module: obtain owned
+//! typed particle handles through getters such as `smoke::get_generator` once
+//! during construction, then emit with `ParticleEmitter::create` and
+//! `level.particles`. Follow `torch::register_definitions`: pass known block
+//! names and boxed rules to `BlockDefinitions::register`, and call the family's
+//! registration function from `BlockDefinitions::new` in `block_defs/mod.rs`.
+//! `LevelRuntime` owns these definitions and their paired particle store.
+//! Fallible construction/rebinding builds definitions before exposing a new
+//! pair; each pass refreshes protocol mapping. Unregistered states use the
+//! shared no-op rule. This adds behavior to known block state data, not
+//! arbitrary new wire/network block IDs.
+
+pub(crate) mod block_defs;
 pub mod model;
 pub mod registry;
 pub mod sound;
@@ -9,7 +28,25 @@ use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 use glam::{DVec3, dvec3};
 
+use crate::particle::ParticleSpawnContext;
 use crate::physics::block_shape::{LocalBox, compute_outline, compute_shape};
+
+/// Common world services for block animation; no particle-definition knowledge.
+pub struct LevelContext<'a> {
+    pub(crate) particles: ParticleSpawnContext<'a>,
+}
+
+/// Shared, immutable block rules, independent of the compact wire state ID.
+pub trait Block {
+    fn animate_tick(
+        &self,
+        _state: BlockState,
+        _pos: BlockPos,
+        _level: &mut LevelContext<'_>,
+        _random: &mut fastrand::Rng,
+    ) {
+    }
+}
 
 /// Compact per-state property map: `(key, value)` pairs sorted by key. States
 /// have at most ~10 properties, so binary search on a boxed slice beats a

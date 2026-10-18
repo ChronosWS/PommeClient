@@ -176,6 +176,8 @@ struct ElementDef {
     faces: HashMap<String, FaceDef>,
     #[serde(default = "default_true")]
     shade: bool,
+    #[serde(default)]
+    shade_direction_override: Option<Direction>,
 }
 
 fn default_true() -> bool {
@@ -202,7 +204,8 @@ struct FaceDef {
     tint_index: Option<i32>,
 }
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Direction {
     Down,
     Up,
@@ -343,7 +346,7 @@ impl CardinalLightType {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct BakedQuad {
     pub positions: [[f32; 3]; 4],
     pub uvs: [[f32; 2]; 4],
@@ -360,7 +363,7 @@ pub struct BakedQuad {
     pub shade_face: Option<Direction>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct BakedModel {
     pub quads: Vec<BakedQuad>,
     pub is_full_cube: bool,
@@ -1677,11 +1680,14 @@ fn bake_resolved_model(
                 cullface = cullface.map(|d| d.rotate_x(rot_x).rotate_y(rot_y));
             }
 
-            // Vanilla `FaceBakery.bakeQuad`: the shade direction is the
-            // rotated quad's nearest cardinal, `UP` for a degenerate quad.
-            let shade_face = element
-                .shade
-                .then(|| direction_from_positions(&positions).unwrap_or(Direction::Up));
+            // The override is literal quad metadata, not rotated with geometry.
+            // Otherwise use the final nearest cardinal, UP for a degenerate quad.
+            let shade_face = element.shade.then(|| {
+                element
+                    .shade_direction_override
+                    .or_else(|| direction_from_positions(&positions))
+                    .unwrap_or(Direction::Up)
+            });
 
             quads.push(BakedQuad {
                 positions,
@@ -2223,6 +2229,97 @@ mod tests {
     }
 
     #[test]
+    fn shade_direction_override_takes_precedence_over_geometric_faces() {
+        let mut json = shade_direction_model_json();
+        json["elements"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("shade_direction_override");
+        let control = resolve_inline_shade_model(json);
+        let baked = bake_resolved_model(&control, 0, 0, Tint::None).unwrap();
+        assert_eq!(baked.quads.len(), 3);
+        for (direction, light) in [
+            (Direction::Up, 1.0),
+            (Direction::North, 0.8),
+            (Direction::East, 0.6),
+        ] {
+            let quad = baked
+                .quads
+                .iter()
+                .find(|q| direction_from_positions(&q.positions) == Some(direction))
+                .unwrap();
+            assert_eq!(quad.shade_face, Some(direction));
+            assert_eq!(quad.shade_light, light);
+        }
+
+        let resolved = resolve_inline_shade_model(shade_direction_model_json());
+        let baked = bake_resolved_model(&resolved, 0, 0, Tint::None).unwrap();
+        assert_eq!(baked.quads.len(), 3);
+        for quad in baked.quads {
+            assert_eq!(quad.shade_face, Some(Direction::Up));
+            assert_eq!(quad.shade_light, 1.0);
+        }
+    }
+
+    fn shade_direction_model_json() -> serde_json::Value {
+        serde_json::json!({
+            "textures": {"all": "minecraft:block/redstone_torch"},
+            "elements": [{
+                "from": [0, 0, 0], "to": [16, 16, 16],
+                "shade_direction_override": "up",
+                "faces": {
+                    "up": {"texture": "#all"},
+                    "north": {"texture": "#all"},
+                    "east": {"texture": "#all"}
+                }
+            }]
+        })
+    }
+
+    fn resolve_inline_shade_model(json: serde_json::Value) -> ResolvedModel {
+        let mut cache = HashMap::from([
+            (
+                "block/parent".to_string(),
+                serde_json::from_value(json).unwrap(),
+            ),
+            (
+                "block/child".to_string(),
+                serde_json::from_str(r#"{"parent":"block/parent"}"#).unwrap(),
+            ),
+        ]);
+        resolve_model("block/child", Path::new(""), &None, &mut cache, None)
+    }
+
+    #[test]
+    fn shade_direction_override_is_literal_and_respects_disabled_shading() {
+        for shade in [true, false] {
+            let mut json = shade_direction_model_json();
+            json["elements"][0]["shade"] = serde_json::json!(shade);
+            json["elements"][0]["rotation"] = serde_json::json!({
+                "origin": [8, 8, 8], "axis": "z", "angle": 90
+            });
+            let resolved = resolve_inline_shade_model(json);
+            for (rot_x, rot_y) in [(0, 0), (90, 90)] {
+                let baked = bake_resolved_model(&resolved, rot_x, rot_y, Tint::None).unwrap();
+                assert_eq!(baked.quads.len(), 3);
+                for quad in baked.quads {
+                    assert_eq!(quad.shade_face, shade.then_some(Direction::Up));
+                    assert_eq!(quad.shade_light, 1.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shade_direction_override_rejects_invalid_directions() {
+        for invalid in [serde_json::json!("diagonal"), serde_json::json!(42)] {
+            let mut json = shade_direction_model_json();
+            json["elements"][0]["shade_direction_override"] = invalid;
+            assert!(serde_json::from_value::<ModelFile>(json).is_err());
+        }
+    }
+
+    #[test]
     fn model_rotation_uses_final_face_direction_for_cardinal_shading() {
         let face = FaceDef {
             uv: Some([0.0, 0.0, 16.0, 16.0]),
@@ -2239,6 +2336,7 @@ mod tests {
                 rotation: None,
                 faces: HashMap::from([("west".to_string(), face)]),
                 shade: true,
+                shade_direction_override: None,
             }],
             gui_transform: DisplayTransform::IDENTITY,
             gui_light: GuiLight::Side,
@@ -2267,6 +2365,7 @@ mod tests {
                 rotation: None,
                 faces: HashMap::from([("south".to_string(), face)]),
                 shade: true,
+                shade_direction_override: None,
             }],
             gui_transform: DisplayTransform::IDENTITY,
             gui_light: GuiLight::default(),
