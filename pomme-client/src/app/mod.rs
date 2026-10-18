@@ -30,7 +30,6 @@ use crate::net::connection::{ConnectArgs, ConnectionHandle, spawn_connection};
 use crate::renderer::{self, Renderer};
 use crate::singleplayer::World;
 use crate::user::UserData;
-use crate::world::block::VersionBlockData;
 
 #[derive(Error, Debug)]
 pub enum WindowError {
@@ -180,7 +179,7 @@ fn start_connecting(
     };
     // Capture the requested version before the connection task can negotiate
     // a different session protocol. The registry receives explicit metadata.
-    let version_data = VersionBlockData::for_protocol(crate::version::selected_protocol());
+    let protocol = crate::version::selected_protocol();
     let block_definitions = Rc::clone(&core.block_definitions);
     let connection = spawn_connection(&core.tokio_rt, connect_args);
     let game = GameState::new(
@@ -190,7 +189,7 @@ fn start_connecting(
         world.is_some(),
         core.menu.chat_options,
         block_definitions,
-        version_data,
+        protocol,
     );
     core.apply_cursor_grab(&gfx.window, None);
     AppPhase::Connecting {

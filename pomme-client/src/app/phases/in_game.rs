@@ -45,7 +45,7 @@ use crate::ui::pause::{self, PauseAction, PauseScreen};
 use crate::ui::{common, hud};
 use crate::world::block::block_registry::{BlockRegistry, GlobalBlockDefinitions};
 use crate::world::block::model::CardinalLightType;
-use crate::world::block::{BedDirection, VersionBlockData, bed_direction};
+use crate::world::block::{BedDirection, bed_direction};
 use crate::world::block_entity_anim::BlockEntityAnimStore;
 use crate::world::chunk::ChunkStore;
 
@@ -363,7 +363,7 @@ impl GameState {
         singleplayer: bool,
         chat_options: crate::ui::chat::ChatOptions,
         block_definitions: Rc<GlobalBlockDefinitions>,
-        version_data: VersionBlockData,
+        protocol: i32,
     ) -> Self {
         let biome_climate = Arc::new(HashMap::new());
         // The dimension's shade table arrives with `DimensionInfo`, which
@@ -438,7 +438,7 @@ impl GameState {
             bundle_hovered: None,
             bundle_scroll: (0.0, 0.0),
             registries: Arc::new(azalea_core::registry_holder::RegistryHolder::default()),
-            block_registry: BlockRegistry::new(block_definitions, version_data),
+            block_registry: BlockRegistry::new(block_definitions, protocol),
             recipe_book: crate::recipe::RecipeBookState::default(),
             recipe_book_ui: crate::ui::recipe_book::RecipeBookUiState::new(),
             chat: {
@@ -2218,11 +2218,6 @@ pub fn update_game(
     if let Some(reason) = disconnect_reason {
         return GameUpdateResult::Disconnected { reason };
     }
-
-    // Temporary bridge until protocol selection arrives as an ordered event.
-    // Refresh before physics, independently of whether animation runs.
-    game.block_registry
-        .refresh_version_data(crate::world::block::active_version_data());
 
     game.chat.tick();
     for mark in game.chat.take_chat_marks() {

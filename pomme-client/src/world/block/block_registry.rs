@@ -5,7 +5,9 @@ use std::rc::Rc;
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 
-use super::{BlockData, VersionBlockData, load_behaviors};
+use super::{
+    BlockData, BlockTags, VersionBlockData, load_behaviors, registry_names, resolve_block_tags,
+};
 use crate::world::level::LevelContext;
 
 /// Shared, immutable block rules, independent of the compact wire state ID.
@@ -102,30 +104,49 @@ impl GlobalBlockDefinitions {
 /// Session-owned metadata selection and numeric bindings to shared definitions.
 pub(crate) struct BlockRegistry {
     definitions: Rc<GlobalBlockDefinitions>,
+    protocol: i32,
     version_data: VersionBlockData,
     bindings: BlockBindings,
+    tags: BlockTags,
 }
 
 impl BlockRegistry {
-    pub(crate) fn new(
-        definitions: Rc<GlobalBlockDefinitions>,
-        version_data: VersionBlockData,
-    ) -> Self {
+    pub(crate) fn new(definitions: Rc<GlobalBlockDefinitions>, protocol: i32) -> Self {
+        let version_data = VersionBlockData::for_protocol(protocol);
         let bindings = BlockBindings::new(&definitions, version_data);
         Self {
             definitions,
+            protocol,
             version_data,
             bindings,
+            tags: BlockTags::default(),
         }
     }
 
-    /// The caller supplies the selected metadata; no session globals are read.
-    pub(crate) fn refresh_version_data(&mut self, version_data: VersionBlockData) {
-        if self.version_data.table_slot() == version_data.table_slot() {
-            return;
+    /// Keep wire identity even when two protocols share a canonical table.
+    pub(crate) fn select_protocol(&mut self, protocol: i32) {
+        if self.protocol != protocol {
+            let version_data = VersionBlockData::for_protocol(protocol);
+            if self.version_data.table_slot() != version_data.table_slot() {
+                self.bindings = BlockBindings::new(&self.definitions, version_data);
+            }
+            self.version_data = version_data;
+            self.protocol = protocol;
         }
-        self.bindings = BlockBindings::new(&self.definitions, version_data);
-        self.version_data = version_data;
+        self.clear_tags();
+    }
+
+    pub(crate) fn replace_tags(&mut self, raw_tags: Vec<(String, Vec<i32>)>) {
+        let names: Vec<_> = registry_names(self.version_data.table()).collect();
+        self.tags = resolve_block_tags(raw_tags, &names);
+    }
+
+    pub(crate) fn clear_tags(&mut self) {
+        self.tags = BlockTags::default();
+    }
+
+    pub(crate) fn tags(&self) -> &BlockTags {
+        &self.tags
     }
 
     pub(crate) fn get(&self, state: BlockState) -> BlockStateView<'_> {

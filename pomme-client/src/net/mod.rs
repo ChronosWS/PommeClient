@@ -102,6 +102,10 @@ pub enum Weather {
 }
 
 pub enum NetworkEvent {
+    /// Ordered before login/configuration events on both transports.
+    ProtocolSelected {
+        protocol: i32,
+    },
     Connected,
     Registries(Arc<azalea_core::registry_holder::RegistryHolder>),
     /// The `minecraft:dialog` registry with its tags, sent with `Registries`

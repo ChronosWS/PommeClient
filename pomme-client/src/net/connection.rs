@@ -17,7 +17,7 @@ use super::NetworkEvent;
 use super::chat::ChatPacketError;
 use super::chat_security::{ChatSender, ProfileKeyPair};
 use super::conn::{Conn, MemoryEnd, RawWriter};
-use super::handler::{handle_game_packet, handle_raw_game_packet};
+use super::handler::{handle_game_packet, handle_raw_game_packet, send_ordered};
 use super::sender::{Outbound, PacketSender};
 use crate::ui::server_dialog::DialogRegistry;
 
@@ -143,7 +143,8 @@ pub async fn connect_to_server(
                 .as_str()
                 .try_into()
                 .map_err(|_| ConnectionError::InvalidAddress(server.clone()))?;
-            negotiate_wire_version(&server_addr, protocol).await?;
+            let wire = negotiate_wire_version(&server_addr, protocol).await?;
+            select_block_protocol(&event_tx, wire);
             super::resolve::connect(&server_addr, ClientIntention::Login).await?
         }
         Transport::Memory { end, protocol } => {
@@ -151,6 +152,7 @@ pub async fn connect_to_server(
             // to probe; one other than native is translated like a remote
             // server's.
             adopt_wire_protocol(protocol);
+            select_block_protocol(&event_tx, protocol);
             let mut conn = Conn::from_memory(end);
             super::resolve::send_intention(&mut conn, "localhost", 0, ClientIntention::Login)
                 .await?;
@@ -302,7 +304,7 @@ async fn read_inline_registries(conn: &mut Conn) -> Result<Joined, ConnectionErr
 async fn negotiate_wire_version(
     server_addr: &ServerAddr,
     known: Option<i32>,
-) -> Result<(), ConnectionError> {
+) -> Result<i32, ConnectionError> {
     let selected = crate::version::selected_protocol();
     let probed = match known {
         Some(p) => Some(p),
@@ -325,7 +327,12 @@ async fn negotiate_wire_version(
     })?;
     tracing::info!("Negotiated wire protocol {wire}");
     adopt_wire_protocol(wire);
-    Ok(())
+    Ok(wire)
+}
+
+/// Publish the adopted wire identity before either transport starts login.
+fn select_block_protocol(event_tx: &Sender<NetworkEvent>, protocol: i32) {
+    send_ordered(event_tx, NetworkEvent::ProtocolSelected { protocol });
 }
 
 /// Speaks `wire` for the rest of the session. The translation layer, block
@@ -1353,12 +1360,16 @@ mod tests {
             ServerboundConfigPacket::FinishConfiguration(_)
         ));
 
-        // Emitted as soon as configuration ends, before any game packet.
+        // Protocol selection precedes configuration; the remaining events
+        // arrive as soon as configuration ends, before any game packet.
         let events: Vec<_> = std::iter::from_fn(|| event_rx.recv().ok())
-            .take(2)
+            .take(3)
             .collect();
-        assert!(matches!(events[0], NetworkEvent::BiomeColors { .. }));
-        assert!(matches!(events[1], NetworkEvent::Connected));
+        assert!(
+            matches!(events[0], NetworkEvent::ProtocolSelected { protocol } if protocol == NATIVE.protocol)
+        );
+        assert!(matches!(events[1], NetworkEvent::BiomeColors { .. }));
+        assert!(matches!(events[2], NetworkEvent::Connected));
 
         client.abort();
     }

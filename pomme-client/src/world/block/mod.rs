@@ -449,7 +449,7 @@ static PLACEABLE_BLOCKS: [OnceLock<HashMap<&'static str, BlockState>>; BLOCK_DAT
 
 /// Server-provided block tags, resolved into Pomme's native block resource
 /// names. Sent during configuration and replaced after a datapack reload.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct BlockTags {
     tags: HashMap<String, HashSet<&'static str>>,
 }
@@ -889,9 +889,18 @@ fn resolve_block_tags(
 
 /// Replaces the session's block tags from `ClientboundUpdateTags`. Element ids
 /// are built-in block registry ids, not block-state ids.
+#[expect(
+    dead_code,
+    reason = "legacy raw-tag compatibility API until global removal"
+)]
 pub fn replace_block_tags(raw_tags: Vec<(String, Vec<i32>)>) {
-    *BLOCK_TAGS.write().expect("block tag lock poisoned") =
-        resolve_block_tags(raw_tags, &block_registry_names());
+    mirror_block_tags(&resolve_block_tags(raw_tags, &block_registry_names()));
+}
+
+/// Transitional mirror for mining/climbing consumers not yet session-owned.
+/// The session registry has already resolved these names with its own table.
+pub(crate) fn mirror_block_tags(tags: &BlockTags) {
+    *BLOCK_TAGS.write().expect("block tag lock poisoned") = tags.clone();
 }
 
 pub fn block_tags() -> RwLockReadGuard<'static, BlockTags> {
@@ -929,14 +938,7 @@ pub(crate) fn replace_block_tags_for_test(entries: &[(&str, &[&str])]) {
 }
 
 fn block_data(state: BlockState) -> &'static BlockData {
-    active_version_data().block_data(state)
-}
-
-/// Temporary compatibility snapshot until ordered session protocol events
-/// replace the global active table. Read the slot once before constructing
-/// the handle so metadata and bindings always select the same cached table.
-pub(crate) fn active_version_data() -> VersionBlockData {
-    VersionBlockData::from_initialized_slot(active_table_slot())
+    VersionBlockData::from_initialized_slot(active_table_slot()).block_data(state)
 }
 
 /// Every valid block state paired with its cached data, in id order.

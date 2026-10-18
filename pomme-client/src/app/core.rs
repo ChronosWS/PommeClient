@@ -1301,6 +1301,10 @@ impl AppCore {
         // before this frame's ticks.
         while let Ok(event) = rx.try_recv() {
             match event {
+                NetworkEvent::ProtocolSelected { protocol } => {
+                    game.block_registry.select_protocol(protocol);
+                    crate::world::block::mirror_block_tags(game.block_registry.tags());
+                }
                 NetworkEvent::Connected => {
                     if let Some(state) = connect_phase.as_deref_mut() {
                         tracing::info!("Connected to server");
@@ -1649,7 +1653,8 @@ impl AppCore {
                     game.recipe_book.set_item_tags(tags);
                 }
                 NetworkEvent::BlockTags { tags } => {
-                    crate::world::block::replace_block_tags(tags);
+                    game.block_registry.replace_tags(tags);
+                    crate::world::block::mirror_block_tags(game.block_registry.tags());
                 }
                 NetworkEvent::ContainerSlot {
                     container_id,
@@ -2628,6 +2633,8 @@ impl AppCore {
                 }
                 NetworkEvent::Reconfiguring => {
                     tracing::info!("Server re-entered configuration");
+                    game.block_registry.clear_tags();
+                    crate::world::block::mirror_block_tags(game.block_registry.tags());
                     self.audio.stop_all_sounds();
                     game.entity_store = crate::entity::EntityStore::new();
                     game.item_entity_store = crate::entity::ItemEntityStore::new();
