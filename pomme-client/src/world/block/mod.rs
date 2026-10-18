@@ -3,7 +3,7 @@
 //! Implement `Block` and select implementations by name in
 //! `block_registry::BlockBehaviorCatalog`. The app-owned registry
 //! constructs a definition for every block in the shared mining data.
-//! Level-owned `BlockBindings` map property states to shared rules;
+//! Session-owned `BlockBindings` map property states to shared rules;
 //! unregistered states use the no-op default. Rules receive
 //! current world queries and a per-pass RNG, independent of coordinate
 //! sampling.

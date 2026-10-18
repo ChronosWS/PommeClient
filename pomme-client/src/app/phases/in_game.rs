@@ -42,6 +42,7 @@ use crate::ui::chat::{ChatState, ChatUiAction};
 use crate::ui::death::{self, DeathAction};
 use crate::ui::pause::{self, PauseAction, PauseScreen};
 use crate::ui::{common, hud};
+use crate::world::block::block_registry::BlockBindings;
 use crate::world::block::model::CardinalLightType;
 use crate::world::block::{BedDirection, bed_direction};
 use crate::world::block_entity_anim::BlockEntityAnimStore;
@@ -172,6 +173,8 @@ pub struct GameState {
     pub bundle_scroll: (f32, f32),
     /// Server registries, for hashing predicted container clicks.
     pub registries: Arc<azalea_core::registry_holder::RegistryHolder>,
+    /// Session protocol state bindings to the app-owned block rules.
+    pub(crate) block_bindings: BlockBindings,
     /// Per-session recipe book, recipe container, ghost placement, and item
     /// tags.
     pub recipe_book: crate::recipe::RecipeBookState,
@@ -432,6 +435,7 @@ impl GameState {
             bundle_hovered: None,
             bundle_scroll: (0.0, 0.0),
             registries: Arc::new(azalea_core::registry_holder::RegistryHolder::default()),
+            block_bindings: BlockBindings::new(),
             recipe_book: crate::recipe::RecipeBookState::default(),
             recipe_book_ui: crate::ui::recipe_book::RecipeBookUiState::new(),
             chat: {
@@ -2212,6 +2216,9 @@ pub fn update_game(
         return GameUpdateResult::Disconnected { reason };
     }
 
+    // Protocol bindings belong to the session, independent of world animation.
+    game.block_bindings.refresh_protocol(&core.block_registry);
+
     game.chat.tick();
     for mark in game.chat.take_chat_marks() {
         connection.packet_tx.mark_chat(mark);
@@ -2277,6 +2284,7 @@ pub fn update_game(
         }
         game.item_entity_store.tick(&game.chunk_store);
         game.level_runtime.animate_tick(
+            &game.block_bindings,
             &core.block_registry,
             &game.chunk_store,
             *game.player.position,

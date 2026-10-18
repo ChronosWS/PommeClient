@@ -24,32 +24,30 @@ impl<'a> LevelContext<'a> {
     }
 }
 
-/// Owns protocol bindings and persistent coordinate-sampling randomness only.
-/// Block rules, chunks and other world runtimes remain externally owned.
+/// Owns persistent coordinate-sampling randomness for world animation.
+/// Block rules, session protocol bindings and chunks remain externally owned.
 pub struct LevelRuntime {
     // Preserve vanilla's distribution and draw order, not its seeded sequence.
     animation_rng: fastrand::Rng,
-    bindings: BlockBindings,
 }
 
 impl LevelRuntime {
     pub(crate) fn new() -> Self {
         Self {
             animation_rng: fastrand::Rng::new(),
-            bindings: BlockBindings::new(),
         }
     }
 
     /// Vanilla `ClientLevel.animateTick`, called once per simulation tick.
     pub(crate) fn animate_tick(
         &mut self,
+        bindings: &BlockBindings,
         registry: &BlockRegistry,
         chunks: &ChunkStore,
         player_pos: DVec3,
     ) {
-        self.bindings.refresh_protocol(registry);
         animate_tick_with_draw(
-            &self.bindings,
+            bindings,
             registry,
             player_pos,
             |radius| self.animation_rng.i32(0..radius),

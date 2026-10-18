@@ -1,4 +1,4 @@
-//! App-owned block rules and the level's current protocol bindings.
+//! App-owned block rules and the session's current protocol bindings.
 
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
@@ -97,7 +97,7 @@ impl BlockRegistry {
     }
 }
 
-/// Numeric bindings remain level-owned; rules are borrowed from the app.
+/// Numeric bindings remain session-owned; rules are borrowed from the app.
 pub(crate) struct BlockBindings {
     state_definitions: Vec<usize>,
     table_slot: Option<usize>,
@@ -119,7 +119,7 @@ impl BlockBindings {
     }
 
     fn bind_table(&mut self, registry: &BlockRegistry, slot: usize) {
-        // Registration only appends, so the count invalidates every level's
+        // Registration only appends, so the count invalidates every session's
         // mapping without sharing mutable binding state.
         if self.table_slot == Some(slot) && self.definition_count == registry.definitions.len() {
             return;
