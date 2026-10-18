@@ -2,6 +2,7 @@
 //! assets on disk (CPU-only), and deterministic synthetic worlds.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use azalea_block::BlockState;
 use azalea_core::position::ChunkPos;
@@ -11,14 +12,15 @@ use glam::DVec3;
 use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
 use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_names};
-use crate::world::block::find_state;
 use crate::world::block::render_registry::BlockRenderRegistry;
+use crate::world::block::{VersionBlockData, find_state};
 use crate::world::chunk::{ChunkLightData, ChunkStore};
 
 pub struct Assets {
     pub jar_assets_dir: PathBuf,
     pub asset_index: Option<AssetIndex>,
-    pub registry: BlockRenderRegistry,
+    pub registry: Arc<BlockRenderRegistry>,
+    pub version_data: VersionBlockData,
     pub uv_map: AtlasUVMap,
 }
 
@@ -35,7 +37,16 @@ impl Assets {
         // No block cache, so the bench neither reads a stale one nor rewrites
         // the real one.
         eprintln!("cpu-bench: loading block models...");
-        let registry = BlockRenderRegistry::load(&dirs.jar_assets_dir, &asset_index, None, None);
+        let registry = Arc::new(BlockRenderRegistry::load(
+            &dirs.jar_assets_dir,
+            &asset_index,
+            None,
+            None,
+        ));
+        let protocol = pomme_protocol::ProtocolVersion::from_name(version)
+            .unwrap_or(pomme_protocol::version::NATIVE)
+            .protocol;
+        let version_data = VersionBlockData::for_protocol(protocol);
 
         eprintln!("cpu-bench: packing texture atlas...");
         let (texture_names, generated_item_textures) = atlas_texture_names(&registry);
@@ -52,6 +63,7 @@ impl Assets {
             jar_assets_dir: dirs.jar_assets_dir.clone(),
             asset_index,
             registry,
+            version_data,
             uv_map,
         })
     }

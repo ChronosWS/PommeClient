@@ -1182,8 +1182,11 @@ impl AppCore {
         // registry/UV map, then let the normal rescan rebuild loaded columns.
         renderer.clear_chunk_meshes();
         self.reload_pack_assets(renderer);
+        game.block_registry
+            .replace_render_registry(renderer.render_registry());
 
         let mesh_dispatcher = renderer.create_mesh_dispatcher(
+            game.block_registry.owned_render_view(),
             Arc::clone(&game.biome_climate),
             Some(&self.resource_packs),
             game.cardinal_light,
@@ -1302,8 +1305,15 @@ impl AppCore {
         while let Ok(event) = rx.try_recv() {
             match event {
                 NetworkEvent::ProtocolSelected { protocol } => {
+                    let previous_slot = game.block_registry.version_data().table_slot();
                     game.block_registry.select_protocol(protocol);
                     crate::world::block::mirror_block_tags(game.block_registry.tags());
+                    let version_data = game.block_registry.version_data();
+                    if previous_slot != version_data.table_slot() {
+                        game.mesh_dispatcher = game
+                            .mesh_dispatcher
+                            .recreate_for_version(game.block_registry.owned_render_view());
+                    }
                 }
                 NetworkEvent::Connected => {
                     if let Some(state) = connect_phase.as_deref_mut() {
@@ -1361,6 +1371,7 @@ impl AppCore {
                     game.meshed.clear();
                     game.compiled.clear();
                     game.mesh_dispatcher = renderer.create_mesh_dispatcher(
+                        game.block_registry.owned_render_view(),
                         Arc::clone(&game.biome_climate),
                         None,
                         cardinal_light,
@@ -2314,7 +2325,7 @@ impl AppCore {
                         game.particle_store.add_destroy_block_effect(
                             pos,
                             state,
-                            renderer.registry(),
+                            game.block_registry.render_view(),
                             &game.chunk_store,
                             &game.biome_climate,
                         );
@@ -2936,7 +2947,7 @@ impl AppCore {
                 game.player.look_dir,
                 &mut crate::player::interaction::BreakEffects {
                     particles: &mut game.particle_store,
-                    registry: renderer.registry(),
+                    registry: game.block_registry.render_view(),
                     biome_climate: &game.biome_climate,
                 },
             );
@@ -3112,12 +3123,12 @@ impl AppCore {
         );
         let place_block = held_item
             .as_deref()
-            .and_then(crate::world::block::placeable_block_for_item);
+            .and_then(|name| game.block_registry.placeable_block_for_item(name));
         let hands_empty = held_stack.is_none() && game.player.inventory.offhand().is_empty();
         let player_aabb = game.player.bounding_box();
         let mut effects = crate::player::interaction::BreakEffects {
             particles: &mut game.particle_store,
-            registry: renderer.registry(),
+            registry: game.block_registry.render_view(),
             biome_climate: &game.biome_climate,
         };
         let dirty = game.interaction.tick_actions(

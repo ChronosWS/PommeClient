@@ -365,10 +365,13 @@ impl GameState {
         block_definitions: Rc<GlobalBlockDefinitions>,
         protocol: i32,
     ) -> Self {
+        let block_registry =
+            BlockRegistry::new(block_definitions, renderer.render_registry(), protocol);
         let biome_climate = Arc::new(HashMap::new());
         // The dimension's shade table arrives with `DimensionInfo`, which
         // builds a fresh dispatcher.
         let mesh_dispatcher = renderer.create_mesh_dispatcher(
+            block_registry.owned_render_view(),
             biome_climate,
             Some(resource_packs),
             Default::default(),
@@ -438,7 +441,7 @@ impl GameState {
             bundle_hovered: None,
             bundle_scroll: (0.0, 0.0),
             registries: Arc::new(azalea_core::registry_holder::RegistryHolder::default()),
-            block_registry: BlockRegistry::new(block_definitions, protocol),
+            block_registry,
             recipe_book: crate::recipe::RecipeBookState::default(),
             recipe_book_ui: crate::ui::recipe_book::RecipeBookUiState::new(),
             chat: {
@@ -2511,6 +2514,7 @@ pub fn update_game(
     gfx.renderer
         .set_view_bob(bob_walk, bob_amount, core.menu.view_bobbing);
     gfx.renderer.update_third_person_distance(
+        game.block_registry.render_view(),
         camera_pivot,
         &game.chunk_store,
         game.third_person_distance(),
@@ -4035,6 +4039,7 @@ pub fn update_game(
     // the cursor mid-frame), so the renderer doesn't re-hide it from a stale value.
     let hide_cursor = game.input_live() && !game.dead && core.input.is_cursor_captured();
     if let Err(e) = gfx.renderer.render_world(
+        game.block_registry.render_view(),
         &gfx.window,
         hide_cursor,
         elements,

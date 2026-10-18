@@ -34,13 +34,28 @@ impl VersionBlockData {
         }
     }
 
-    pub(super) fn table_slot(self) -> usize {
+    pub(crate) fn table_slot(self) -> usize {
         self.slot
     }
 
     /// State metadata in wire-id order for binding the selected definitions.
     pub(super) fn table(self) -> &'static [BlockData] {
         self.table
+    }
+
+    /// Only single-state blocks support placement prediction by item name.
+    /// Names are unprefixed, matching the item registry.
+    pub(crate) fn placeable_block_for_item(self, item_name: &str) -> Option<BlockState> {
+        let mut matches = self
+            .table
+            .iter()
+            .enumerate()
+            .filter(|(_, data)| data.id == item_name);
+        let (id, _) = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(BlockState::try_from(id as u32).expect("table indices fit the id repr"))
     }
 
     /// Unknown state ids retain the compatibility API's solid, unlit fallback.

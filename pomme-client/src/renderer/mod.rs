@@ -59,7 +59,9 @@ use crate::entity::components::{LookDirection, Position};
 use crate::renderer::pipelines::chunk_borders::ChunkBorderPipeline;
 use crate::renderer::pipelines::item_entity::ItemEntityPipeline;
 use crate::ui::font::{FontOptions, FontSources};
-use crate::world::block::render_registry::BlockRenderRegistry;
+use crate::world::block::render_registry::{
+    BlockRenderRegistry, BlockRenderView, OwnedBlockRenderView,
+};
 
 #[derive(Error, Debug)]
 pub enum RendererError {
@@ -114,6 +116,7 @@ fn preview_box_rect(rect: [f32; 4], extent: vk::Extent2D) -> Option<vk::Rect2D> 
 #[allow(clippy::large_enum_variant)]
 enum RenderMode<'a> {
     World {
+        block_render: BlockRenderView<'a>,
         overlay: Vec<MenuElement>,
         swing_progress: f32,
         use_anim: Option<pipelines::held_item::UseAnim>,
@@ -159,7 +162,7 @@ pub struct Renderer {
     swapchain: Swapchain,
     camera: Camera,
 
-    registry: BlockRenderRegistry,
+    registry: Arc<BlockRenderRegistry>,
     jar_assets_dir: PathBuf,
     asset_index: Option<AssetIndex>,
 
@@ -242,9 +245,11 @@ impl Renderer {
         splash(&mut menu_pipeline, 0.0, "Loading block models...");
 
         let camera = Camera::new(swapchain_state.aspect_ratio());
-        let registry = registry_handle
-            .join()
-            .expect("block registry thread panicked");
+        let registry = Arc::new(
+            registry_handle
+                .join()
+                .expect("block registry thread panicked"),
+        );
 
         splash(&mut menu_pipeline, 0.2, "Building texture atlas...");
 
@@ -897,6 +902,7 @@ impl Renderer {
 
     pub fn update_third_person_distance(
         &mut self,
+        block_render: BlockRenderView<'_>,
         eye_pos: Position,
         chunks: &crate::world::chunk::ChunkStore,
         max_distance: f32,
@@ -940,7 +946,7 @@ impl Renderer {
                     check.y.floor() as i32,
                     check.z.floor() as i32,
                 );
-                self.registry.is_opaque_full_cube(state)
+                block_render.is_opaque_full_cube(state)
             });
             if hit {
                 dist = (t - 0.3).max(0.5);
@@ -1119,12 +1125,18 @@ impl Renderer {
         &self.registry
     }
 
+    pub(crate) fn render_registry(&self) -> Arc<BlockRenderRegistry> {
+        Arc::clone(&self.registry)
+    }
+
     pub fn atlas_uv_map(&self) -> &crate::renderer::chunk::atlas::AtlasUVMap {
         &self.atlas.uv_map
     }
 
+    /// The session view must use the CPU assets loaded with the current atlas.
     pub fn create_mesh_dispatcher(
         &self,
+        render_view: OwnedBlockRenderView,
         biome_climate: std::sync::Arc<
             std::collections::HashMap<u32, crate::renderer::chunk::mesher::BiomeClimate>,
         >,
@@ -1132,7 +1144,7 @@ impl Renderer {
         cardinal_light: crate::world::block::model::CardinalLightType,
     ) -> MeshDispatcher {
         MeshDispatcher::load(
-            self.registry.clone(),
+            render_view,
             self.atlas.uv_map.clone(),
             &self.jar_assets_dir,
             &self.asset_index,
@@ -1154,6 +1166,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render_world(
         &mut self,
+        block_render: BlockRenderView<'_>,
         window: &Window,
         hide_cursor: bool,
         overlay: Vec<MenuElement>,
@@ -1204,6 +1217,7 @@ impl Renderer {
             hide_cursor,
             [clear_col[0], clear_col[1], clear_col[2], 1.0],
             RenderMode::World {
+                block_render,
                 overlay,
                 swing_progress,
                 use_anim,
@@ -1257,8 +1271,12 @@ impl Renderer {
     ) {
         self.ctx.device.wait_idle().unwrap();
 
-        self.registry =
-            BlockRenderRegistry::load(&self.jar_assets_dir, &self.asset_index, None, Some(packs));
+        self.registry = Arc::new(BlockRenderRegistry::load(
+            &self.jar_assets_dir,
+            &self.asset_index,
+            None,
+            Some(packs),
+        ));
 
         self.item_entity_pipeline
             .clear_meshes(&self.ctx.device, &self.ctx.allocator);
@@ -1817,6 +1835,7 @@ impl Renderer {
 
         match &mode {
             RenderMode::World {
+                block_render,
                 overlay,
                 swing_progress,
                 use_anim,
@@ -1866,7 +1885,7 @@ impl Renderer {
                     self.block_overlay_pipeline.draw(
                         cmd,
                         frame,
-                        &self.registry,
+                        *block_render,
                         *state,
                         block_pos,
                         anchor,

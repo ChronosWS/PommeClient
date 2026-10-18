@@ -11,7 +11,7 @@ use crate::renderer::chunk::atlas::{AtlasRegion, AtlasUVMap};
 use crate::world::block::model::{
     BakedModel, CardinalLighting, Direction, face_positions, face_uvs,
 };
-use crate::world::block::render_registry::{BlockRenderRegistry, Tint};
+use crate::world::block::render_registry::{BlockRenderView, OwnedBlockRenderView, Tint};
 use crate::world::block::{FluidKind, block_outline, fluid, is_air, legacy_solid, light_props};
 use crate::world::chunk;
 use crate::world::chunk::ChunkStore;
@@ -691,7 +691,7 @@ pub struct MeshDispatcher {
     // Monotonic per-enqueue stamp; see `ChunkMeshData::upload_epoch`. Starts at 1
     // so 0 means "never uploaded" on the buffer side.
     next_epoch: AtomicU64,
-    registry: Arc<BlockRenderRegistry>,
+    render_view: OwnedBlockRenderView,
     uv_map: Arc<AtlasUVMap>,
     grass_colormap: Arc<Colormap>,
     foliage_colormap: Arc<Colormap>,
@@ -706,8 +706,9 @@ pub struct MeshDispatcher {
 impl MeshDispatcher {
     /// [`Self::new`] with the grass, foliage and dry-foliage colormaps loaded
     /// from the assets (and resource packs).
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
-        registry: BlockRenderRegistry,
+        render_view: OwnedBlockRenderView,
         uv_map: AtlasUVMap,
         jar_assets_dir: &std::path::Path,
         asset_index: &Option<crate::assets::AssetIndex>,
@@ -724,7 +725,7 @@ impl MeshDispatcher {
             )
         };
         Self::new(
-            registry,
+            render_view,
             uv_map,
             colormap("grass"),
             colormap("foliage"),
@@ -736,11 +737,32 @@ impl MeshDispatcher {
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        registry: BlockRenderRegistry,
+        render_view: OwnedBlockRenderView,
         uv_map: AtlasUVMap,
         grass_colormap: Colormap,
         foliage_colormap: Colormap,
         dry_foliage_colormap: Colormap,
+        biome_climate: Arc<HashMap<u32, BiomeClimate>>,
+        cardinal_lighting: CardinalLighting,
+    ) -> Self {
+        Self::with_colormaps(
+            render_view,
+            uv_map,
+            Arc::new(grass_colormap),
+            Arc::new(foliage_colormap),
+            Arc::new(dry_foliage_colormap),
+            biome_climate,
+            cardinal_lighting,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_colormaps(
+        render_view: OwnedBlockRenderView,
+        uv_map: AtlasUVMap,
+        grass_colormap: Arc<Colormap>,
+        foliage_colormap: Arc<Colormap>,
+        dry_foliage_colormap: Arc<Colormap>,
         biome_climate: Arc<HashMap<u32, BiomeClimate>>,
         cardinal_lighting: CardinalLighting,
     ) -> Self {
@@ -778,11 +800,11 @@ impl MeshDispatcher {
             queue,
             workers,
             next_epoch: AtomicU64::new(1),
-            registry: Arc::new(registry),
+            render_view,
             uv_map: Arc::new(uv_map),
-            grass_colormap: Arc::new(grass_colormap),
-            foliage_colormap: Arc::new(foliage_colormap),
-            dry_foliage_colormap: Arc::new(dry_foliage_colormap),
+            grass_colormap,
+            foliage_colormap,
+            dry_foliage_colormap,
             biome_climate,
             cardinal_lighting,
             pool: Arc::new(BufferPool::new(1024)),
@@ -796,6 +818,20 @@ impl MeshDispatcher {
             self.pool.recycle_vertices(sec.vertices);
             self.pool.recycle_indices(sec.indices);
         }
+    }
+
+    /// Negotiation precedes world population. Capture the session's new view
+    /// of the same CPU assets, retaining UVs, colormaps and dimension lighting.
+    pub(crate) fn recreate_for_version(&self, render_view: OwnedBlockRenderView) -> Self {
+        Self::with_colormaps(
+            render_view,
+            (*self.uv_map).clone(),
+            Arc::clone(&self.grass_colormap),
+            Arc::clone(&self.foliage_colormap),
+            Arc::clone(&self.dry_foliage_colormap),
+            Arc::clone(&self.biome_climate),
+            self.cardinal_lighting,
+        )
     }
 
     pub fn set_biome_climate(&mut self, climate: Arc<HashMap<u32, BiomeClimate>>) {
@@ -841,7 +877,7 @@ impl MeshDispatcher {
             is_recompile: priority,
             enqueued_at,
             snapshot: self.build_snapshot(chunk_store, pos),
-            registry: Arc::clone(&self.registry),
+            render_view: self.render_view.clone(),
             uv_map: Arc::clone(&self.uv_map),
             tx,
             pool: Arc::clone(&self.pool),
@@ -864,7 +900,7 @@ impl MeshDispatcher {
         let mut mesh = mesh_chunk_snapshot(
             &mut snapshot,
             pos,
-            &self.registry,
+            self.render_view.as_view(),
             &self.uv_map,
             0,
             sections,
@@ -947,7 +983,7 @@ struct PendingJob {
     is_recompile: bool,
     enqueued_at: std::time::Instant,
     snapshot: ChunkStoreSnapshot,
-    registry: Arc<BlockRenderRegistry>,
+    render_view: OwnedBlockRenderView,
     uv_map: Arc<AtlasUVMap>,
     tx: crossbeam_channel::Sender<ChunkMeshData>,
     pool: Arc<BufferPool>,
@@ -963,7 +999,7 @@ impl PendingJob {
         let mut mesh = mesh_chunk_snapshot(
             &mut self.snapshot,
             self.pos,
-            &self.registry,
+            self.render_view.as_view(),
             &self.uv_map,
             self.lod,
             self.sections,
@@ -1520,10 +1556,7 @@ pub fn world_brightness(chunks: &ChunkStore, x: i32, y: i32, z: i32) -> f32 {
 /// Whether a section provably emits nothing: every block is hidden once
 /// enclosed, and every block touching it from outside occludes. `at` reads
 /// section-relative coordinates.
-fn section_hidden(
-    registry: &BlockRenderRegistry,
-    at: impl Fn(i32, i32, i32) -> BlockState,
-) -> bool {
+fn section_hidden(registry: BlockRenderView<'_>, at: impl Fn(i32, i32, i32) -> BlockState) -> bool {
     let occludes = |x, y, z| registry.occludes_neighbor(at(x, y, z));
     let border_occludes = (0..16).all(|a| {
         (0..16).all(|b| {
@@ -1543,12 +1576,14 @@ fn section_hidden(
 fn mesh_chunk_snapshot(
     snapshot: &mut ChunkStoreSnapshot,
     pos: ChunkPos,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     uv_map: &AtlasUVMap,
     lod: u32,
     sections_to_mesh: std::ops::Range<i32>,
     pool: &BufferPool,
 ) -> ChunkMeshData {
+    // Model-derived queries are version-bound; other metadata helpers below
+    // still use the compatibility globals until their separate migration.
     let mut logged_missing: std::collections::HashSet<&'static str> =
         std::collections::HashSet::new();
 
@@ -1746,7 +1781,7 @@ fn emit_baked_model(
     state: azalea_block::BlockState,
     model: &BakedModel,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -1787,7 +1822,7 @@ fn emit_cube_faces(
     state: BlockState,
     textures: &crate::world::block::render_registry::FaceTextures,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2004,7 +2039,7 @@ fn block_face_tex_tint(
     dir: Direction,
     uv_map: &AtlasUVMap,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     bx: i32,
     by: i32,
     bz: i32,
@@ -2041,7 +2076,7 @@ fn emit_fluid(
     block_pos: [f32; 3],
     state: azalea_block::BlockState,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2168,7 +2203,7 @@ fn emit_multipart(
     state: azalea_block::BlockState,
     quads: &[&crate::world::block::model::BakedQuad],
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2203,7 +2238,7 @@ fn emit_lod_cube(
     block_pos: [f32; 3],
     state: azalea_block::BlockState,
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2275,7 +2310,7 @@ fn emit_missing_cube(
     sink: &mut MeshSink,
     block_pos: [f32; 3],
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     uv_map: &AtlasUVMap,
     bx: i32,
     by: i32,
@@ -2376,7 +2411,7 @@ fn emit_face_into(
     }
 }
 
-fn shade_brightness(state: azalea_block::BlockState, registry: &BlockRenderRegistry) -> f32 {
+fn shade_brightness(state: azalea_block::BlockState, registry: BlockRenderView<'_>) -> f32 {
     // TODO: non-occluding full cubes (leaves, glass, ice) still darken adjacent
     // faces here. Vanilla's are `isViewBlocking=never` and don't contribute AO.
     if registry.is_opaque_full_cube(state) {
@@ -2411,7 +2446,7 @@ fn corners0_offset(dir: Direction) -> [i32; 3] {
 #[allow(clippy::too_many_arguments)]
 fn compute_face_ao(
     snapshot: &ChunkStoreSnapshot,
-    registry: &BlockRenderRegistry,
+    registry: BlockRenderView<'_>,
     bx: i32,
     by: i32,
     bz: i32,

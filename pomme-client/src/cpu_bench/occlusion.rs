@@ -20,6 +20,7 @@ fn cell(x: usize, y: usize, z: usize) -> usize {
 /// The flood fill over every section of the centre column, per scene, on
 /// opacity precomputed the way the mesher does (opaque full cubes).
 pub fn bench_sections(c: &mut Criterion, assets: &Assets) {
+    let registry = assets.registry.for_version(assets.version_data);
     let mut group = c.benchmark_group("visgraph");
     for scene in Scene::ALL {
         let store = build_world(scene);
@@ -32,7 +33,7 @@ pub fn bench_sections(c: &mut Criterion, assets: &Assets) {
                         for x in 0..16 {
                             let state = store.get_block_state(x, min_y + si * 16 + y, z);
                             opaque[cell(x as usize, y as usize, z as usize)] =
-                                assets.registry.is_opaque_full_cube(state);
+                                registry.is_opaque_full_cube(state);
                         }
                     }
                 }

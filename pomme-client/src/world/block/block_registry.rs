@@ -1,10 +1,12 @@
 //! App-owned block definitions and the session's version-bound registry.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 
+use super::render_registry::{BlockRenderRegistry, BlockRenderView, OwnedBlockRenderView};
 use super::{
     BlockData, BlockTags, VersionBlockData, load_behaviors, registry_names, resolve_block_tags,
 };
@@ -104,6 +106,7 @@ impl GlobalBlockDefinitions {
 /// Session-owned metadata selection and numeric bindings to shared definitions.
 pub(crate) struct BlockRegistry {
     definitions: Rc<GlobalBlockDefinitions>,
+    render_registry: Arc<BlockRenderRegistry>,
     protocol: i32,
     version_data: VersionBlockData,
     bindings: BlockBindings,
@@ -111,11 +114,16 @@ pub(crate) struct BlockRegistry {
 }
 
 impl BlockRegistry {
-    pub(crate) fn new(definitions: Rc<GlobalBlockDefinitions>, protocol: i32) -> Self {
+    pub(crate) fn new(
+        definitions: Rc<GlobalBlockDefinitions>,
+        render_registry: Arc<BlockRenderRegistry>,
+        protocol: i32,
+    ) -> Self {
         let version_data = VersionBlockData::for_protocol(protocol);
         let bindings = BlockBindings::new(&definitions, version_data);
         Self {
             definitions,
+            render_registry,
             protocol,
             version_data,
             bindings,
@@ -134,6 +142,26 @@ impl BlockRegistry {
             self.protocol = protocol;
         }
         self.clear_tags();
+    }
+
+    pub(crate) fn version_data(&self) -> VersionBlockData {
+        self.version_data
+    }
+
+    pub(crate) fn render_view(&self) -> BlockRenderView<'_> {
+        self.render_registry.for_version(self.version_data)
+    }
+
+    pub(crate) fn owned_render_view(&self) -> OwnedBlockRenderView {
+        OwnedBlockRenderView::new(self.render_registry.clone(), self.version_data)
+    }
+
+    pub(crate) fn replace_render_registry(&mut self, registry: Arc<BlockRenderRegistry>) {
+        self.render_registry = registry;
+    }
+
+    pub(crate) fn placeable_block_for_item(&self, item_name: &str) -> Option<BlockState> {
+        self.version_data.placeable_block_for_item(item_name)
     }
 
     pub(crate) fn replace_tags(&mut self, raw_tags: Vec<(String, Vec<i32>)>) {

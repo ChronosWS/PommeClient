@@ -10,12 +10,13 @@ use criterion::Criterion;
 use super::fixtures::{Assets, Scene, build_world};
 use crate::renderer::chunk::mesher::MeshDispatcher;
 use crate::world::block::model::CardinalLightType;
+use crate::world::block::render_registry::OwnedBlockRenderView;
 
 pub fn bench(c: &mut Criterion, assets: &Assets) {
     // `mesh_sections_now` meshes on the calling thread; the dispatcher's
     // workers stay idle.
     let dispatcher = MeshDispatcher::load(
-        assets.registry.clone(),
+        OwnedBlockRenderView::new(assets.registry.clone(), assets.version_data),
         assets.uv_map.clone(),
         &assets.jar_assets_dir,
         &assets.asset_index,
