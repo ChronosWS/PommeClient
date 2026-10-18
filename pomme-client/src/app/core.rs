@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Add;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -36,7 +37,7 @@ use crate::ui::menu::{
 };
 use crate::ui::text::InlineObject;
 use crate::user::UserData;
-use crate::world::block::block_registry::BlockRegistry;
+use crate::world::block::block_registry::GlobalBlockDefinitions;
 use crate::world::chunk::ChunkStore;
 
 pub struct PendingPackDownload {
@@ -488,7 +489,7 @@ pub struct AppCore {
     pub data_dirs: DataDirs,
     pub version: String,
     pub resource_packs: ResourcePackManager,
-    pub(crate) block_registry: BlockRegistry,
+    pub(crate) block_definitions: Rc<GlobalBlockDefinitions>,
     pub pending_pack_download: Option<PendingPackDownload>,
     pub asset_index: Option<AssetIndex>,
     pub audio: crate::audio::AudioEngine,
@@ -653,7 +654,7 @@ impl AppCore {
             data_dirs,
             version,
             resource_packs,
-            block_registry: BlockRegistry::new(),
+            block_definitions: Rc::new(GlobalBlockDefinitions::new()),
             pending_pack_download: None,
             asset_index,
             audio,

@@ -1,9 +1,11 @@
-//! App-owned block rules and the session's current protocol bindings.
+//! App-owned block definitions and the session's version-bound registry.
+
+use std::rc::Rc;
 
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 
-use super::{BLOCK_DATA, BLOCK_TABLES, active_table_slot, load_behaviors};
+use super::{BlockData, VersionBlockData, load_behaviors};
 use crate::world::level::LevelContext;
 
 /// Shared, immutable block rules, independent of the compact wire state ID.
@@ -57,11 +59,11 @@ impl BlockBehaviorCatalog {
     }
 }
 
-pub(crate) struct BlockRegistry {
+pub(crate) struct GlobalBlockDefinitions {
     definitions: Vec<(&'static str, Box<dyn Block>)>,
 }
 
-impl BlockRegistry {
+impl GlobalBlockDefinitions {
     pub(crate) fn new() -> Self {
         let catalog = BlockBehaviorCatalog;
         let mut entries: Vec<_> = load_behaviors().iter().collect();
@@ -92,74 +94,107 @@ impl BlockRegistry {
     }
 
     /// Register one shared rule for all property states of a known block.
-    pub(crate) fn register(&mut self, name: &'static str, definition: Box<dyn Block>) {
+    fn register(&mut self, name: &'static str, definition: Box<dyn Block>) {
         self.definitions.push((name, definition));
     }
 }
 
-/// Numeric bindings remain session-owned; rules are borrowed from the app.
-pub(crate) struct BlockBindings {
-    state_definitions: Vec<usize>,
-    table_slot: Option<usize>,
-    definition_count: usize,
+/// Session-owned metadata selection and numeric bindings to shared definitions.
+pub(crate) struct BlockRegistry {
+    definitions: Rc<GlobalBlockDefinitions>,
+    version_data: VersionBlockData,
+    bindings: BlockBindings,
 }
 
-impl BlockBindings {
-    pub(crate) fn new() -> Self {
+impl BlockRegistry {
+    pub(crate) fn new(
+        definitions: Rc<GlobalBlockDefinitions>,
+        version_data: VersionBlockData,
+    ) -> Self {
+        let bindings = BlockBindings::new(&definitions, version_data);
         Self {
-            state_definitions: Vec::new(),
-            table_slot: None,
-            definition_count: 0,
+            definitions,
+            version_data,
+            bindings,
         }
     }
 
-    /// Connections can select their protocol after bootstrap; check each pass.
-    pub(crate) fn refresh_protocol(&mut self, registry: &BlockRegistry) {
-        self.bind_table(registry, active_table_slot());
-    }
-
-    fn bind_table(&mut self, registry: &BlockRegistry, slot: usize) {
-        // Registration only appends, so the count invalidates every session's
-        // mapping without sharing mutable binding state.
-        if self.table_slot == Some(slot) && self.definition_count == registry.definitions.len() {
+    /// The caller supplies the selected metadata; no session globals are read.
+    pub(crate) fn refresh_version_data(&mut self, version_data: VersionBlockData) {
+        if self.version_data.table_slot() == version_data.table_slot() {
             return;
         }
-        let table = BLOCK_TABLES[slot].get_or_init(|| super::build_table(&BLOCK_DATA[slot]));
-        self.state_definitions.clear();
-        for states in table.chunk_by(|a, b| a.id == b.id) {
-            let index = registry
-                .definitions
-                .iter()
-                .position(|(name, _)| *name == states[0].id)
-                .unwrap_or(0);
-            self.state_definitions
-                .extend(std::iter::repeat_n(index, states.len()));
+        self.bindings = BlockBindings::new(&self.definitions, version_data);
+        self.version_data = version_data;
+    }
+
+    pub(crate) fn get(&self, state: BlockState) -> BlockStateView<'_> {
+        BlockStateView {
+            data: self.version_data.block_data(state),
+            definition: self.bindings.get(&self.definitions, state),
         }
-        self.table_slot = Some(slot);
-        self.definition_count = registry.definitions.len();
     }
 
-    /// O(1) wire-state lookup, including an out-of-table fallback.
-    pub(crate) fn get<'a>(&self, registry: &'a BlockRegistry, state: BlockState) -> &'a dyn Block {
-        let index = self
-            .state_definitions
-            .get(u32::from(state) as usize)
-            .copied()
-            .unwrap_or(0);
-        registry.definitions[index].1.as_ref()
-    }
-
-    /// Select and invoke together so callbacks always receive the queried
-    /// state.
+    /// Select and invoke together so callbacks receive the queried state.
     pub(crate) fn animate_tick(
         &self,
-        registry: &BlockRegistry,
         pos: BlockPos,
         level: &mut LevelContext<'_>,
         random: &mut fastrand::Rng,
     ) {
         let state = level.get_block_state(pos);
-        self.get(registry, state)
+        self.get(state)
+            .definition()
             .animate_tick(state, pos, level, random);
+    }
+}
+
+/// Borrows metadata and a shared rule without copying either into the session.
+pub(crate) struct BlockStateView<'a> {
+    data: &'a BlockData,
+    definition: &'a dyn Block,
+}
+
+impl BlockStateView<'_> {
+    /// Includes the state's key/value `PropMap`, not definition properties.
+    #[expect(dead_code, reason = "state metadata consumers migrate in a later step")]
+    pub(crate) fn state_data(&self) -> &BlockData {
+        self.data
+    }
+
+    /// The shared rule exposes immutable `BlockProperties` via `properties()`.
+    pub(crate) fn definition(&self) -> &dyn Block {
+        self.definition
+    }
+}
+
+/// Private O(1) wire-state indices into the immutable global definitions.
+struct BlockBindings {
+    state_definitions: Vec<usize>,
+}
+
+impl BlockBindings {
+    fn new(definitions: &GlobalBlockDefinitions, version_data: VersionBlockData) -> Self {
+        let table = version_data.table();
+        let mut state_definitions = Vec::with_capacity(table.len());
+        for states in table.chunk_by(|a, b| a.id == b.id) {
+            let index = definitions
+                .definitions
+                .iter()
+                .position(|(name, _)| *name == states[0].id)
+                .unwrap_or(0);
+            state_definitions.extend(std::iter::repeat_n(index, states.len()));
+        }
+        Self { state_definitions }
+    }
+
+    /// O(1) wire-state lookup, including an out-of-table fallback.
+    fn get<'a>(&self, definitions: &'a GlobalBlockDefinitions, state: BlockState) -> &'a dyn Block {
+        let index = self
+            .state_definitions
+            .get(u32::from(state) as usize)
+            .copied()
+            .unwrap_or(0);
+        definitions.definitions[index].1.as_ref()
     }
 }

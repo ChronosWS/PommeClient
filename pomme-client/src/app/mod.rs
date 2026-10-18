@@ -6,6 +6,7 @@ pub mod phases;
 pub mod state_slot;
 
 use std::mem::ManuallyDrop;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,7 @@ use crate::net::connection::{ConnectArgs, ConnectionHandle, spawn_connection};
 use crate::renderer::{self, Renderer};
 use crate::singleplayer::World;
 use crate::user::UserData;
+use crate::world::block::VersionBlockData;
 
 #[derive(Error, Debug)]
 pub enum WindowError {
@@ -176,6 +178,10 @@ fn start_connecting(
     } else {
         ConnectionPhase::Connecting
     };
+    // Capture the requested version before the connection task can negotiate
+    // a different session protocol. The registry receives explicit metadata.
+    let version_data = VersionBlockData::for_protocol(crate::version::selected_protocol());
+    let block_definitions = Rc::clone(&core.block_definitions);
     let connection = spawn_connection(&core.tokio_rt, connect_args);
     let game = GameState::new(
         &gfx.renderer,
@@ -183,6 +189,8 @@ fn start_connecting(
         core.menu.render_distance,
         world.is_some(),
         core.menu.chat_options,
+        block_definitions,
+        version_data,
     );
     core.apply_cursor_grab(&gfx.window, None);
     AppPhase::Connecting {

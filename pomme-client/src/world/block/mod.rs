@@ -1,9 +1,10 @@
 //! Block state data and shared runtime rules.
 //!
 //! Implement `Block` and select implementations by name in
-//! `block_registry::BlockBehaviorCatalog`. The app-owned registry
+//! `block_registry::BlockBehaviorCatalog`. App-owned `GlobalBlockDefinitions`
 //! constructs a definition for every block in the shared mining data.
-//! Session-owned `BlockBindings` map property states to shared rules;
+//! The session-owned `BlockRegistry` combines version metadata with private
+//! bindings from property states to shared rules;
 //! unregistered states use the no-op default. Rules receive
 //! current world queries and a per-pass RNG, independent of coordinate
 //! sampling.
@@ -928,7 +929,14 @@ pub(crate) fn replace_block_tags_for_test(entries: &[(&str, &[&str])]) {
 }
 
 fn block_data(state: BlockState) -> &'static BlockData {
-    VersionBlockData::from_initialized_slot(active_table_slot()).block_data(state)
+    active_version_data().block_data(state)
+}
+
+/// Temporary compatibility snapshot until ordered session protocol events
+/// replace the global active table. Read the slot once before constructing
+/// the handle so metadata and bindings always select the same cached table.
+pub(crate) fn active_version_data() -> VersionBlockData {
+    VersionBlockData::from_initialized_slot(active_table_slot())
 }
 
 /// Every valid block state paired with its cached data, in id order.

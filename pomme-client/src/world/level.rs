@@ -5,7 +5,7 @@ use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 use glam::DVec3;
 
-use super::block::block_registry::{BlockBindings, BlockRegistry};
+use super::block::block_registry::BlockRegistry;
 use super::chunk::ChunkStore;
 
 /// World services for a block callback; never retains a chunk snapshot.
@@ -41,13 +41,11 @@ impl LevelRuntime {
     /// Vanilla `ClientLevel.animateTick`, called once per simulation tick.
     pub(crate) fn animate_tick(
         &mut self,
-        bindings: &BlockBindings,
         registry: &BlockRegistry,
         chunks: &ChunkStore,
         player_pos: DVec3,
     ) {
         animate_tick_with_draw(
-            bindings,
             registry,
             player_pos,
             |radius| self.animation_rng.i32(0..radius),
@@ -59,7 +57,6 @@ impl LevelRuntime {
 
 /// Own the effect stream for this pass; all sampled callbacks borrow it.
 fn animate_tick_with_draw(
-    bindings: &BlockBindings,
     registry: &BlockRegistry,
     player_pos: DVec3,
     next: impl FnMut(i32) -> i32,
@@ -67,7 +64,7 @@ fn animate_tick_with_draw(
     mut random: fastrand::Rng,
 ) {
     sample_animation_blocks(player_pos, next, |pos| {
-        bindings.animate_tick(registry, pos, level, &mut random);
+        registry.animate_tick(pos, level, &mut random);
     });
 }
 

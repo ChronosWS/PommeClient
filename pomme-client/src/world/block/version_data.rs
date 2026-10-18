@@ -38,6 +38,11 @@ impl VersionBlockData {
         self.slot
     }
 
+    /// State metadata in wire-id order for binding the selected definitions.
+    pub(super) fn table(self) -> &'static [BlockData] {
+        self.table
+    }
+
     /// Unknown state ids retain the compatibility API's solid, unlit fallback.
     pub(crate) fn block_data(self, state: BlockState) -> &'static BlockData {
         static UNKNOWN: std::sync::LazyLock<BlockData> = std::sync::LazyLock::new(|| BlockData {
