@@ -155,7 +155,11 @@ fn apply_server_block(
     pos: azalea_core::position::BlockPos,
     state: azalea_block::BlockState,
 ) {
-    crate::world::block_entity::sync_block_entity(&mut game.chunk_store.block_entities, pos, state);
+    crate::world::block_entity::sync_block_entity(
+        &mut game.chunk_store.block_entities,
+        pos,
+        game.block_registry.block_data(state),
+    );
     if game.interaction.update_known_server_state(&pos, state) {
         return;
     }
@@ -2332,10 +2336,15 @@ impl AppCore {
                     // broadcast; the local break's effects come from
                     // `predict_destroy`. TODO: the other level events.
                     if event_type == 2001
-                        && let Some(state) = crate::world::block::try_state(data)
+                        && let Some(state) = game.block_registry.block_state_table().try_state(data)
                     {
-                        if !crate::world::block::is_air(state) {
-                            crate::player::interaction::play_break_sound(&self.audio, state, pos);
+                        let block_data = game.block_registry.block_data(state);
+                        if !block_data.is_air() {
+                            crate::player::interaction::play_break_sound_for_id(
+                                &self.audio,
+                                block_data.id(),
+                                pos,
+                            );
                         }
                         game.particle_store.add_destroy_block_effect(
                             pos,
@@ -2893,6 +2902,7 @@ impl AppCore {
         };
         *game.player.velocity += game.entity_store.tick_living(
             &game.chunk_store,
+            game.block_registry.block_state_table(),
             game.player.position,
             push_box,
             pusher_allowed,

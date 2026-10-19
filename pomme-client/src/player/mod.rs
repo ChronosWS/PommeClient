@@ -1080,7 +1080,7 @@ mod tests {
     #[test]
     fn shallow_water_contact_uses_actual_fluid_surface_height() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let shallow = crate::world::block::find_state("water", &[("level", "7")]);
+        let shallow = test_blocks().find_state("water", &[("level", "7")]);
         chunks.set_block_state(8, 64, 8, shallow);
 
         let mut player = LocalPlayer::new();
@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn passenger_state_clears_shared_swimming_flag() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let source = crate::world::block::find_state("water", &[("level", "0")]);
+        let source = test_blocks().find_state("water", &[("level", "0")]);
         for y in 64..=66 {
             chunks.set_block_state(8, y, 8, source);
         }
@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn water_flow_is_zero_across_equal_source_levels() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let source = crate::world::block::find_state("water", &[("level", "0")]);
+        let source = test_blocks().find_state("water", &[("level", "0")]);
         for (x, z) in [(8, 8), (8, 7), (9, 8), (8, 9), (7, 8)] {
             chunks.set_block_state(x, 64, z, source);
         }
@@ -1147,8 +1147,8 @@ mod tests {
     #[test]
     fn water_flow_points_toward_lower_neighbor() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let source = crate::world::block::find_state("water", &[("level", "0")]);
-        let lower = crate::world::block::find_state("water", &[("level", "1")]);
+        let source = test_blocks().find_state("water", &[("level", "0")]);
+        let lower = test_blocks().find_state("water", &[("level", "1")]);
         chunks.set_block_state(8, 64, 8, source);
         chunks.set_block_state(8, 64, 7, source);
         chunks.set_block_state(9, 64, 8, lower);
@@ -1169,8 +1169,8 @@ mod tests {
     #[test]
     fn falling_water_next_to_sturdy_wall_pulls_downward() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let falling = crate::world::block::find_state("water", &[("level", "8")]);
-        let stone = crate::world::block::find_state("stone", &[]);
+        let falling = test_blocks().find_state("water", &[("level", "8")]);
+        let stone = test_blocks().find_state("stone", &[]);
         chunks.set_block_state(8, 64, 8, falling);
         chunks.set_block_state(9, 64, 8, stone);
 

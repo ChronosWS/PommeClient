@@ -1,6 +1,6 @@
 //! Block packets, decoded by pomme for every session: block state ids stay
-//! in the wire version's id space (the active block table reads them), and
-//! only `block_entity_data`'s type needs a registry remap.
+//! in the wire version's id space (the connection's selected table reads them),
+//! and only `block_entity_data`'s type needs a registry remap.
 
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
@@ -13,23 +13,29 @@ use simdnbt::owned::NbtCompound;
 
 use super::NetworkEvent;
 use super::handler::send_ordered;
+use crate::world::block::BlockStateTable;
 
 /// Decodes a block packet; `None` for any other packet.
 pub(super) fn handle_raw_block_packet(
     packet_id: u32,
     payload: &[u8],
+    block_state_table: BlockStateTable,
     event_tx: &Sender<NetworkEvent>,
 ) -> Option<DecodeResult<()>> {
     Some(
         super::read_raw_packet(packet_id, payload, block::read)?
-            .map(|packet| dispatch(packet, event_tx)),
+            .map(|packet| dispatch(packet, block_state_table, event_tx)),
     )
 }
 
-fn dispatch(packet: BlockPacket, event_tx: &Sender<NetworkEvent>) {
+fn dispatch(
+    packet: BlockPacket,
+    block_state_table: BlockStateTable,
+    event_tx: &Sender<NetworkEvent>,
+) {
     match packet {
         BlockPacket::Update { pos, state } => {
-            if let Some(state) = state_of(state) {
+            if let Some(state) = state_of(block_state_table, state) {
                 send_ordered(
                     event_tx,
                     NetworkEvent::BlockUpdate {
@@ -42,7 +48,9 @@ fn dispatch(packet: BlockPacket, event_tx: &Sender<NetworkEvent>) {
         BlockPacket::SectionUpdate { updates } => {
             let updates = updates
                 .into_iter()
-                .filter_map(|(pos, state)| Some((block_pos(pos), state_of(state)?)))
+                .filter_map(|(pos, state)| {
+                    Some((block_pos(pos), state_of(block_state_table, state)?))
+                })
                 .collect();
             send_ordered(event_tx, NetworkEvent::SectionBlocksUpdate { updates });
         }
@@ -88,8 +96,8 @@ fn block_pos((x, y, z): block::BlockPos) -> BlockPos {
     BlockPos { x, y, z }
 }
 
-fn state_of(id: u32) -> Option<BlockState> {
-    let state = crate::world::block::try_state(id);
+fn state_of(block_state_table: BlockStateTable, id: u32) -> Option<BlockState> {
+    let state = block_state_table.try_state(id);
     if state.is_none() {
         tracing::debug!("Skipping unknown block state {id}");
     }

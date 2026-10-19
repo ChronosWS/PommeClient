@@ -20,6 +20,7 @@ use super::conn::{Conn, MemoryEnd, RawWriter};
 use super::handler::{handle_game_packet, handle_raw_game_packet, send_ordered};
 use super::sender::{Outbound, PacketSender};
 use crate::ui::server_dialog::DialogRegistry;
+use crate::world::block::BlockStateTable;
 
 #[derive(Error, Debug)]
 pub enum ConnectionError {
@@ -137,7 +138,7 @@ pub async fn connect_to_server(
         chat_options,
     } = args;
 
-    let mut conn = match transport {
+    let (mut conn, wire) = match transport {
         Transport::Remote { server, protocol } => {
             let server_addr: ServerAddr = server
                 .as_str()
@@ -145,7 +146,10 @@ pub async fn connect_to_server(
                 .map_err(|_| ConnectionError::InvalidAddress(server.clone()))?;
             let wire = negotiate_wire_version(&server_addr, protocol).await?;
             select_block_protocol(&event_tx, wire);
-            super::resolve::connect(&server_addr, ClientIntention::Login).await?
+            (
+                super::resolve::connect(&server_addr, ClientIntention::Login).await?,
+                wire,
+            )
         }
         Transport::Memory { end, protocol } => {
             // The integrated server's protocol is known, so there is nothing
@@ -156,7 +160,7 @@ pub async fn connect_to_server(
             let mut conn = Conn::from_memory(end);
             super::resolve::send_intention(&mut conn, "localhost", 0, ClientIntention::Login)
                 .await?;
-            conn
+            (conn, protocol)
         }
     };
 
@@ -221,6 +225,7 @@ pub async fn connect_to_server(
         conn,
         &event_tx,
         GameLoopArgs {
+            block_state_table: BlockStateTable::for_protocol(wire),
             outbound_tx: game_packet_tx,
             outbound_rx: game_packet_rx,
             joined,
@@ -854,6 +859,7 @@ fn nbt_string_from_compound(compound: &simdnbt::owned::NbtCompound, key: &str) -
 }
 
 struct GameLoopArgs {
+    block_state_table: BlockStateTable,
     outbound_tx: mpsc::UnboundedSender<Outbound>,
     outbound_rx: mpsc::UnboundedReceiver<Outbound>,
     joined: Joined,
@@ -869,6 +875,7 @@ async fn game_loop(
     args: GameLoopArgs,
 ) -> Result<(), ConnectionError> {
     let GameLoopArgs {
+        block_state_table,
         outbound_tx,
         mut outbound_rx,
         joined,
@@ -982,6 +989,7 @@ async fn game_loop(
         if super::dialog::handle_raw_dialog_packet(Phase::Game, &raw, event_tx)
             || handle_raw_game_packet(
                 &raw,
+                block_state_table,
                 &configured.registries,
                 &sender,
                 &mut batch_size_calculator,

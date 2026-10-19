@@ -43,9 +43,9 @@ use crate::ui::chat::{ChatState, ChatUiAction};
 use crate::ui::death::{self, DeathAction};
 use crate::ui::pause::{self, PauseAction, PauseScreen};
 use crate::ui::{common, hud};
+use crate::world::block::BedDirection;
 use crate::world::block::block_registry::{BlockRegistry, GlobalBlockDefinitions};
 use crate::world::block::model::CardinalLightType;
-use crate::world::block::{BedDirection, bed_direction};
 use crate::world::block_entity_anim::BlockEntityAnimStore;
 use crate::world::chunk::ChunkStore;
 
@@ -867,12 +867,14 @@ impl GameState {
                         t.block_pos.y,
                         t.block_pos.z,
                     );
-                    let props = crate::world::block::block_properties(state)
+                    let block_data = self.block_registry.block_data(state);
+                    let props = block_data
+                        .properties()
                         .entries()
                         .map(|(k, v)| format!("{k}={v}"))
                         .collect::<Vec<_>>()
                         .join(",");
-                    let block = crate::world::block::block_id(state);
+                    let block = block_data.id();
                     let desc = if props.is_empty() {
                         block.to_string()
                     } else {
@@ -2126,11 +2128,13 @@ fn detached_distance(own: f32, mount: Option<f32>) -> f32 {
 
 /// Vanilla `LivingEntity.getBedOrientation` for a sleeper's bed.
 fn bed_orientation(
-    chunks: &ChunkStore,
+    game: &GameState,
     sleeping_pos: Option<azalea_core::position::BlockPos>,
 ) -> Option<BedDirection> {
     let pos = sleeping_pos?;
-    bed_direction(chunks.get_block_state(pos.x, pos.y, pos.z))
+    game.block_registry
+        .block_data(game.chunk_store.get_block_state(pos.x, pos.y, pos.z))
+        .bed_direction()
 }
 
 /// Vanilla `LivingEntityRenderer`: hurt or dying entities take the red overlay.
@@ -2480,7 +2484,7 @@ pub fn update_game(
     let mut pause_action = PauseAction::None;
     let mut death_action = DeathAction::None;
 
-    let sleeping_direction = bed_orientation(&game.chunk_store, game.player.sleeping_pos);
+    let sleeping_direction = bed_orientation(game, game.player.sleeping_pos);
     let is_sleeping = game.player.is_sleeping();
     // `Camera.alignWithEntity`, then the first-person sleeping `move(0, 0.15, 0)`.
     let first_person_lift = if is_sleeping && gfx.renderer.is_first_person() {
@@ -2561,16 +2565,13 @@ pub fn update_game(
                 let state =
                     game.chunk_store
                         .get_block_state(t.block_pos.x, t.block_pos.y, t.block_pos.z);
-                let props = crate::world::block::block_properties(state)
+                let block_data = game.block_registry.block_data(state);
+                let props = block_data
+                    .properties()
                     .entries()
                     .map(|(k, v)| format!("{k}: {v}"))
                     .collect();
-                Some((
-                    t.block_pos,
-                    t.face,
-                    crate::world::block::block_id(state).to_string(),
-                    props,
-                ))
+                Some((t.block_pos, t.face, block_data.id().to_string(), props))
             }),
             chunk_count: gfx.renderer.loaded_chunk_count(),
             sections_drawn: gfx.renderer.sections_drawn(),
@@ -3816,7 +3817,7 @@ pub fn update_game(
                         partial_tick,
                     ),
                     is_sleeping,
-                    sleeping_direction: bed_orientation(&game.chunk_store, e.sleeping_pos),
+                    sleeping_direction: bed_orientation(game, e.sleeping_pos),
                     sleeping_eye_height: standing_eye_height(e.entity_type, e.is_baby),
                     is_baby: e.is_baby,
                     is_crouching: e.is_crouching,
@@ -3950,13 +3951,14 @@ pub fn update_game(
             .iter()
             .filter_map(|(pos, be)| {
                 let state = game.chunk_store.get_block_state(pos.x, pos.y, pos.z);
-                let id = crate::world::block::block_id(state);
+                let block_data = game.block_registry.block_data(state);
+                let id = block_data.id();
                 // A predicted break leaves a stale entry until the server
                 // confirms; don't render entries whose block is gone.
                 if !crate::world::block_entity::is_block_entity_block(id) {
                     return None;
                 }
-                let props = crate::world::block::block_properties(state);
+                let props = block_data.properties();
                 let variant = block_entity::variant_for_block(be.kind, id, props);
                 let yaw = block_entity::yaw_for_block(be.kind, props);
                 let openness_at = |p: &BlockPos| {

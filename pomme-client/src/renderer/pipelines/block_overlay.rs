@@ -13,7 +13,7 @@ use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::renderer::camera::CameraUniform;
 use crate::renderer::chunk::mesher::{CUBE_FACE_DIRS, cube_face_geometry};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, shader, util};
-use crate::world::block::block_position_offset;
+use crate::world::block::BlockData;
 use crate::world::block::model::{BakedQuad, Direction, direction_from_positions};
 use crate::world::block::render_registry::BlockRenderView;
 
@@ -329,8 +329,8 @@ impl BlockOverlayPipeline {
 /// Anchor-relative (see Camera::anchor) model origin, including the block's
 /// position offset like `LevelRenderer`'s breaking pass. Crack UVs project from
 /// block-local coordinates, so neither shift touches the texture.
-fn overlay_origin(state: BlockState, pos: &BlockPos, anchor: glam::DVec3) -> [f32; 3] {
-    let model_offset = block_position_offset(state, pos.x, pos.z);
+fn overlay_origin(block_data: &BlockData, pos: &BlockPos, anchor: glam::DVec3) -> [f32; 3] {
+    let model_offset = block_data.block_position_offset(pos.x, pos.z);
     (glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64) + model_offset - anchor)
         .as_vec3()
         .to_array()
@@ -346,7 +346,7 @@ fn build_overlay_vertices(
     pos: &BlockPos,
     anchor: glam::DVec3,
 ) -> Vec<OverlayVertex> {
-    let origin = overlay_origin(state, pos, anchor);
+    let origin = overlay_origin(registry.block_state_table().block_data(state), pos, anchor);
     let mut verts = Vec::new();
 
     if let Some(model) = registry.get_baked_model(state) {
@@ -640,11 +640,16 @@ mod tests {
 
     #[test]
     fn randomized_model_offset_moves_destroy_overlay_with_bamboo() {
-        crate::world::block::init("26.2");
-        let bamboo = crate::world::block::find_state("bamboo", &[]);
+        let block_state_table = crate::world::block::BlockStateTable::for_protocol(
+            pomme_protocol::ProtocolVersion::from_name("26.2")
+                .unwrap()
+                .protocol,
+        );
+        let bamboo = block_state_table.find_state("bamboo", &[]);
+        let block_data = block_state_table.block_data(bamboo);
         let pos = BlockPos::new(5, 64, -7);
-        let origin = overlay_origin(bamboo, &pos, glam::DVec3::ZERO);
-        let offset = block_position_offset(bamboo, pos.x, pos.z);
+        let origin = overlay_origin(block_data, &pos, glam::DVec3::ZERO);
+        let offset = block_data.block_position_offset(pos.x, pos.z);
 
         assert_ne!(offset, glam::DVec3::ZERO);
         let block = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64);

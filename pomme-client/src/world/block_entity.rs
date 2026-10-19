@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
-use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 use azalea_registry::builtin::BlockEntityKind;
 use simdnbt::owned::NbtCompound;
+
+use crate::world::block::BlockData;
 
 #[derive(Clone)]
 pub struct StoredBlockEntity {
@@ -50,9 +51,9 @@ fn is_rendered(kind: BlockEntityKind) -> bool {
 pub fn sync_block_entity(
     map: &mut HashMap<BlockPos, StoredBlockEntity>,
     pos: BlockPos,
-    state: BlockState,
+    block_data: &BlockData,
 ) {
-    let id = crate::world::block::block_id(state);
+    let id = block_data.id();
     if let Some(kind) = rendered_kind(id) {
         if map.get(&pos).is_none_or(|e| e.kind != kind) {
             map.insert(

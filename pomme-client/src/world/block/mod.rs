@@ -128,17 +128,9 @@ impl BedDirection {
 
 /// Vanilla `BedBlock.getBedOrientation`: only actual bed states provide a
 /// facing. The `_bed` id suffix stands in for `instanceof BedBlock`.
+#[cfg(test)]
 pub fn bed_direction(state: BlockState) -> Option<BedDirection> {
-    if !block_id(state).ends_with("_bed") {
-        return None;
-    }
-    match block_properties(state).get("facing")? {
-        "north" => Some(BedDirection::North),
-        "south" => Some(BedDirection::South),
-        "west" => Some(BedDirection::West),
-        "east" => Some(BedDirection::East),
-        _ => None,
-    }
+    block_data(state).bed_direction()
 }
 
 /// Vanilla `LivingEntity.setPosToBed`.
@@ -227,6 +219,20 @@ pub(crate) struct BlockData {
 }
 
 impl BlockData {
+    /// Vanilla `BedBlock.getBedOrientation`; only bed states provide a facing.
+    pub(crate) fn bed_direction(&self) -> Option<BedDirection> {
+        if !self.id().ends_with("_bed") {
+            return None;
+        }
+        match self.properties().get("facing")? {
+            "north" => Some(BedDirection::North),
+            "south" => Some(BedDirection::South),
+            "west" => Some(BedDirection::West),
+            "east" => Some(BedDirection::East),
+            _ => None,
+        }
+    }
+
     pub(crate) fn id(&self) -> &'static str {
         self.id
     }
@@ -968,11 +974,12 @@ fn block_registry_names() -> Vec<&'static str> {
 
 /// Resolves a built-in block registry id in any supported protocol without
 /// switching the active table.
+#[expect(
+    dead_code,
+    reason = "compatibility wrapper retained until step 9 global API removal"
+)]
 pub(crate) fn block_registry_name(protocol: i32, registry_id: u32) -> Option<&'static str> {
-    let table = BLOCK_TABLES[prewarm_protocol(protocol)]
-        .get()
-        .expect("prewarm_protocol initializes block table");
-    registry_names(table).nth(registry_id as usize)
+    BlockStateTable::for_protocol(protocol).registry_name(registry_id)
 }
 
 fn resolve_block_tags(
@@ -1014,6 +1021,10 @@ pub(crate) fn mirror_block_tags(tags: &BlockTags) {
 }
 
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "compatibility reader retained until step 9 global API removal"
+)]
 pub fn block_tags() -> RwLockReadGuard<'static, BlockTags> {
     BLOCK_TAGS.read().expect("block tag lock poisoned")
 }
@@ -1031,8 +1042,11 @@ fn block_registry_id(names: &[&str], block: &str) -> i32 {
 }
 
 #[cfg(test)]
-pub(crate) fn block_tags_for_test(entries: &[(&str, &[&str])]) -> BlockTags {
-    let names = block_registry_names();
+pub(crate) fn block_tags_for_test(
+    block_state_table: BlockStateTable,
+    entries: &[(&str, &[&str])],
+) -> BlockTags {
+    let names: Vec<_> = registry_names(block_state_table.table()).collect();
     let raw_tags = entries
         .iter()
         .map(|(tag, blocks)| {
@@ -1044,8 +1058,15 @@ pub(crate) fn block_tags_for_test(entries: &[(&str, &[&str])]) -> BlockTags {
 }
 
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "compatibility fixture retained until step 9 global API removal"
+)]
 pub(crate) fn replace_block_tags_for_test(entries: &[(&str, &[&str])]) {
-    *BLOCK_TAGS.write().expect("block tag lock poisoned") = block_tags_for_test(entries);
+    *BLOCK_TAGS.write().expect("block tag lock poisoned") = block_tags_for_test(
+        BlockStateTable::from_initialized_slot(active_table_slot()),
+        entries,
+    );
 }
 
 fn block_data(state: BlockState) -> &'static BlockData {
@@ -1107,18 +1128,17 @@ pub(crate) fn first_state_of(name: &str) -> Option<BlockState> {
 }
 
 /// Converts a wire-side numeric state id, validated against the loaded table.
+#[cfg(test)]
 pub fn try_state(id: u32) -> Option<BlockState> {
-    if (id as usize) < table().len() {
-        BlockState::try_from(id).ok()
-    } else {
-        None
-    }
+    BlockStateTable::from_initialized_slot(active_table_slot()).try_state(id)
 }
 
+#[cfg(test)]
 pub fn block_id(state: BlockState) -> &'static str {
     block_data(state).id()
 }
 
+#[cfg(test)]
 pub fn block_properties(state: BlockState) -> &'static PropMap {
     block_data(state).properties()
 }
@@ -1143,16 +1163,25 @@ pub fn movement_jump_factor(state: BlockState) -> f32 {
 
 /// Vanilla `RedStoneWireBlock.getColorForPower`: dust tint for the state's
 /// `power` value.
+#[cfg(test)]
 pub fn redstone_wire_rgb(state: BlockState) -> [f32; 3] {
     block_data(state).redstone_wire_rgb()
 }
 
 /// Vanilla `StemBlock` tint: `ARGB.color(age * 32, 255 - age * 8, age * 4)`.
+#[expect(
+    dead_code,
+    reason = "compatibility wrapper retained until step 9 global API removal"
+)]
 pub fn stem_rgb(state: BlockState) -> [f32; 3] {
     block_data(state).stem_rgb()
 }
 
 /// Vanilla `isAir`: includes cave and void air.
+#[expect(
+    dead_code,
+    reason = "compatibility wrapper retained until step 9 global API removal"
+)]
 pub fn is_air(state: BlockState) -> bool {
     block_data(state).is_air()
 }
@@ -1231,6 +1260,7 @@ pub(crate) fn has_large_collision_shape(state: BlockState) -> bool {
     block_data(state).has_large_collision_shape()
 }
 
+#[cfg(test)]
 pub fn fluid(state: BlockState) -> Fluid {
     block_data(state).fluid()
 }
@@ -1296,7 +1326,7 @@ fn vanilla_position_seed(x: i32, z: i32) -> i64 {
 }
 
 /// Vanilla `BlockState.getOffset(pos)`; zero for tables without offsets.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn block_position_offset(state: BlockState, x: i32, z: i32) -> DVec3 {
     block_data(state).block_position_offset(x, z)
 }
@@ -1329,6 +1359,7 @@ pub(crate) fn collision_shape_position(state: BlockState, x: i32, y: i32, z: i32
     block_data(state).collision_shape_position(x, y, z)
 }
 
+#[cfg(test)]
 pub(crate) fn outline_shape_position(state: BlockState, x: i32, y: i32, z: i32) -> DVec3 {
     block_data(state).outline_shape_position(x, y, z)
 }
@@ -1336,6 +1367,7 @@ pub(crate) fn outline_shape_position(state: BlockState, x: i32, y: i32, z: i32) 
 /// Outline shape for interaction raycasts (vanilla `getShape`), falling back to
 /// the collision shape where the two agree. `None` is a full cube; an empty
 /// slice is a block the pick ray passes through.
+#[cfg(test)]
 pub(crate) fn block_outline(state: BlockState) -> Option<&'static [LocalBox]> {
     block_data(state).outline_boxes()
 }

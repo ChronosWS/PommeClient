@@ -8,8 +8,6 @@
 //! `LightBlock` on top. TODO: `LiquidBlock.getCollisionShape`'s
 //! `canStandOnFluid` branch.
 
-use azalea_block::BlockState;
-
 use crate::world::block::{BlockData, PropMap, SpecialCollision};
 
 /// A block-local axis-aligned box: `[min_x, min_y, min_z, max_x, max_y,
@@ -127,8 +125,8 @@ pub fn collision_shape(
 /// Boxes the interaction raycast clips against (vanilla `getShape`). Unlike
 /// `partial_shape` the full-cube case is already resolved, so an empty slice
 /// means "not targetable" rather than "no collision".
-pub fn outline_shape(state: BlockState) -> &'static [LocalBox] {
-    crate::world::block::block_outline(state).unwrap_or(FULL_CUBE_SHAPE)
+pub fn outline_shape(block_data: &BlockData) -> &'static [LocalBox] {
+    block_data.outline_boxes().unwrap_or(FULL_CUBE_SHAPE)
 }
 
 /// [`outline_shape`] under a player's context: `LightBlock` and
@@ -284,11 +282,9 @@ fn ccw(facing: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::block::find_state;
 
     #[test]
     fn held_item_fills_light_and_scaffolding_outlines() {
-        crate::world::block::init("26.2");
         let block_state_table = crate::world::block::BlockStateTable::for_protocol(
             pomme_protocol::ProtocolVersion::from_name("26.2")
                 .unwrap()
@@ -297,12 +293,12 @@ mod tests {
         let outline_shape_holding = |state, held_item| {
             outline_shape_holding_data(block_state_table.block_data(state), held_item)
         };
-        let light = find_state("light", &[]);
+        let light = block_state_table.find_state("light", &[]);
         assert!(outline_shape_holding(light, None).is_empty());
         assert!(outline_shape_holding(light, Some("scaffolding")).is_empty());
         assert_eq!(outline_shape_holding(light, Some("light")), FULL_CUBE_SHAPE);
 
-        let scaffolding = find_state("scaffolding", &[]);
+        let scaffolding = block_state_table.find_state("scaffolding", &[]);
         assert_ne!(outline_shape_holding(scaffolding, None), FULL_CUBE_SHAPE);
         assert_eq!(
             outline_shape_holding(scaffolding, Some("scaffolding")),

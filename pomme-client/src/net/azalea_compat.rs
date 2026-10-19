@@ -2952,7 +2952,14 @@ fn translate_set_player_team_764() {
         .translate_game_frame(old.into_boxed_slice())
         .unwrap();
     let (tx, rx) = crossbeam_channel::bounded(1);
-    assert!(crate::net::handler::handle_raw_for_test(&translated, &tx).0);
+    assert!(
+        crate::net::handler::handle_raw_for_test(
+            &translated,
+            crate::world::block::BlockStateTable::for_protocol(764),
+            &tx
+        )
+        .0
+    );
     match rx.recv().unwrap() {
         crate::net::NetworkEvent::ScoreboardTeam {
             display_name,

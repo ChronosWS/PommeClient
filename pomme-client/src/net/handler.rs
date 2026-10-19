@@ -15,6 +15,7 @@ use crate::renderer::pipelines::entity_renderer::{
 };
 use crate::ui::server_dialog::DialogReference;
 use crate::ui::text::format_text_spans;
+use crate::world::block::BlockStateTable;
 
 fn dialog_holder_reference(
     holder: &azalea_registry::Holder<azalea_registry::data::Dialog, simdnbt::owned::Nbt>,
@@ -241,6 +242,7 @@ pub(super) fn variant_index(
 /// before the typed decode runs. Returns whether the packet was consumed.
 pub fn handle_raw_game_packet(
     raw: &[u8],
+    block_state_table: BlockStateTable,
     registry_holder: &RegistryHolder,
     sender: &PacketSender,
     batch_size_calculator: &mut ChunkBatchSizeCalculator,
@@ -297,7 +299,7 @@ pub fn handle_raw_game_packet(
         super::player_wire::handle_raw_player_packet(packet_id, payload, event_tx),
         "player",
     ) || took(
-        super::block_wire::handle_raw_block_packet(packet_id, payload, event_tx),
+        super::block_wire::handle_raw_block_packet(packet_id, payload, block_state_table, event_tx),
         "block",
     ) || took(
         super::chunk_wire::handle_raw_chunk_packet(
@@ -345,6 +347,7 @@ fn took<E: std::fmt::Display>(result: Option<Result<(), E>>, packet: &str) -> bo
 #[cfg(test)]
 pub(crate) fn handle_raw_for_test(
     raw: &[u8],
+    block_state_table: BlockStateTable,
     event_tx: &Sender<NetworkEvent>,
 ) -> (
     bool,
@@ -353,6 +356,7 @@ pub(crate) fn handle_raw_for_test(
     let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
     let took = handle_raw_game_packet(
         raw,
+        block_state_table,
         &RegistryHolder::default(),
         &PacketSender::new(out_tx),
         &mut ChunkBatchSizeCalculator::default(),
@@ -469,7 +473,12 @@ mod tests {
     use super::*;
 
     fn handle_raw(raw: &[u8], event_tx: &Sender<NetworkEvent>) -> bool {
-        handle_raw_for_test(raw, event_tx).0
+        handle_raw_for_test(
+            raw,
+            BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol),
+            event_tx,
+        )
+        .0
     }
 
     /// A frame holding just the native id of clientbound packet `name`.
@@ -636,7 +645,11 @@ mod tests {
         let (event_tx, _event_rx) = crossbeam_channel::bounded(1);
         let mut raw = native_frame("chunk_batch_finished");
         wire::write_varint(&mut raw, 16);
-        let (took, mut out_rx) = handle_raw_for_test(&raw, &event_tx);
+        let (took, mut out_rx) = handle_raw_for_test(
+            &raw,
+            BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol),
+            &event_tx,
+        );
         assert!(took);
         assert!(matches!(
             out_rx.try_recv(),

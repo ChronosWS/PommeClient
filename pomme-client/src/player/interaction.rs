@@ -1573,11 +1573,7 @@ fn play_hit_sound(audio: &AudioEngine, id: &str, pos: BlockPos) {
 
 /// Plays a block's break sound, matching vanilla `LevelEventHandler` event
 /// 2001: volume `(volume + 1) / 2`, pitch `pitch * 0.8`.
-pub fn play_break_sound(audio: &AudioEngine, state: BlockState, pos: BlockPos) {
-    play_break_sound_for_id(audio, crate::world::block::block_id(state), pos);
-}
-
-fn play_break_sound_for_id(audio: &AudioEngine, id: &str, pos: BlockPos) {
+pub(crate) fn play_break_sound_for_id(audio: &AudioEngine, id: &str, pos: BlockPos) {
     let s = block_sounds_for_id(id);
     play_block_sound(
         audio,
@@ -1899,8 +1895,8 @@ mod tests {
     use crate::attribute::AttributeSnapshot;
     use crate::mob_effect::{CONDUIT_POWER, HASTE, MobEffectInstance};
     use crate::world::block::block_registry::GlobalBlockDefinitions;
-    use crate::world::block::block_tags;
     use crate::world::block::render_registry::BlockRenderRegistry;
+    use crate::world::block::{BlockTags, block_tags_for_test};
 
     #[test]
     fn carried_slot_starts_at_vanilla_zero_and_only_sends_on_change() {
@@ -2226,8 +2222,9 @@ mod tests {
         );
     }
 
-    fn seed_standard_tool_tags() -> Vec<(String, Vec<i32>)> {
-        crate::world::block::init("26.2");
+    fn seed_standard_tool_tags(
+        block_state_table: BlockStateTable,
+    ) -> (BlockTags, Vec<(String, Vec<i32>)>) {
         let entries: &[(&str, &[&str])] = &[
             ("mineable/pickaxe", &["stone"]),
             ("mineable/shovel", &["dirt"]),
@@ -2243,11 +2240,11 @@ mod tests {
             ("sword_instantly_mines", &[]),
             ("sword_efficient", &[]),
         ];
-        crate::world::block::replace_block_tags_for_test(entries);
+        let tags = block_tags_for_test(block_state_table, entries);
         let names: Vec<_> = (0..)
-            .map_while(|id| crate::world::block::block_registry_name(NATIVE.protocol, id))
+            .map_while(|id| block_state_table.registry_name(id))
             .collect();
-        entries
+        let raw_tags = entries
             .iter()
             .map(|(tag, blocks)| {
                 let ids = blocks
@@ -2256,16 +2253,20 @@ mod tests {
                     .collect();
                 (format!("minecraft:{tag}"), ids)
             })
-            .collect()
+            .collect();
+        (tags, raw_tags)
     }
 
     #[test]
     fn runtime_destroy_progress_differs_by_tool() {
-        let tags = seed_standard_tool_tags();
-        let stone = crate::world::block::first_state_of("stone").expect("stone state");
         let protocol = pomme_protocol::ProtocolVersion::from_name("26.2")
             .unwrap()
             .protocol;
+        let block_state_table = BlockStateTable::for_protocol(protocol);
+        let (_, tags) = seed_standard_tool_tags(block_state_table);
+        let stone = block_state_table
+            .first_state_of("stone")
+            .expect("stone state");
         let mut block_registry = BlockRegistry::new(
             std::rc::Rc::new(GlobalBlockDefinitions::new()),
             std::sync::Arc::new(BlockRenderRegistry::default()),
@@ -2298,8 +2299,7 @@ mod tests {
 
     #[test]
     fn standard_pickaxe_tiers_match_vanilla_26_2_speeds() {
-        seed_standard_tool_tags();
-        let tags = block_tags();
+        let (tags, _) = seed_standard_tool_tags(BlockStateTable::for_protocol(NATIVE.protocol));
         for (kind, expected) in [
             (ItemKind::WoodenPickaxe, 2.0),
             (ItemKind::StonePickaxe, 4.0),
@@ -2318,8 +2318,7 @@ mod tests {
 
     #[test]
     fn standard_tool_families_use_native_block_tags() {
-        seed_standard_tool_tags();
-        let tags = block_tags();
+        let (tags, _) = seed_standard_tool_tags(BlockStateTable::for_protocol(NATIVE.protocol));
         for (item, block_name, expected) in [
             (ItemKind::IronPickaxe, "stone", 6.0),
             (ItemKind::IronShovel, "dirt", 6.0),
@@ -2336,8 +2335,7 @@ mod tests {
 
     #[test]
     fn iron_pickaxe_default_tool_uses_native_tags() {
-        seed_standard_tool_tags();
-        let tags = block_tags();
+        let (tags, _) = seed_standard_tool_tags(BlockStateTable::for_protocol(NATIVE.protocol));
         let pickaxe = ItemStackData::new(ItemKind::IronPickaxe, 1);
         let tool = stack_tool(&pickaxe, NATIVE.protocol)
             .expect("iron pickaxe has a native tool component");

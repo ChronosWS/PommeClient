@@ -19,8 +19,8 @@ use crate::renderer::chunk::mesher::{
     tint_sample_y, world_brightness,
 };
 use crate::renderer::pipelines::particle::MAX_PARTICLE_QUADS as MAX_PARTICLES;
+use crate::world::block::BlockStateTable;
 use crate::world::block::render_registry::{BlockRenderView, Tint};
-use crate::world::block::{BlockStateTable, block_id, is_air, outline_shape_position};
 use crate::world::chunk::ChunkStore;
 
 /// Vanilla `ParticleGroup.RESERVOIR_START` — above this, new particles are
@@ -334,10 +334,11 @@ impl ParticleStore {
         chunks: &ChunkStore,
         biome_climate: &HashMap<u32, BiomeClimate>,
     ) {
-        if is_air(state) {
+        let block_data = registry.block_state_table().block_data(state);
+        if block_data.is_air() {
             return;
         }
-        let block_id = block_id(state);
+        let block_id = block_data.id();
         // The only vanilla `noTerrainParticles` blocks.
         if matches!(block_id, "barrier" | "structure_void") {
             return;
@@ -353,8 +354,8 @@ impl ParticleStore {
             && block_id != "grass_block"
         {
             let tint = match faces.tint {
-                Tint::Redstone => crate::world::block::redstone_wire_rgb(state),
-                Tint::Stem => crate::world::block::stem_rgb(state),
+                Tint::Redstone => block_data.redstone_wire_rgb(),
+                Tint::Stem => block_data.stem_rgb(),
                 Tint::Constant(color) => crate::renderer::chunk::mesher::int_to_rgb(color as i32),
                 _ => self.blend_tint(
                     faces.tint,
@@ -381,8 +382,8 @@ impl ParticleStore {
 
         // Vanilla `ParticleEngine.destroy` scatters over the outline shape's
         // boxes, so a block with an empty outline emits nothing.
-        let boxes: &[LocalBox] = block_shape::outline_shape(state);
-        let shape_origin = outline_shape_position(state, pos.x, pos.y, pos.z);
+        let boxes: &[LocalBox] = block_shape::outline_shape(block_data);
+        let shape_origin = block_data.outline_shape_position(pos.x, pos.y, pos.z);
 
         for b in boxes {
             let width_x = (b[3] - b[0]).min(1.0);

@@ -423,9 +423,11 @@ pub fn hud(game: &GameState) -> HudInfo {
 /// The block state name at `at`, e.g. `stone`; air when its chunk isn't
 /// loaded.
 pub fn block(game: &GameState, [x, y, z]: [i32; 3]) -> String {
-    bare(crate::world::block::block_id(
-        game.chunk_store.get_block_state(x, y, z),
-    ))
+    bare(
+        game.block_registry
+            .block_data(game.chunk_store.get_block_state(x, y, z))
+            .id(),
+    )
 }
 
 /// The type of the block entity the client stores at `at`, e.g. `sign`.

@@ -41,6 +41,19 @@ impl BlockStateTable {
         self.slot
     }
 
+    /// Validates a wire-side state id in this selected table.
+    pub(crate) fn try_state(self, id: u32) -> Option<BlockState> {
+        if (id as usize) < self.table.len() {
+            BlockState::try_from(id).ok()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn registry_name(self, registry_id: u32) -> Option<&'static str> {
+        super::registry_names(self.table).nth(registry_id as usize)
+    }
+
     pub(crate) fn first_state_of(self, name: &str) -> Option<BlockState> {
         self.table
             .iter()
