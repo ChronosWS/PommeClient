@@ -857,7 +857,7 @@ pub fn active() -> Option<&'static Translation> {
 /// after a server-list ping finds them warm. No-op when already built.
 pub fn prewarm(protocol: i32) {
     let _ = Translation::for_protocol(protocol);
-    crate::world::block::prewarm_protocol(protocol);
+    let _ = crate::world::block::BlockStateTable::for_protocol(protocol);
 }
 
 impl Translation {

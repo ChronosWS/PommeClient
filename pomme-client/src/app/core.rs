@@ -1317,7 +1317,6 @@ impl AppCore {
                 NetworkEvent::ProtocolSelected { protocol } => {
                     let previous_slot = game.block_registry.block_state_table().table_slot();
                     game.block_registry.select_protocol(protocol);
-                    crate::world::block::mirror_block_tags(game.block_registry.tags());
                     let block_state_table = game.block_registry.block_state_table();
                     if previous_slot != block_state_table.table_slot() {
                         game.mesh_dispatcher = game
@@ -1678,7 +1677,6 @@ impl AppCore {
                 }
                 NetworkEvent::BlockTags { tags } => {
                     game.block_registry.replace_tags(tags);
-                    crate::world::block::mirror_block_tags(game.block_registry.tags());
                 }
                 NetworkEvent::ContainerSlot {
                     container_id,
@@ -2669,7 +2667,6 @@ impl AppCore {
                 NetworkEvent::Reconfiguring => {
                     tracing::info!("Server re-entered configuration");
                     game.block_registry.clear_tags();
-                    crate::world::block::mirror_block_tags(game.block_registry.tags());
                     self.audio.stop_all_sounds();
                     game.entity_store = crate::entity::EntityStore::new();
                     game.item_entity_store = crate::entity::ItemEntityStore::new();

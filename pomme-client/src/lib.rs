@@ -112,7 +112,8 @@ pub fn run(args: LaunchArgs, platform: Platform) {
         .unwrap_or(&NATIVE);
     let version = args.version.as_deref().unwrap_or(default_version.name);
 
-    match ProtocolVersion::from_name(version) {
+    let resolved_version = ProtocolVersion::from_name(version);
+    match resolved_version {
         Some(v) => version::set_selected_protocol(v.protocol),
         None => {
             eprintln!(
@@ -142,8 +143,15 @@ pub fn run(args: LaunchArgs, platform: Platform) {
         util::exclude_from_backup(dir);
     }
 
-    // Block-state tables must be loaded before any world/render code runs.
-    world::block::init(version);
+    // Warm the selected immutable block-state table before app startup.
+    let protocol = resolved_version.map(|v| v.protocol).unwrap_or_else(|| {
+        tracing::warn!(
+            "no block-state data for version {version}, using {} — expect state drift",
+            NATIVE.name
+        );
+        NATIVE.protocol
+    });
+    let _ = world::block::BlockStateTable::for_protocol(protocol);
 
     data_dirs.ensure_game_dir().ok();
     tracing::info!("Installation directory: {}", data_dirs.game_dir.display());

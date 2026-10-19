@@ -2,16 +2,17 @@
 //! session. Each entry is one state's `BlockData`; this handle selects the
 //! whole table.
 
+use std::collections::HashMap;
+
 use azalea_block::BlockState;
 
 use super::{
-    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockData, NATIVE_SLOT, NO_FLUID, PropMap,
+    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockData, NATIVE_SLOT, NO_FLUID, PLACEABLE_BLOCKS, PropMap,
     SpecialCollision, block_data_slot, build_table,
 };
 
 /// A cheap, immutable handle to one cached version-selected state-ID table.
-/// Aliases share data; unsupported protocols use the native table, as the
-/// compatibility API does.
+/// Aliases share data; unsupported protocols use the native table.
 #[derive(Clone, Copy)]
 pub(crate) struct BlockStateTable {
     slot: usize,
@@ -25,16 +26,6 @@ impl BlockStateTable {
         let slot = block_data_slot(protocol).unwrap_or(NATIVE_SLOT);
         let table = BLOCK_TABLES[slot].get_or_init(|| build_table(&BLOCK_DATA[slot]));
         Self { slot, table }
-    }
-
-    /// Compatibility bridge; the caller supplies an already initialized slot.
-    pub(super) fn from_initialized_slot(slot: usize) -> Self {
-        Self {
-            slot,
-            table: BLOCK_TABLES[slot]
-                .get()
-                .expect("world::block::init must be called before use"),
-        }
     }
 
     pub(crate) fn table_slot(self) -> usize {
@@ -84,19 +75,22 @@ impl BlockStateTable {
     /// Only single-state blocks support placement prediction by item name.
     /// Names are unprefixed, matching the item registry.
     pub(crate) fn placeable_block_for_item(self, item_name: &str) -> Option<BlockState> {
-        let mut matches = self
-            .table
-            .iter()
-            .enumerate()
-            .filter(|(_, block_data)| block_data.id == item_name);
-        let (id, _) = matches.next()?;
-        if matches.next().is_some() {
-            return None;
-        }
-        Some(BlockState::try_from(id as u32).expect("table indices fit the id repr"))
+        let map = PLACEABLE_BLOCKS[self.slot].get_or_init(|| {
+            let mut seen: HashMap<&'static str, Option<BlockState>> = HashMap::new();
+            for (id, data) in self.table.iter().enumerate() {
+                let state = BlockState::try_from(id as u32).expect("table indices fit the id repr");
+                seen.entry(data.id)
+                    .and_modify(|v| *v = None)
+                    .or_insert(Some(state));
+            }
+            seen.into_iter()
+                .filter_map(|(name, state)| state.map(|s| (name, s)))
+                .collect()
+        });
+        map.get(item_name).copied()
     }
 
-    /// Unknown state ids retain the compatibility API's solid, unlit fallback.
+    /// Unknown state ids use a solid, unlit fallback.
     pub(crate) fn block_data(self, state: BlockState) -> &'static BlockData {
         static UNKNOWN: std::sync::LazyLock<BlockData> = std::sync::LazyLock::new(|| BlockData {
             id: "unknown",

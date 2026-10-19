@@ -96,11 +96,8 @@ pub struct ConnectionHandle {
 impl Drop for ConnectionHandle {
     fn drop(&mut self) {
         self.task.abort();
-        // The session is over: restore the launched version's wire protocol
-        // and block table so nothing stale leaks into the next one.
+        // The session is over: restore the launched version's wire protocol.
         crate::version::clear_session_protocol();
-        crate::world::block::clear_block_tags();
-        crate::world::block::set_active_protocol(crate::version::selected_protocol());
     }
 }
 
@@ -340,12 +337,10 @@ fn select_block_protocol(event_tx: &Sender<NetworkEvent>, protocol: i32) {
     send_ordered(event_tx, NetworkEvent::ProtocolSelected { protocol });
 }
 
-/// Speaks `wire` for the rest of the session. The translation layer, block
-/// tags and block-state tables all key off it, so they always move together.
+/// Speaks `wire` for the rest of the session through the translation layer.
+/// Block metadata is selected separately with the same negotiated protocol.
 fn adopt_wire_protocol(wire: i32) {
-    crate::world::block::clear_block_tags();
     crate::version::set_session_protocol(wire);
-    crate::world::block::set_active_protocol(wire);
 }
 
 /// The wire protocol to speak given the probed server protocol and the
@@ -1008,7 +1003,6 @@ async fn game_loop(
                     // acknowledgement.
                     // TODO: chat events still in flight to the game thread
                     // miss this ack; the next login resets the tracker anyway.
-                    crate::world::block::clear_block_tags();
                     let _ = event_tx.try_send(NetworkEvent::Reconfiguring);
                     while let Ok(out) = outbound_rx.try_recv() {
                         if let Some(frame) =

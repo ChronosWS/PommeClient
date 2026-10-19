@@ -16,7 +16,17 @@ use crate::dirs::DataDirs;
 /// Runs every bench whose id contains `filter` (all when `None`); returns the
 /// process exit code.
 pub fn run(version: &str, dirs: &DataDirs, filter: Option<&str>) -> i32 {
-    crate::world::block::init(version);
+    // Bench startup precedes main's protocol selection; warm the passed version.
+    let protocol = pomme_protocol::ProtocolVersion::from_name(version)
+        .map(|v| v.protocol)
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "no block-state data for version {version}, using {} — expect state drift",
+                pomme_protocol::version::NATIVE.name
+            );
+            pomme_protocol::version::NATIVE.protocol
+        });
+    let _ = crate::world::block::BlockStateTable::for_protocol(protocol);
 
     let mut c = Criterion::default();
     if let Some(filter) = filter {

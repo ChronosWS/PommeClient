@@ -17,10 +17,9 @@ pub mod render_registry;
 pub mod sound;
 
 use std::collections::{HashMap, HashSet};
-#[cfg(test)]
-use std::sync::RwLockReadGuard;
-use std::sync::{LazyLock, OnceLock, RwLock};
+use std::sync::OnceLock;
 
+#[cfg(test)]
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 pub use block_registry::{Block, BlockProperties};
@@ -124,13 +123,6 @@ impl BedDirection {
             Self::East => (1.0, 0.0),
         }
     }
-}
-
-/// Vanilla `BedBlock.getBedOrientation`: only actual bed states provide a
-/// facing. The `_bed` id suffix stands in for `instanceof BedBlock`.
-#[cfg(test)]
-pub fn bed_direction(state: BlockState) -> Option<BedDirection> {
-    block_data(state).bed_direction()
 }
 
 /// Vanilla `LivingEntity.setPosToBed`.
@@ -562,8 +554,8 @@ const SHARED_BLOCK_DATA: &[(i32, i32)] = &[
     (766, 767),
 ];
 
-/// One lazily-built table per embedded data file; `ACTIVE_TABLE` indexes the
-/// protocol currently spoken (see [`set_active_protocol`]).
+/// One lazily-built immutable table per embedded data file, selected by each
+/// `BlockStateTable` handle independently.
 static BLOCK_TABLES: [OnceLock<Vec<BlockData>>; BLOCK_DATA.len()] =
     [const { OnceLock::new() }; BLOCK_DATA.len()];
 
@@ -587,49 +579,12 @@ impl BlockTags {
     }
 }
 
-static BLOCK_TAGS: LazyLock<RwLock<BlockTags>> =
-    LazyLock::new(|| RwLock::new(BlockTags::default()));
-
-/// The [`BLOCK_DATA`] slot holding the native version's tables: the initial
-/// active table and the fallback for protocols without their own data.
+/// The [`BLOCK_DATA`] slot holding the native version's tables, used as the
+/// fallback for protocols without their own data.
 const NATIVE_SLOT: usize = 0;
-static ACTIVE_TABLE: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(NATIVE_SLOT);
 
 /// Vanilla getFluidState overrides on blocks without a `waterlogged` property.
 const IMPLICIT_WATER: [&str; 4] = ["seagrass", "tall_seagrass", "kelp", "kelp_plant"];
-
-/// Loads the block-state table for the launched game version. Must be called
-/// once at startup before any world/render code runs.
-pub fn init(version: &str) {
-    let protocol = pomme_protocol::ProtocolVersion::from_name(version)
-        .map(|v| v.protocol)
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                "no block-state data for version {version}, using {} — expect state drift",
-                pomme_protocol::version::NATIVE.name
-            );
-            pomme_protocol::version::NATIVE.protocol
-        });
-    set_active_protocol(protocol);
-}
-
-/// Switches the active table to the given protocol's, building it on first
-/// use, so state ids from the wire are interpreted natively in that
-/// version's id space (no chunk remapping). Patch releases sharing a
-/// protocol number (26.1 through 26.1.2 are all 775) get the same table.
-/// Only safe between worlds — meshes built against the previous table
-/// interpret ids in the old id space.
-pub fn set_active_protocol(protocol: i32) {
-    let slot = prewarm_protocol(protocol);
-    ACTIVE_TABLE.store(slot, std::sync::atomic::Ordering::Release);
-}
-
-/// Builds the given protocol's table if it isn't already, without switching
-/// to it; safe at any time (e.g. from a server-list ping, ahead of the join).
-pub fn prewarm_protocol(protocol: i32) -> usize {
-    BlockStateTable::for_protocol(protocol).table_slot()
-}
 
 /// The `BLOCK_DATA` slot serving a protocol, through `SHARED_BLOCK_DATA`.
 fn block_data_slot(protocol: i32) -> Option<usize> {
@@ -949,16 +904,6 @@ fn state_fluid(name: &'static str, props: &PropMap) -> Fluid {
     }
 }
 
-fn table() -> &'static Vec<BlockData> {
-    slot_table(active_table_slot())
-}
-
-fn slot_table(slot: usize) -> &'static Vec<BlockData> {
-    BLOCK_TABLES[slot]
-        .get()
-        .expect("world::block::init must be called before use")
-}
-
 /// Built-in block registry order: the generated state table is grouped by
 /// block in registry order, so collapsing adjacent states yields the registry
 /// id -> resource-name mapping UpdateTags uses.
@@ -966,20 +911,6 @@ fn registry_names(table: &[BlockData]) -> impl Iterator<Item = &'static str> + '
     table
         .chunk_by(|a, b| a.id == b.id)
         .map(|states| states[0].id)
-}
-
-fn block_registry_names() -> Vec<&'static str> {
-    registry_names(table()).collect()
-}
-
-/// Resolves a built-in block registry id in any supported protocol without
-/// switching the active table.
-#[expect(
-    dead_code,
-    reason = "compatibility wrapper retained until step 9 global API removal"
-)]
-pub(crate) fn block_registry_name(protocol: i32, registry_id: u32) -> Option<&'static str> {
-    BlockStateTable::for_protocol(protocol).registry_name(registry_id)
 }
 
 fn resolve_block_tags(
@@ -1002,35 +933,6 @@ fn resolve_block_tags(
         tags.insert(name, blocks);
     }
     BlockTags { tags }
-}
-
-/// Replaces the session's block tags from `ClientboundUpdateTags`. Element ids
-/// are built-in block registry ids, not block-state ids.
-#[expect(
-    dead_code,
-    reason = "legacy raw-tag compatibility API until global removal"
-)]
-pub fn replace_block_tags(raw_tags: Vec<(String, Vec<i32>)>) {
-    mirror_block_tags(&resolve_block_tags(raw_tags, &block_registry_names()));
-}
-
-/// Transitional mirror retained until the remaining global lifecycle migrates.
-/// The session registry has already resolved these names with its own table.
-pub(crate) fn mirror_block_tags(tags: &BlockTags) {
-    *BLOCK_TAGS.write().expect("block tag lock poisoned") = tags.clone();
-}
-
-#[cfg(test)]
-#[expect(
-    dead_code,
-    reason = "compatibility reader retained until step 9 global API removal"
-)]
-pub fn block_tags() -> RwLockReadGuard<'static, BlockTags> {
-    BLOCK_TAGS.read().expect("block tag lock poisoned")
-}
-
-pub fn clear_block_tags() {
-    *BLOCK_TAGS.write().expect("block tag lock poisoned") = BlockTags::default();
 }
 
 #[cfg(test)]
@@ -1057,140 +959,8 @@ pub(crate) fn block_tags_for_test(
     resolve_block_tags(raw_tags, &names)
 }
 
-#[cfg(test)]
-#[expect(
-    dead_code,
-    reason = "compatibility fixture retained until step 9 global API removal"
-)]
-pub(crate) fn replace_block_tags_for_test(entries: &[(&str, &[&str])]) {
-    *BLOCK_TAGS.write().expect("block tag lock poisoned") = block_tags_for_test(
-        BlockStateTable::from_initialized_slot(active_table_slot()),
-        entries,
-    );
-}
-
-fn block_data(state: BlockState) -> &'static BlockData {
-    BlockStateTable::from_initialized_slot(active_table_slot()).block_data(state)
-}
-
-/// Every valid block state paired with its cached data, in id order.
-#[cfg(test)]
-fn all_states() -> impl Iterator<Item = (BlockState, &'static BlockData)> {
-    slot_states(active_table_slot())
-}
-
-fn slot_states(slot: usize) -> impl Iterator<Item = (BlockState, &'static BlockData)> {
-    slot_table(slot).iter().enumerate().map(|(id, data)| {
-        let state = BlockState::try_from(id as u32).expect("table indices fit the id repr");
-        (state, data)
-    })
-}
-
 /// Number of block-state table slots (one per distinct state-id space).
 pub(crate) const TABLE_SLOTS: usize = BLOCK_DATA.len();
-
-/// The table slot state ids are currently interpreted in.
-pub(crate) fn active_table_slot() -> usize {
-    ACTIVE_TABLE.load(std::sync::atomic::Ordering::Acquire)
-}
-
-/// Resolves a held item's registry name (unprefixed, e.g. `"stone"`) to the
-/// `BlockState` to predict on placement, in the active protocol's state
-/// space, or `None` if the item is not a single-state block. Item and block
-/// share a registry name for this set.
-pub fn placeable_block_for_item(item_name: &str) -> Option<BlockState> {
-    placeable_block_in_slot(active_table_slot(), item_name)
-}
-
-fn placeable_block_in_slot(slot: usize, item_name: &str) -> Option<BlockState> {
-    let map = PLACEABLE_BLOCKS[slot].get_or_init(|| {
-        let mut seen: HashMap<&'static str, Option<BlockState>> = HashMap::new();
-        for (state, data) in slot_states(slot) {
-            seen.entry(data.id)
-                .and_modify(|v| *v = None)
-                .or_insert(Some(state));
-        }
-        seen.into_iter()
-            .filter_map(|(name, state)| state.map(|s| (name, s)))
-            .collect()
-    });
-    map.get(item_name).copied()
-}
-
-/// First declared state of the named block, e.g. the light engine's bedrock
-/// fallback for unloaded-chunk reads.
-#[allow(
-    dead_code,
-    reason = "compatibility wrapper retained until global API removal"
-)]
-pub(crate) fn first_state_of(name: &str) -> Option<BlockState> {
-    BlockStateTable::from_initialized_slot(active_table_slot()).first_state_of(name)
-}
-
-/// Converts a wire-side numeric state id, validated against the loaded table.
-#[cfg(test)]
-pub fn try_state(id: u32) -> Option<BlockState> {
-    BlockStateTable::from_initialized_slot(active_table_slot()).try_state(id)
-}
-
-#[cfg(test)]
-pub fn block_id(state: BlockState) -> &'static str {
-    block_data(state).id()
-}
-
-#[cfg(test)]
-pub fn block_properties(state: BlockState) -> &'static PropMap {
-    block_data(state).properties()
-}
-
-/// Vanilla `BlockBehaviour` movement friction.
-#[cfg(test)]
-pub fn movement_friction(state: BlockState) -> f32 {
-    block_data(state).movement_friction()
-}
-
-/// Vanilla `BlockBehaviour.speedFactor`.
-#[cfg(test)]
-pub fn movement_speed_factor(state: BlockState) -> f32 {
-    block_data(state).movement_speed_factor()
-}
-
-/// Vanilla `BlockBehaviour.jumpFactor`.
-#[cfg(test)]
-pub fn movement_jump_factor(state: BlockState) -> f32 {
-    block_data(state).movement_jump_factor()
-}
-
-/// Vanilla `RedStoneWireBlock.getColorForPower`: dust tint for the state's
-/// `power` value.
-#[cfg(test)]
-pub fn redstone_wire_rgb(state: BlockState) -> [f32; 3] {
-    block_data(state).redstone_wire_rgb()
-}
-
-/// Vanilla `StemBlock` tint: `ARGB.color(age * 32, 255 - age * 8, age * 4)`.
-#[expect(
-    dead_code,
-    reason = "compatibility wrapper retained until step 9 global API removal"
-)]
-pub fn stem_rgb(state: BlockState) -> [f32; 3] {
-    block_data(state).stem_rgb()
-}
-
-/// Vanilla `isAir`: includes cave and void air.
-#[expect(
-    dead_code,
-    reason = "compatibility wrapper retained until step 9 global API removal"
-)]
-pub fn is_air(state: BlockState) -> bool {
-    block_data(state).is_air()
-}
-
-/// Whether the state's block collides with entities (vanilla `hasCollision`).
-#[cfg(test)]
-pub fn has_collision(state: BlockState) -> bool {
-    block_data(state).has_collision()
-}
 
 /// Blocks the collision scan special-cases, tagged at table build so it
 /// doesn't compare ids per cell.
@@ -1201,32 +971,6 @@ pub(crate) enum SpecialCollision {
     PowderSnow,
     MovingPiston,
     ShulkerBox,
-}
-
-/// Vanilla `BlockState.blocksMotion()`, distinct from collision and occlusion;
-/// collision stands in where the table lacks it.
-#[cfg(test)]
-pub fn blocks_motion(state: BlockState) -> bool {
-    block_data(state).blocks_motion()
-}
-
-/// Vanilla cached `BlockState.isSolid()` / `legacySolid`.
-#[allow(
-    dead_code,
-    reason = "compatibility wrapper retained until global API removal"
-)]
-pub fn is_solid(state: BlockState) -> Option<bool> {
-    block_data(state).legacy_solid
-}
-
-/// [`is_solid`], falling back to `BlockBehaviour.calculateSolid` over the
-/// collision shape for tables without it.
-#[allow(
-    dead_code,
-    reason = "compatibility wrapper retained until global API removal"
-)]
-pub fn legacy_solid(state: BlockState) -> bool {
-    block_data(state).legacy_solid()
 }
 
 fn calculate_solid(collision: Option<&[LocalBox]>) -> bool {
@@ -1245,29 +989,6 @@ fn calculate_solid(collision: Option<&[LocalBox]>) -> bool {
     });
     let [dx, dy, dz] = [0, 1, 2].map(|i| bounds[i + 3] - bounds[i]);
     (dx + dy + dz) / 3.0 >= 0.7291666666666666 || dy >= 1.0
-}
-
-/// Vanilla `BlockState.canBeReplaced()`, without a placement context; blocks
-/// that override `canBeReplaced(BlockPlaceContext)` need their own check.
-#[allow(dead_code)]
-pub fn is_replaceable(state: BlockState) -> Option<bool> {
-    block_data(state).replaceable
-}
-
-/// Vanilla `BlockState.hasLargeCollisionShape()`.
-#[cfg(test)]
-pub(crate) fn has_large_collision_shape(state: BlockState) -> bool {
-    block_data(state).has_large_collision_shape()
-}
-
-#[cfg(test)]
-pub fn fluid(state: BlockState) -> Fluid {
-    block_data(state).fluid()
-}
-
-#[cfg(test)]
-pub(crate) fn block_shape(state: BlockState) -> Option<&'static [LocalBox]> {
-    block_data(state).collision_boxes()
 }
 
 #[derive(Clone, Copy)]
@@ -1325,12 +1046,6 @@ fn vanilla_position_seed(x: i32, z: i32) -> i64 {
         >> 16
 }
 
-/// Vanilla `BlockState.getOffset(pos)`; zero for tables without offsets.
-#[cfg(test)]
-pub(crate) fn block_position_offset(state: BlockState, x: i32, z: i32) -> DVec3 {
-    block_data(state).block_position_offset(x, z)
-}
-
 /// The generated shapes already hold ZERO's offset, so a position only adds
 /// the difference to its own.
 fn generated_shape_position_delta(block_data: &BlockData, x: i32, z: i32) -> DVec3 {
@@ -1354,56 +1069,11 @@ fn shape_position(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn collision_shape_position(state: BlockState, x: i32, y: i32, z: i32) -> DVec3 {
-    block_data(state).collision_shape_position(x, y, z)
-}
-
-#[cfg(test)]
-pub(crate) fn outline_shape_position(state: BlockState, x: i32, y: i32, z: i32) -> DVec3 {
-    block_data(state).outline_shape_position(x, y, z)
-}
-
-/// Outline shape for interaction raycasts (vanilla `getShape`), falling back to
-/// the collision shape where the two agree. `None` is a full cube; an empty
-/// slice is a block the pick ray passes through.
-#[cfg(test)]
-pub(crate) fn block_outline(state: BlockState) -> Option<&'static [LocalBox]> {
-    block_data(state).outline_boxes()
-}
-
-/// Baked light properties for a state (vanilla `BlockStateBase` light cache).
-#[allow(
-    dead_code,
-    reason = "compatibility wrapper retained until global API removal"
-)]
-pub fn light_props(state: BlockState) -> LightProps {
-    block_data(state).light_props()
-}
-
-/// Vanilla `LightEngine.isEmptyShape`: the state needs no voxel-shape
-/// occlusion tests (full opaque cubes qualify — their opacity handles them).
-#[allow(
-    dead_code,
-    reason = "compatibility wrapper retained until global API removal"
-)]
-pub fn is_empty_shape(state: BlockState) -> bool {
-    block_data(state).is_empty_shape()
-}
-
 /// Vanilla `LightEngine.shapeOccludes(from, to, dir)` reduced to face masks:
 /// whether `from`'s face and `to`'s opposite face together cover the full
 /// face. `face` is the vanilla `Direction` ordinal (DOWN, UP, NORTH, SOUTH,
 /// WEST, EAST); opposites pair as `face ^ 1`. Empty-shape states contribute
 /// an empty mask, so two shapeless neighbors never occlude.
-#[allow(
-    dead_code,
-    reason = "compatibility wrapper retained until global API removal"
-)]
-pub fn shape_occludes(from: BlockState, to: BlockState, face: usize) -> bool {
-    shape_occludes_data(block_data(from), block_data(to), face)
-}
-
 pub(crate) fn shape_occludes_data(
     from_block_data: &BlockData,
     to_block_data: &BlockData,
@@ -1420,36 +1090,28 @@ pub(crate) fn shape_occludes_data(
     (0..16).all(|v| (a.map_or(0, |m| m[v]) | b.map_or(0, |m| m[v])) == 0xFFFF)
 }
 
-/// The block's state matching the given property values (unlisted properties
-/// take whatever the first match has); shared with the light-engine tests
-/// and the CPU bench.
-#[cfg(any(test, feature = "cpu-bench"))]
-#[allow(
-    dead_code,
-    reason = "compatibility wrapper retained until global API removal"
-)]
-pub(crate) fn find_state(name: &str, props: &[(&str, &str)]) -> BlockState {
-    BlockStateTable::from_initialized_slot(active_table_slot()).find_state(name, props)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn setup() {
-        init("26.2");
+    fn setup() -> BlockStateTable {
+        BlockStateTable::for_protocol(
+            pomme_protocol::ProtocolVersion::from_name("26.2")
+                .unwrap()
+                .protocol,
+        )
     }
 
     #[test]
     fn chest_states_decode() {
-        setup();
+        let block_state_table = setup();
         // Oracle from reference/26.2/generated/reports/blocks.json:
         // chest[type=single,facing=south,waterlogged=false] is id 3994 — the
         // state that previously decoded as facing=east under azalea's stale
         // 26.1 tables.
-        let state = try_state(3994).unwrap();
-        assert_eq!(block_id(state), "chest");
-        let props = block_properties(state);
+        let state = block_state_table.try_state(3994).unwrap();
+        assert_eq!(block_state_table.block_data(state).id(), "chest");
+        let props = block_state_table.block_data(state).properties();
         assert_eq!(props.get("facing"), Some("south"));
         assert_eq!(props.get("type"), Some("single"));
         assert_eq!(props.get("waterlogged"), Some("false"));
@@ -1457,17 +1119,22 @@ mod tests {
 
     #[test]
     fn new_26_2_blocks_resolve() {
-        setup();
-        assert!(all_states().any(|(_, d)| d.id == "copper_chest"));
-        assert!(try_state(u32::MAX).is_none());
-        let count = table().len() as u32;
-        assert!(try_state(count).is_none());
-        assert!(try_state(count - 1).is_some());
+        let block_state_table = setup();
+        assert!(
+            block_state_table
+                .table()
+                .iter()
+                .any(|d| d.id == "copper_chest")
+        );
+        assert!(block_state_table.try_state(u32::MAX).is_none());
+        let count = block_state_table.table().len() as u32;
+        assert!(block_state_table.try_state(count).is_none());
+        assert!(block_state_table.try_state(count - 1).is_some());
     }
 
     #[test]
     fn bed_direction_and_sleep_position_match_vanilla() {
-        setup();
+        let block_state_table = setup();
         let cases = [
             ("north", BedDirection::North, 0.0, 270.0, (0.0, -1.0)),
             ("south", BedDirection::South, -180.0, 90.0, (0.0, 1.0)),
@@ -1475,13 +1142,21 @@ mod tests {
             ("east", BedDirection::East, 90.0, 180.0, (1.0, 0.0)),
         ];
         for (facing, direction, camera_yaw, render_yaw, step) in cases {
-            let state = find_state("red_bed", &[("facing", facing)]);
-            assert_eq!(bed_direction(state), Some(direction));
+            let state = block_state_table.find_state("red_bed", &[("facing", facing)]);
+            assert_eq!(
+                block_state_table.block_data(state).bed_direction(),
+                Some(direction)
+            );
             assert_eq!(direction.camera_yaw_deg(), camera_yaw);
             assert_eq!(direction.render_yaw_deg(), render_yaw);
             assert_eq!(direction.step(), step);
         }
-        assert_eq!(bed_direction(find_state("stone", &[])), None);
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("stone", &[]))
+                .bed_direction(),
+            None
+        );
         assert_eq!(
             sleeping_position(BlockPos::new(2, 64, -5)),
             dvec3(2.5, 64.6875, -4.5)
@@ -1490,8 +1165,8 @@ mod tests {
 
     #[test]
     fn block_tag_registry_ids_resolve_to_native_block_names() {
-        setup();
-        let names = block_registry_names();
+        let block_state_table = setup();
+        let names: Vec<_> = registry_names(block_state_table.table()).collect();
         let tags = resolve_block_tags(
             vec![(
                 "minecraft:mineable/pickaxe".to_owned(),
@@ -1506,10 +1181,15 @@ mod tests {
 
     #[test]
     fn redstone_wire_colors() {
-        setup();
-        let unpowered = find_state("redstone_wire", &[("power", "0")]);
-        assert_eq!(redstone_wire_rgb(unpowered), [0.3, 0.0, 0.0]);
-        let full = redstone_wire_rgb(find_state("redstone_wire", &[("power", "15")]));
+        let block_state_table = setup();
+        let unpowered = block_state_table.find_state("redstone_wire", &[("power", "0")]);
+        assert_eq!(
+            block_state_table.block_data(unpowered).redstone_wire_rgb(),
+            [0.3, 0.0, 0.0]
+        );
+        let full = block_state_table
+            .block_data(block_state_table.find_state("redstone_wire", &[("power", "15")]))
+            .redstone_wire_rgb();
         for (got, want) in full.iter().zip([1.0, 0.2, 0.0]) {
             assert!((got - want).abs() < 1e-6, "{full:?}");
         }
@@ -1517,57 +1197,102 @@ mod tests {
 
     #[test]
     fn fluid_states() {
-        setup();
-        let (still, _) = all_states()
-            .find(|(s, d)| d.id == "water" && block_properties(*s).get("level") == Some("0"))
-            .unwrap();
-        let f = fluid(still);
+        let block_state_table = setup();
+        let still = block_state_table.find_state("water", &[("level", "0")]);
+        let f = block_state_table.block_data(still).fluid();
         assert_eq!(f.kind, FluidKind::Water);
         assert_eq!(f.amount, 8);
         assert!(!f.falling);
 
-        let (falling, _) = all_states()
-            .find(|(s, d)| d.id == "water" && block_properties(*s).get("level") == Some("9"))
-            .unwrap();
-        assert!(fluid(falling).falling);
+        let falling = block_state_table.find_state("water", &[("level", "9")]);
+        assert!(block_state_table.block_data(falling).fluid().falling);
 
-        let (logged, _) = all_states()
-            .find(|(s, d)| {
-                d.id == "oak_stairs" && block_properties(*s).get("waterlogged") == Some("true")
-            })
-            .unwrap();
-        assert_eq!(fluid(logged).kind, FluidKind::Water);
-        assert_eq!(fluid(logged).amount, 8);
+        let logged = block_state_table.find_state("oak_stairs", &[("waterlogged", "true")]);
+        assert_eq!(
+            block_state_table.block_data(logged).fluid().kind,
+            FluidKind::Water
+        );
+        assert_eq!(block_state_table.block_data(logged).fluid().amount, 8);
 
-        assert_eq!(fluid(BlockState::AIR).kind, FluidKind::Empty);
+        assert_eq!(
+            block_state_table.block_data(BlockState::AIR).fluid().kind,
+            FluidKind::Empty
+        );
     }
 
     #[test]
     fn movement_block_properties_match_vanilla_26_2_overrides() {
-        setup();
-        assert_eq!(movement_friction(find_state("stone", &[])), 0.6);
-        assert_eq!(movement_friction(find_state("ice", &[])), 0.98);
-        assert_eq!(movement_friction(find_state("blue_ice", &[])), 0.989);
-        assert_eq!(movement_friction(find_state("slime_block", &[])), 0.8);
-        assert_eq!(movement_speed_factor(find_state("soul_sand", &[])), 0.4);
-        assert_eq!(movement_speed_factor(find_state("honey_block", &[])), 0.4);
-        assert_eq!(movement_jump_factor(find_state("honey_block", &[])), 0.5);
-        assert_eq!(movement_jump_factor(find_state("stone", &[])), 1.0);
+        let block_state_table = setup();
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("stone", &[]))
+                .movement_friction(),
+            0.6
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("ice", &[]))
+                .movement_friction(),
+            0.98
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("blue_ice", &[]))
+                .movement_friction(),
+            0.989
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("slime_block", &[]))
+                .movement_friction(),
+            0.8
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("soul_sand", &[]))
+                .movement_speed_factor(),
+            0.4
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("honey_block", &[]))
+                .movement_speed_factor(),
+            0.4
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("honey_block", &[]))
+                .movement_jump_factor(),
+            0.5
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("stone", &[]))
+                .movement_jump_factor(),
+            1.0
+        );
     }
 
     #[test]
     fn legacy_solid_is_distinct_from_blocks_motion_for_vanilla_exceptions() {
-        setup();
+        let block_state_table = setup();
         for name in ["cobweb", "bamboo_sapling"] {
-            let state = find_state(name, &[]);
-            assert_eq!(is_solid(state), Some(true), "{name} is legacy-solid");
-            assert!(!blocks_motion(state), "{name} doesn't block motion");
+            let state = block_state_table.find_state(name, &[]);
+            assert_eq!(
+                block_state_table.block_data(state).legacy_solid,
+                Some(true),
+                "{name} is legacy-solid"
+            );
+            assert!(
+                !block_state_table.block_data(state).blocks_motion(),
+                "{name} doesn't block motion"
+            );
         }
     }
 
     #[test]
     fn calculate_solid_matches_the_dumped_legacy_solid() {
-        setup();
+        let block_state_table = setup();
         for (name, props) in [
             ("stone", &[][..]),
             ("air", &[]),
@@ -1576,10 +1301,10 @@ mod tests {
             ("oak_fence", &[]),
             ("chest", &[]),
         ] {
-            let state = find_state(name, props);
+            let state = block_state_table.find_state(name, props);
             assert_eq!(
-                Some(calculate_solid(block_data(state).shape)),
-                is_solid(state),
+                Some(calculate_solid(block_state_table.block_data(state).shape)),
+                block_state_table.block_data(state).legacy_solid,
                 "{name}"
             );
         }
@@ -1587,54 +1312,73 @@ mod tests {
 
     #[test]
     fn vanilla_position_offsets_respect_generated_shape_usage() {
-        setup();
+        let block_state_table = setup();
 
-        let bamboo = find_state("bamboo", &[]);
-        let bamboo_delta = generated_shape_position_delta(block_data(bamboo), 5, -7);
+        let bamboo = block_state_table.find_state("bamboo", &[]);
+        let bamboo_delta =
+            generated_shape_position_delta(block_state_table.block_data(bamboo), 5, -7);
         assert_eq!(bamboo_delta.x.to_bits(), 0x3fc9_9999_a000_0000_u64);
         assert_eq!(bamboo_delta.y, 0.0);
         assert_eq!(bamboo_delta.z.to_bits(), 0x3fd7_7777_8000_0000_u64);
 
-        let dandelion = find_state("dandelion", &[]);
+        let dandelion = block_state_table.find_state("dandelion", &[]);
         assert_eq!(
-            generated_shape_position_delta(block_data(dandelion), 5, -7),
+            generated_shape_position_delta(block_state_table.block_data(dandelion), 5, -7),
             bamboo_delta
         );
         assert_eq!(
-            collision_shape_position(dandelion, 5, 64, -7),
+            block_state_table
+                .block_data(dandelion)
+                .collision_shape_position(5, 64, -7),
             dvec3(5.0, 64.0, -7.0)
         );
         assert_eq!(
-            outline_shape_position(dandelion, 5, 64, -7),
+            block_state_table
+                .block_data(dandelion)
+                .outline_shape_position(5, 64, -7),
             dvec3(5.0, 64.0, -7.0) + bamboo_delta
         );
 
-        let short_grass = find_state("short_grass", &[]);
-        let xyz_delta = generated_shape_position_delta(block_data(short_grass), 5, -7);
+        let short_grass = block_state_table.find_state("short_grass", &[]);
+        let xyz_delta =
+            generated_shape_position_delta(block_state_table.block_data(short_grass), 5, -7);
         assert_eq!(xyz_delta.x.to_bits(), 0x3fc9_9999_a000_0000_u64);
         assert_eq!(xyz_delta.y.to_bits(), 0x3f8b_4e81_d3a0_6d40_u64);
         assert_eq!(xyz_delta.z.to_bits(), 0x3fd7_7777_8000_0000_u64);
         assert_eq!(
-            collision_shape_position(short_grass, 5, 64, -7),
+            block_state_table
+                .block_data(short_grass)
+                .collision_shape_position(5, 64, -7),
             dvec3(5.0, 64.0, -7.0)
         );
         assert_eq!(
-            outline_shape_position(short_grass, 5, 64, -7),
+            block_state_table
+                .block_data(short_grass)
+                .outline_shape_position(5, 64, -7),
             dvec3(5.0, 64.0, -7.0)
         );
 
-        let tall_grass = find_state("tall_grass", &[("half", "lower")]);
-        assert_ne!(block_position_offset(tall_grass, 5, -7), DVec3::ZERO);
+        let tall_grass = block_state_table.find_state("tall_grass", &[("half", "lower")]);
+        assert_ne!(
+            block_state_table
+                .block_data(tall_grass)
+                .block_position_offset(5, -7),
+            DVec3::ZERO
+        );
         assert_eq!(
-            collision_shape_position(tall_grass, 5, 64, -7),
+            block_state_table
+                .block_data(tall_grass)
+                .collision_shape_position(5, 64, -7),
             dvec3(5.0, 64.0, -7.0)
         );
         assert_eq!(
-            outline_shape_position(tall_grass, 5, 64, -7),
+            block_state_table
+                .block_data(tall_grass)
+                .outline_shape_position(5, 64, -7),
             dvec3(5.0, 64.0, -7.0)
         );
 
-        let dripstone = find_state(
+        let dripstone = block_state_table.find_state(
             "pointed_dripstone",
             &[
                 ("thickness", "tip"),
@@ -1642,29 +1386,54 @@ mod tests {
                 ("waterlogged", "false"),
             ],
         );
-        let delta = generated_shape_position_delta(block_data(dripstone), 12345, -54321);
+        let delta =
+            generated_shape_position_delta(block_state_table.block_data(dripstone), 12345, -54321);
         assert_eq!(delta.x, 0.0);
         assert_eq!(delta.z.to_bits(), 0x3fb3_3333_4000_0000_u64);
     }
 
     #[test]
     fn collision_flags() {
-        setup();
+        let block_state_table = setup();
         // Oracles from reference/26.2/decompiled Blocks.java noCollision sites.
-        assert!(!has_collision(BlockState::AIR));
-        assert!(!has_collision(find_state("torch", &[])));
-        assert!(!has_collision(find_state("water", &[("level", "0")])));
-        assert!(!has_collision(find_state("oak_button", &[])));
-        assert!(has_collision(find_state("stone", &[])));
-        assert!(has_collision(find_state("oak_fence", &[])));
+        assert!(
+            !block_state_table
+                .block_data(BlockState::AIR)
+                .has_collision()
+        );
+        assert!(
+            !block_state_table
+                .block_data(block_state_table.find_state("torch", &[]))
+                .has_collision()
+        );
+        assert!(
+            !block_state_table
+                .block_data(block_state_table.find_state("water", &[("level", "0")]))
+                .has_collision()
+        );
+        assert!(
+            !block_state_table
+                .block_data(block_state_table.find_state("oak_button", &[]))
+                .has_collision()
+        );
+        assert!(
+            block_state_table
+                .block_data(block_state_table.find_state("stone", &[]))
+                .has_collision()
+        );
+        assert!(
+            block_state_table
+                .block_data(block_state_table.find_state("oak_fence", &[]))
+                .has_collision()
+        );
     }
 
     #[test]
     fn generated_26_2_collision_shapes_cover_state_derived_families() {
-        setup();
+        let block_state_table = setup();
 
         // Fence collision is 1.5 tall; its outline stays one block.
-        let fence = find_state(
+        let fence = block_state_table.find_state(
             "oak_fence",
             &[
                 ("north", "false"),
@@ -1675,15 +1444,15 @@ mod tests {
             ],
         );
         assert_eq!(
-            block_shape(fence),
+            block_state_table.block_data(fence).collision_boxes(),
             Some(&[[0.375, 0.0, 0.375, 0.625, 1.5, 0.625]][..])
         );
         assert_eq!(
-            block_outline(fence),
+            block_state_table.block_data(fence).outline_boxes(),
             Some(&[[0.375, 0.0, 0.375, 0.625, 1.0, 0.625]][..])
         );
 
-        let closed_door = find_state(
+        let closed_door = block_state_table.find_state(
             "oak_door",
             &[
                 ("facing", "north"),
@@ -1694,10 +1463,10 @@ mod tests {
             ],
         );
         assert_eq!(
-            block_shape(closed_door),
+            block_state_table.block_data(closed_door).collision_boxes(),
             Some(&[[0.0, 0.0, 0.8125, 1.0, 1.0, 1.0]][..])
         );
-        let open_door = find_state(
+        let open_door = block_state_table.find_state(
             "oak_door",
             &[
                 ("facing", "north"),
@@ -1708,11 +1477,11 @@ mod tests {
             ],
         );
         assert_eq!(
-            block_shape(open_door),
+            block_state_table.block_data(open_door).collision_boxes(),
             Some(&[[0.0, 0.0, 0.0, 0.1875, 1.0, 1.0]][..])
         );
 
-        let trapdoor = find_state(
+        let trapdoor = block_state_table.find_state(
             "oak_trapdoor",
             &[
                 ("facing", "north"),
@@ -1723,11 +1492,11 @@ mod tests {
             ],
         );
         assert_eq!(
-            block_shape(trapdoor),
+            block_state_table.block_data(trapdoor).collision_boxes(),
             Some(&[[0.0, 0.0, 0.0, 1.0, 0.1875, 1.0]][..])
         );
 
-        let chest = find_state(
+        let chest = block_state_table.find_state(
             "chest",
             &[
                 ("facing", "north"),
@@ -1736,96 +1505,154 @@ mod tests {
             ],
         );
         assert_eq!(
-            block_shape(chest),
+            block_state_table.block_data(chest).collision_boxes(),
             Some(&[[0.0625, 0.0, 0.0625, 0.9375, 0.875, 0.9375]][..])
         );
 
-        let cake = find_state("cake", &[("bites", "0")]);
+        let cake = block_state_table.find_state("cake", &[("bites", "0")]);
         assert_eq!(
-            block_shape(cake),
+            block_state_table.block_data(cake).collision_boxes(),
             Some(&[[0.0625, 0.0, 0.0625, 0.9375, 0.5, 0.9375]][..])
         );
 
         // Hollow containers keep their multi-box geometry.
-        let cauldron = block_shape(find_state("cauldron", &[])).unwrap();
+        let cauldron = block_state_table
+            .block_data(block_state_table.find_state("cauldron", &[]))
+            .collision_boxes()
+            .unwrap();
         assert!(cauldron.len() > 4);
         assert!(!is_full_cube_shape(cauldron));
-        let hopper = block_shape(find_state(
-            "hopper",
-            &[("facing", "down"), ("enabled", "true")],
-        ))
-        .unwrap();
+        let hopper = block_state_table
+            .block_data(
+                block_state_table.find_state("hopper", &[("facing", "down"), ("enabled", "true")]),
+            )
+            .collision_boxes()
+            .unwrap();
         assert!(hopper.len() > 4);
         assert!(!is_full_cube_shape(hopper));
     }
 
     #[test]
     fn light_emission_values() {
-        setup();
+        let block_state_table = setup();
         // Oracles from reference/26.2/decompiled Blocks.java lightLevel sites.
-        assert_eq!(light_props(find_state("torch", &[])).emission, 14);
-        assert_eq!(light_props(find_state("glowstone", &[])).emission, 15);
         assert_eq!(
-            light_props(find_state("redstone_lamp", &[("lit", "true")])).emission,
-            15
-        );
-        assert_eq!(
-            light_props(find_state("redstone_lamp", &[("lit", "false")])).emission,
-            0
-        );
-        assert_eq!(
-            light_props(find_state(
-                "sea_pickle",
-                &[("pickles", "3"), ("waterlogged", "true")]
-            ))
-            .emission,
-            12
-        );
-        assert_eq!(
-            light_props(find_state(
-                "sea_pickle",
-                &[("pickles", "3"), ("waterlogged", "false")]
-            ))
-            .emission,
-            0
-        );
-        assert_eq!(
-            light_props(find_state("cave_vines", &[("berries", "true")])).emission,
+            block_state_table
+                .block_data(block_state_table.find_state("torch", &[]))
+                .light_props()
+                .emission,
             14
         );
         assert_eq!(
-            light_props(find_state("cave_vines", &[("berries", "false")])).emission,
+            block_state_table
+                .block_data(block_state_table.find_state("glowstone", &[]))
+                .light_props()
+                .emission,
+            15
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("redstone_lamp", &[("lit", "true")]))
+                .light_props()
+                .emission,
+            15
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("redstone_lamp", &[("lit", "false")]))
+                .light_props()
+                .emission,
             0
         );
         assert_eq!(
-            light_props(find_state("light", &[("level", "7")])).emission,
+            block_state_table
+                .block_data(
+                    block_state_table
+                        .find_state("sea_pickle", &[("pickles", "3"), ("waterlogged", "true")])
+                )
+                .light_props()
+                .emission,
+            12
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(
+                    block_state_table
+                        .find_state("sea_pickle", &[("pickles", "3"), ("waterlogged", "false")])
+                )
+                .light_props()
+                .emission,
+            0
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("cave_vines", &[("berries", "true")]))
+                .light_props()
+                .emission,
+            14
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("cave_vines", &[("berries", "false")]))
+                .light_props()
+                .emission,
+            0
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("light", &[("level", "7")]))
+                .light_props()
+                .emission,
             7
         );
     }
 
     #[test]
     fn light_dampening_values() {
-        setup();
-        let stone = light_props(find_state("stone", &[]));
+        let block_state_table = setup();
+        let stone = block_state_table
+            .block_data(block_state_table.find_state("stone", &[]))
+            .light_props();
         assert_eq!(stone.dampening, 15);
         assert!(stone.can_occlude);
         assert!(!stone.use_shape_for_light_occlusion);
-        assert!(is_empty_shape(find_state("stone", &[])));
+        assert!(
+            block_state_table
+                .block_data(block_state_table.find_state("stone", &[]))
+                .is_empty_shape()
+        );
 
         assert_eq!(
-            light_props(find_state("water", &[("level", "0")])).dampening,
+            block_state_table
+                .block_data(block_state_table.find_state("water", &[("level", "0")]))
+                .light_props()
+                .dampening,
             1
         );
-        assert_eq!(light_props(find_state("oak_leaves", &[])).dampening, 1);
-        let glass = light_props(find_state("glass", &[]));
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("oak_leaves", &[]))
+                .light_props()
+                .dampening,
+            1
+        );
+        let glass = block_state_table
+            .block_data(block_state_table.find_state("glass", &[]))
+            .light_props();
         assert_eq!(glass.dampening, 0);
         assert!(glass.propagates_skylight_down);
-        assert_eq!(light_props(BlockState::AIR).dampening, 0);
+        assert_eq!(
+            block_state_table
+                .block_data(BlockState::AIR)
+                .light_props()
+                .dampening,
+            0
+        );
     }
 
     #[test]
     fn can_occlude_follows_no_occlusion() {
-        setup();
+        let block_state_table = setup();
         for (name, occludes) in [
             ("copper_grate", false),
             ("waxed_oxidized_copper_grate", false),
@@ -1839,7 +1666,10 @@ mod tests {
             ("copper_block", true),
         ] {
             assert_eq!(
-                light_props(find_state(name, &[])).can_occlude,
+                block_state_table
+                    .block_data(block_state_table.find_state(name, &[]))
+                    .light_props()
+                    .can_occlude,
                 occludes,
                 "{name}"
             );
@@ -1848,32 +1678,58 @@ mod tests {
 
     #[test]
     fn slab_face_occlusion() {
-        setup();
-        let top = find_state("oak_slab", &[("type", "top"), ("waterlogged", "false")]);
-        let bottom = find_state("oak_slab", &[("type", "bottom"), ("waterlogged", "false")]);
-        let double = find_state("oak_slab", &[("type", "double")]);
-        let stone = find_state("stone", &[]);
+        let block_state_table = setup();
+        let top =
+            block_state_table.find_state("oak_slab", &[("type", "top"), ("waterlogged", "false")]);
+        let bottom = block_state_table
+            .find_state("oak_slab", &[("type", "bottom"), ("waterlogged", "false")]);
+        let double = block_state_table.find_state("oak_slab", &[("type", "double")]);
+        let stone = block_state_table.find_state("stone", &[]);
 
-        assert!(!is_empty_shape(top));
-        assert!(!is_empty_shape(bottom));
+        assert!(!block_state_table.block_data(top).is_empty_shape());
+        assert!(!block_state_table.block_data(bottom).is_empty_shape());
         // Double slabs are solid-render full cubes: no shape tests needed.
-        assert!(is_empty_shape(double));
+        assert!(block_state_table.block_data(double).is_empty_shape());
 
         // Vanilla Direction ordinals: DOWN=0, UP=1.
         const DOWN: usize = 0;
         const UP: usize = 1;
         // A top slab's UP face is full; a bottom slab's DOWN face is full.
-        assert!(shape_occludes(top, stone, UP));
-        assert!(shape_occludes(bottom, stone, DOWN));
+        assert!(shape_occludes_data(
+            block_state_table.block_data(top),
+            block_state_table.block_data(stone),
+            UP
+        ));
+        assert!(shape_occludes_data(
+            block_state_table.block_data(bottom),
+            block_state_table.block_data(stone),
+            DOWN
+        ));
         // The open halves don't occlude.
-        assert!(!shape_occludes(top, stone, DOWN));
-        assert!(!shape_occludes(bottom, stone, UP));
+        assert!(!shape_occludes_data(
+            block_state_table.block_data(top),
+            block_state_table.block_data(stone),
+            DOWN
+        ));
+        assert!(!shape_occludes_data(
+            block_state_table.block_data(bottom),
+            block_state_table.block_data(stone),
+            UP
+        ));
         // Top slab above a bottom slab: neither shape touches the seam plane,
         // so both face slices are empty and the seam stays open.
-        assert!(!shape_occludes(top, bottom, DOWN));
+        assert!(!shape_occludes_data(
+            block_state_table.block_data(top),
+            block_state_table.block_data(bottom),
+            DOWN
+        ));
         const NORTH: usize = 2;
         // Side faces of two aligned bottom slabs cover only the lower half.
-        assert!(!shape_occludes(bottom, bottom, NORTH));
+        assert!(!shape_occludes_data(
+            block_state_table.block_data(bottom),
+            block_state_table.block_data(bottom),
+            NORTH
+        ));
     }
 
     /// Oracles from reference/26.2/decompiled. Generated 26.2 data preserves
@@ -1881,42 +1737,58 @@ mod tests {
     /// differ (snow, fences/walls, lecterns, etc.).
     #[test]
     fn outline_shapes() {
-        setup();
+        let block_state_table = setup();
 
         // One snow layer is 2/16 tall to look at but has no collision at all.
-        let thin = find_state("snow", &[("layers", "1")]);
-        assert_eq!(block_shape(thin), Some(&[][..]));
+        let thin = block_state_table.find_state("snow", &[("layers", "1")]);
         assert_eq!(
-            block_outline(thin),
+            block_state_table.block_data(thin).collision_boxes(),
+            Some(&[][..])
+        );
+        assert_eq!(
+            block_state_table.block_data(thin).outline_boxes(),
             Some(&[[0.0, 0.0, 0.0, 1.0, 2.0 / 16.0, 1.0]][..])
         );
         // Eight layers fill the cell visually but collide one layer short.
-        let full = find_state("snow", &[("layers", "8")]);
+        let full = block_state_table.find_state("snow", &[("layers", "8")]);
         assert_eq!(
-            block_shape(full),
+            block_state_table.block_data(full).collision_boxes(),
             Some(&[[0.0, 0.0, 0.0, 1.0, 14.0 / 16.0, 1.0]][..])
         );
         assert_eq!(
-            block_outline(full),
+            block_state_table.block_data(full).outline_boxes(),
             Some(&[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]][..])
         );
 
         // Fluids are clipped through, not targeted.
         for id in ["water", "lava"] {
             assert_eq!(
-                block_outline(find_state(id, &[("level", "0")])),
+                block_state_table
+                    .block_data(block_state_table.find_state(id, &[("level", "0")]))
+                    .outline_boxes(),
                 Some(&[][..])
             );
         }
         assert_eq!(
-            block_outline(find_state("bubble_column", &[])),
+            block_state_table
+                .block_data(block_state_table.find_state("bubble_column", &[]))
+                .outline_boxes(),
             Some(&[][..])
         );
 
         // Everywhere else the collision shape doubles as the outline.
-        let slab = find_state("oak_slab", &[("type", "bottom"), ("waterlogged", "false")]);
-        assert_eq!(block_outline(slab), block_shape(slab));
-        assert_eq!(block_outline(find_state("stone", &[])), None);
+        let slab = block_state_table
+            .find_state("oak_slab", &[("type", "bottom"), ("waterlogged", "false")]);
+        assert_eq!(
+            block_state_table.block_data(slab).outline_boxes(),
+            block_state_table.block_data(slab).collision_boxes()
+        );
+        assert_eq!(
+            block_state_table
+                .block_data(block_state_table.find_state("stone", &[]))
+                .outline_boxes(),
+            None
+        );
     }
 
     /// Tables generated before the semantics probes report them as unknown
@@ -1935,7 +1807,7 @@ mod tests {
 
     #[test]
     fn large_collision_shapes() {
-        setup();
+        let block_state_table = setup();
         for (name, large) in [
             ("oak_fence", true),
             ("cobblestone_wall", true),
@@ -1943,7 +1815,9 @@ mod tests {
             ("oak_slab", false),
         ] {
             assert_eq!(
-                has_large_collision_shape(find_state(name, &[])),
+                block_state_table
+                    .block_data(block_state_table.find_state(name, &[]))
+                    .has_large_collision_shape(),
                 large,
                 "{name}"
             );
@@ -1951,7 +1825,7 @@ mod tests {
     }
 
     /// Builds every embedded table so the block/light cross-checks fire for
-    /// all versions, not just the one `setup` activates.
+    /// all versions, not just the one `setup` selects.
     #[test]
     fn all_tables_build() {
         for data in BLOCK_DATA {
@@ -1995,7 +1869,8 @@ mod tests {
     }
 
     /// Every launchable version has a block table (its own or a shared one);
-    /// `prewarm_protocol` would otherwise fall back to 26.2's silently.
+    /// `BlockStateTable::for_protocol` would otherwise fall back to native
+    /// silently.
     #[test]
     fn block_data_covers_versions() {
         for v in pomme_protocol::version::VERSIONS {
@@ -2009,16 +1884,15 @@ mod tests {
         assert_eq!(block_data_slot(native), Some(NATIVE_SLOT));
     }
 
-    /// Placement prediction reads the spoken version's table, built here
-    /// without switching to it, since other tests read the active one.
+    /// Placement prediction reads the explicitly selected version's table.
     #[test]
     fn placeable_block_follows_the_table_slot() {
-        let native = prewarm_protocol(pomme_protocol::version::NATIVE.protocol);
-        let newer = prewarm_protocol(777);
+        let native = BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol);
+        let newer = BlockStateTable::for_protocol(777);
         for name in ["obsidian", "blackstone", "redstone_block"] {
-            let [native_state, newer_state] = [native, newer].map(|slot| {
-                let state = placeable_block_in_slot(slot, name).expect(name);
-                assert_eq!(slot_table(slot)[u32::from(state) as usize].id, name);
+            let [native_state, newer_state] = [native, newer].map(|table| {
+                let state = table.placeable_block_for_item(name).expect(name);
+                assert_eq!(table.table()[u32::from(state) as usize].id, name);
                 state
             });
             // 26.3's added blocks shift these ids.
