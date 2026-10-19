@@ -11,11 +11,7 @@ use super::collision::{CollisionWorld, find_supporting_block, no_collision, reso
 use crate::app::input::{self, InputState};
 use crate::entity::components::Velocity;
 use crate::player::{CROUCH_HEIGHT, LocalPlayer, PLAYER_HALF_WIDTH, STANDING_HEIGHT, is_spectator};
-use crate::world::block::{
-    BlockTags, FluidKind, block_id, block_properties, block_tags, fluid, movement_friction,
-    movement_jump_factor, movement_speed_factor,
-};
-use crate::world::block_entity_anim::BlockEntityAnimStore;
+use crate::world::block::{BlockData, BlockTags, FluidKind, VersionBlockData};
 use crate::world::chunk::ChunkStore;
 
 // TODO: read movement speed, sprint modifier, jump strength, step height,
@@ -78,23 +74,19 @@ pub struct Vehicle {
 pub fn tick(
     player: &mut LocalPlayer,
     input: &InputState,
-    chunk_store: &ChunkStore,
-    block_entity_anim: &BlockEntityAnimStore,
+    world: CollisionWorld<'_>,
+    tags: &BlockTags,
     use_speed_multiplier: f32,
     slow_due_to_using_item: bool,
     vehicle: Option<Vehicle>,
 ) {
     let is_passenger = vehicle.is_some();
     let raw_jump_held = input.performing_action(input::Action::Jump);
-    let world = CollisionWorld {
-        chunks: chunk_store,
-        block_entity_anim: Some(block_entity_anim),
-    };
 
     // `Player.tick` snapshots `wasUnderwater` before `Entity.baseTick`
     // refreshes fluid contact (and applies its current).
     player.under_water = player.eyes_in_water;
-    player.update_water_state(chunk_store, is_passenger);
+    player.update_water_state(world.chunks, world.blocks, is_passenger);
 
     if player.flying {
         // Vanilla `Player.aiStep`.
@@ -125,7 +117,7 @@ pub fn tick(
 
     let (sin_y_rot, cos_y_rot) = vanilla_yaw_sin_cos(player.look_dir.y_rot_deg());
 
-    update_fly_state(player, input, chunk_store, vehicle, sin_y_rot, cos_y_rot);
+    update_fly_state(player, input, world, vehicle, sin_y_rot, cos_y_rot);
 
     // `LocalPlayer.aiStep`'s `goDownInWater`, before the living jump.
     if player.in_water
@@ -167,14 +159,16 @@ pub fn tick(
         } else if (player.on_ground || (in_water && player.fluid_height <= FLUID_JUMP_THRESHOLD))
             && player.no_jump_delay == 0
         {
-            jump_from_ground(player, chunk_store, sin_y_rot, cos_y_rot);
+            jump_from_ground(player, world, sin_y_rot, cos_y_rot);
             player.no_jump_delay = JUMP_DELAY_TICKS;
         }
     } else {
         player.no_jump_delay = 0;
     }
 
-    travel(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
+    travel(
+        player, input, world, tags, forward, strafe, sin_y_rot, cos_y_rot,
+    );
 
     player.tick_air_supply();
     stop_flying_on_ground(player);
@@ -204,19 +198,25 @@ fn apply_living_immobility(
 /// Vanilla `LivingEntity.travel`: fluid travel only when fluids affect the
 /// player (not while flying).
 // TODO: lava travel.
+#[allow(clippy::too_many_arguments)]
 fn travel(
     player: &mut LocalPlayer,
     input: &InputState,
     world: CollisionWorld<'_>,
+    tags: &BlockTags,
     forward: f32,
     strafe: f32,
     sin_y_rot: f32,
     cos_y_rot: f32,
 ) {
     if player.in_water && player.is_affected_by_fluids() {
-        tick_water(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
+        tick_water(
+            player, input, world, tags, forward, strafe, sin_y_rot, cos_y_rot,
+        );
     } else {
-        tick_land(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
+        tick_land(
+            player, input, world, tags, forward, strafe, sin_y_rot, cos_y_rot,
+        );
     }
 }
 
@@ -233,8 +233,8 @@ fn stop_flying_on_ground(player: &mut LocalPlayer) {
 /// removal.
 pub fn tick_dead(
     player: &mut LocalPlayer,
-    chunk_store: &ChunkStore,
-    block_entity_anim: &BlockEntityAnimStore,
+    world: CollisionWorld<'_>,
+    tags: &BlockTags,
     is_passenger: bool,
 ) {
     player.no_jump_delay = 0;
@@ -245,16 +245,14 @@ pub fn tick_dead(
     let neutral = InputState::released();
     let vehicle = is_passenger.then_some(Vehicle { jumpable: false });
     update_sprint_state(player, &neutral, false, false, vehicle);
-    player.update_water_state(chunk_store, is_passenger);
+    player.update_water_state(world.chunks, world.blocks, is_passenger);
     player.tick_eye_height();
 
     let (sin_y_rot, cos_y_rot) = vanilla_yaw_sin_cos(player.look_dir.y_rot_deg());
-    let world = CollisionWorld {
-        chunks: chunk_store,
-        block_entity_anim: Some(block_entity_anim),
-    };
     normalize_tiny_velocity(&mut player.velocity);
-    travel(player, &neutral, world, 0.0, 0.0, sin_y_rot, cos_y_rot);
+    travel(
+        player, &neutral, world, tags, 0.0, 0.0, sin_y_rot, cos_y_rot,
+    );
 
     // Player.updatePlayerPose runs after LivingEntity.tick in vanilla. With
     // death-screen input released, this becomes standing unless clearance keeps
@@ -272,7 +270,7 @@ pub fn tick_dead(
 fn update_fly_state(
     player: &mut LocalPlayer,
     input: &InputState,
-    chunk_store: &ChunkStore,
+    world: CollisionWorld<'_>,
     vehicle: Option<Vehicle>,
     sin_y_rot: f32,
     cos_y_rot: f32,
@@ -290,7 +288,7 @@ fn update_fly_state(
             } else if !player.swimming && vehicle.is_none_or(|v| v.jumpable) {
                 player.flying = !player.flying;
                 if player.flying && player.on_ground {
-                    jump_from_ground(player, chunk_store, sin_y_rot, cos_y_rot);
+                    jump_from_ground(player, world, sin_y_rot, cos_y_rot);
                 }
                 player.abilities_dirty = true;
                 player.jump_trigger_time = 0;
@@ -305,11 +303,11 @@ fn update_fly_state(
 
 fn jump_from_ground(
     player: &mut LocalPlayer,
-    chunk_store: &ChunkStore,
+    world: CollisionWorld<'_>,
     sin_y_rot: f32,
     cos_y_rot: f32,
 ) {
-    let jump_factor = block_jump_factor(player, chunk_store);
+    let jump_factor = block_jump_factor(player, world);
     let jump_velocity = JUMP_VELOCITY * jump_factor;
     player.velocity.y = f64::from(jump_velocity).max(player.velocity.y);
 
@@ -319,24 +317,23 @@ fn jump_from_ground(
     }
 }
 
-fn is_climbable_state(state: azalea_block::BlockState, tags: &BlockTags) -> bool {
-    tags.contains("minecraft:climbable", block_id(state))
+fn is_climbable_state(block_data: &BlockData, tags: &BlockTags) -> bool {
+    tags.contains("minecraft:climbable", block_data.id())
 }
 
-fn trapdoor_usable_as_ladder(
-    trapdoor: azalea_block::BlockState,
-    below: azalea_block::BlockState,
-) -> bool {
-    let props = block_properties(trapdoor);
-    block_id(trapdoor).ends_with("_trapdoor")
+fn trapdoor_usable_as_ladder(trapdoor: &BlockData, below: &BlockData) -> bool {
+    let props = trapdoor.properties();
+    trapdoor.id().ends_with("_trapdoor")
         && props.get("open") == Some("true")
-        && block_id(below) == "ladder"
-        && props.get("facing") == block_properties(below).get("facing")
+        && below.id() == "ladder"
+        && props.get("facing") == below.properties().get("facing")
 }
 
 fn on_climbable_state(
     player: &LocalPlayer,
     chunk_store: &ChunkStore,
+    blocks: VersionBlockData,
+    tags: &BlockTags,
 ) -> Option<azalea_block::BlockState> {
     // TODO: `onClimbable` also rejects fall-flying in `can_glide_through`.
     if player.flying || is_spectator(player.game_mode) {
@@ -347,17 +344,17 @@ fn on_climbable_state(
     let y = player.position.y.floor() as i32;
     let z = player.position.z.floor() as i32;
     let state = chunk_store.get_block_state(x, y, z);
-    if is_climbable_state(state, &block_tags()) {
+    if is_climbable_state(blocks.block_data(state), tags) {
         return Some(state);
     }
 
     let below = chunk_store.get_block_state(x, y - 1, z);
-    trapdoor_usable_as_ladder(state, below).then_some(state)
+    trapdoor_usable_as_ladder(blocks.block_data(state), blocks.block_data(below)).then_some(state)
 }
 
 fn apply_climbable_velocity(
     player: &mut LocalPlayer,
-    state: azalea_block::BlockState,
+    block_data: &BlockData,
     suppress_slide: bool,
 ) {
     player.fall_distance = 0.0;
@@ -366,27 +363,39 @@ fn apply_climbable_velocity(
     player.velocity.z = player.velocity.z.clamp(-max, max);
     player.velocity.y = player.velocity.y.max(-max);
 
-    if player.velocity.y < 0.0 && block_id(state) != "scaffolding" && suppress_slide {
+    if player.velocity.y < 0.0 && block_data.id() != "scaffolding" && suppress_slide {
         player.velocity.y = 0.0;
     }
 }
 
-fn handle_on_climbable(player: &mut LocalPlayer, chunk_store: &ChunkStore, suppress_slide: bool) {
-    let Some(state) = on_climbable_state(player, chunk_store) else {
+fn handle_on_climbable(
+    player: &mut LocalPlayer,
+    world: CollisionWorld<'_>,
+    tags: &BlockTags,
+    suppress_slide: bool,
+) {
+    let Some(state) = on_climbable_state(player, world.chunks, world.blocks, tags) else {
         return;
     };
-    apply_climbable_velocity(player, state, suppress_slide);
+    apply_climbable_velocity(player, world.blocks.block_data(state), suppress_slide);
 }
 
 /// `Player.onClimbable`.
-pub(crate) fn on_climbable(player: &LocalPlayer, chunk_store: &ChunkStore) -> bool {
-    on_climbable_state(player, chunk_store).is_some()
+pub(crate) fn on_climbable(
+    player: &LocalPlayer,
+    chunk_store: &ChunkStore,
+    blocks: VersionBlockData,
+    tags: &BlockTags,
+) -> bool {
+    on_climbable_state(player, chunk_store, blocks, tags).is_some()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick_land(
     player: &mut LocalPlayer,
     input: &InputState,
     world: CollisionWorld<'_>,
+    tags: &BlockTags,
     forward: f32,
     strafe: f32,
     sin_y_rot: f32,
@@ -398,7 +407,10 @@ fn tick_land(
 
     let saved_vy = player.velocity.y;
     let block_friction = if on_ground_at_start {
-        movement_friction(block_below_affecting_movement(player, world.chunks))
+        world
+            .blocks
+            .block_data(block_below_affecting_movement(player, world))
+            .movement_friction()
     } else {
         1.0
     };
@@ -408,7 +420,8 @@ fn tick_land(
 
     handle_on_climbable(
         player,
-        world.chunks,
+        world,
+        tags,
         input.performing_action(input::Action::Sneak),
     );
 
@@ -416,13 +429,13 @@ fn tick_land(
 
     // TODO: `wasInPowderSnow && canEntityWalkOnPowderSnow` also takes the impulse.
     if (player.horizontal_collision || input.performing_action(input::Action::Jump))
-        && on_climbable(player, world.chunks)
+        && on_climbable(player, world.chunks, world.blocks, tags)
     {
         player.velocity.y = CLIMB_UP_VELOCITY;
     }
 
     // `Entity.move`, before gravity and drag.
-    let speed_factor = block_speed_factor(player, world.chunks);
+    let speed_factor = block_speed_factor(player, world);
     player.velocity.x *= f64::from(speed_factor);
     player.velocity.z *= f64::from(speed_factor);
 
@@ -460,10 +473,12 @@ fn water_falling_adjusted_y(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick_water(
     player: &mut LocalPlayer,
     input: &InputState,
     world: CollisionWorld<'_>,
+    tags: &BlockTags,
     forward: f32,
     strafe: f32,
     sin_y_rot: f32,
@@ -474,11 +489,14 @@ fn tick_water(
     if player.swimming {
         let target_vy = vanilla_look_y(player.look_dir.x_rot_deg());
         let surface_y = (player.position.y + 1.0 - 0.1).floor() as i32;
-        let surface_fluid = fluid(world.chunks.get_block_state(
-            player.position.x.floor() as i32,
-            surface_y,
-            player.position.z.floor() as i32,
-        ));
+        let surface_fluid = world
+            .blocks
+            .block_data(world.chunks.get_block_state(
+                player.position.x.floor() as i32,
+                surface_y,
+                player.position.z.floor() as i32,
+            ))
+            .fluid();
         if target_vy <= 0.0
             || input.performing_action(input::Action::Jump)
             || surface_fluid.kind != FluidKind::Empty
@@ -504,7 +522,7 @@ fn tick_water(
     apply_collision(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
     // TODO: `Entity.move`'s block speed factor also applies in water.
 
-    if player.horizontal_collision && on_climbable(player, world.chunks) {
+    if player.horizontal_collision && on_climbable(player, world.chunks, world.blocks, tags) {
         player.velocity.y = CLIMB_UP_VELOCITY;
     }
 
@@ -529,7 +547,7 @@ fn tick_water(
             player
                 .bounding_box()
                 .offset(dvec3(player.velocity.x, y_offset, player.velocity.z));
-        if no_collision(world, &probe, &ctx) && !contains_any_liquid(world.chunks, &probe) {
+        if no_collision(world, &probe, &ctx) && !contains_any_liquid(world, &probe) {
             player.velocity.y = f64::from(0.3_f32);
         }
     }
@@ -547,7 +565,7 @@ fn overwrite_flying_vy(player: &mut LocalPlayer, saved_vy: f64) {
 
 /// Vanilla `LevelReader.containsAnyLiquid`: any fluid in an overlapped cell,
 /// whatever its height.
-fn contains_any_liquid(chunk_store: &ChunkStore, aabb: &Aabb) -> bool {
+fn contains_any_liquid(world: CollisionWorld<'_>, aabb: &Aabb) -> bool {
     let x0 = aabb.min.x.floor() as i32;
     let x1 = aabb.max.x.ceil() as i32;
     let y0 = aabb.min.y.floor() as i32;
@@ -558,7 +576,13 @@ fn contains_any_liquid(chunk_store: &ChunkStore, aabb: &Aabb) -> bool {
     for x in x0..x1 {
         for y in y0..y1 {
             for z in z0..z1 {
-                if fluid(chunk_store.get_block_state(x, y, z)).kind != FluidKind::Empty {
+                if world
+                    .blocks
+                    .block_data(world.chunks.get_block_state(x, y, z))
+                    .fluid()
+                    .kind
+                    != FluidKind::Empty
+                {
                     return true;
                 }
             }
@@ -611,7 +635,7 @@ fn apply_collision(
     // (adding any current) before collided axes are zeroed; the fall distance
     // narrows the movement Y to float.
     if !player.in_water {
-        player.refresh_water_interaction(world.chunks);
+        player.refresh_water_interaction(world.chunks, world.blocks);
     }
     if !player.in_water && resolved.y < 0.0 {
         player.fall_distance -= f64::from(resolved.y as f32);
@@ -931,14 +955,15 @@ fn block_state_at_player_position(
 
 fn block_below_affecting_movement(
     player: &LocalPlayer,
-    chunk_store: &ChunkStore,
+    world: CollisionWorld<'_>,
 ) -> azalea_block::BlockState {
+    let chunk_store = world.chunks;
     let offset = f64::from(0.500_001_f32);
     let y = (player.position.y - offset).floor() as i32;
 
     if let Some(support) = player.main_supporting_block_pos {
         let support_state = chunk_store.get_block_state(support.x, support.y, support.z);
-        let support_id = crate::world::block::block_id(support_state);
+        let support_id = world.blocks.block_data(support_state).id();
         // `Entity.getOnPos`: walls and fence gates keep the support's own Y.
         if support_id.ends_with("_wall") || support_id.ends_with("_fence_gate") {
             return support_state;
@@ -988,30 +1013,37 @@ fn update_supporting_block(
     player.on_ground_no_blocks = support.is_none();
 }
 
-fn block_jump_factor(player: &LocalPlayer, chunk_store: &ChunkStore) -> f32 {
-    let here_factor = movement_jump_factor(block_state_at_player_position(player, chunk_store));
+fn block_jump_factor(player: &LocalPlayer, world: CollisionWorld<'_>) -> f32 {
+    let here_factor = world
+        .blocks
+        .block_data(block_state_at_player_position(player, world.chunks))
+        .movement_jump_factor();
     if f64::from(here_factor) == 1.0 {
-        movement_jump_factor(block_below_affecting_movement(player, chunk_store))
+        world
+            .blocks
+            .block_data(block_below_affecting_movement(player, world))
+            .movement_jump_factor()
     } else {
         here_factor
     }
 }
 
 /// `Player.getBlockSpeedFactor`; pomme has no fall flying.
-fn block_speed_factor(player: &LocalPlayer, chunk_store: &ChunkStore) -> f32 {
+fn block_speed_factor(player: &LocalPlayer, world: CollisionWorld<'_>) -> f32 {
     if player.flying {
         return 1.0;
     }
-    let here = block_state_at_player_position(player, chunk_store);
-    let here_factor = movement_speed_factor(here);
-    if matches!(
-        crate::world::block::block_id(here),
-        "water" | "bubble_column"
-    ) || f64::from(here_factor) != 1.0
-    {
+    let here = world
+        .blocks
+        .block_data(block_state_at_player_position(player, world.chunks));
+    let here_factor = here.movement_speed_factor();
+    if matches!(here.id(), "water" | "bubble_column") || f64::from(here_factor) != 1.0 {
         here_factor
     } else {
-        movement_speed_factor(block_below_affecting_movement(player, chunk_store))
+        world
+            .blocks
+            .block_data(block_below_affecting_movement(player, world))
+            .movement_speed_factor()
     }
 }
 
@@ -1187,6 +1219,26 @@ mod tests {
     use super::*;
     use crate::player::{CROUCH_EYE_HEIGHT, STANDING_EYE_HEIGHT};
     use crate::world::block::find_state;
+    use crate::world::block_entity_anim::BlockEntityAnimStore;
+
+    fn test_blocks() -> VersionBlockData {
+        VersionBlockData::for_protocol(
+            pomme_protocol::ProtocolVersion::from_name("26.2")
+                .unwrap()
+                .protocol,
+        )
+    }
+
+    fn test_world<'a>(
+        chunks: &'a ChunkStore,
+        anim: &'a BlockEntityAnimStore,
+    ) -> CollisionWorld<'a> {
+        CollisionWorld {
+            chunks,
+            blocks: test_blocks(),
+            block_entity_anim: Some(anim),
+        }
+    }
 
     #[test]
     fn player_width_stops_at_negative_two_block_face() {
@@ -1258,8 +1310,8 @@ mod tests {
         let stone = find_state("stone", &[]);
         let ladder = find_state("ladder", &[("facing", "north")]);
 
-        assert!(is_climbable_state(stone, &tags));
-        assert!(!is_climbable_state(ladder, &tags));
+        assert!(is_climbable_state(test_blocks().block_data(stone), &tags));
+        assert!(!is_climbable_state(test_blocks().block_data(ladder), &tags));
     }
 
     #[test]
@@ -1271,13 +1323,25 @@ mod tests {
         let open_south = find_state("oak_trapdoor", &[("open", "true"), ("facing", "south")]);
         let closed_north = find_state("oak_trapdoor", &[("open", "false"), ("facing", "north")]);
 
-        assert!(trapdoor_usable_as_ladder(open_north, north_ladder));
-        assert!(!trapdoor_usable_as_ladder(open_north, south_ladder));
-        assert!(!trapdoor_usable_as_ladder(open_south, north_ladder));
-        assert!(!trapdoor_usable_as_ladder(closed_north, north_ladder));
+        assert!(trapdoor_usable_as_ladder(
+            test_blocks().block_data(open_north),
+            test_blocks().block_data(north_ladder)
+        ));
         assert!(!trapdoor_usable_as_ladder(
-            open_north,
-            find_state("stone", &[])
+            test_blocks().block_data(open_north),
+            test_blocks().block_data(south_ladder)
+        ));
+        assert!(!trapdoor_usable_as_ladder(
+            test_blocks().block_data(open_south),
+            test_blocks().block_data(north_ladder)
+        ));
+        assert!(!trapdoor_usable_as_ladder(
+            test_blocks().block_data(closed_north),
+            test_blocks().block_data(north_ladder)
+        ));
+        assert!(!trapdoor_usable_as_ladder(
+            test_blocks().block_data(open_north),
+            test_blocks().block_data(find_state("stone", &[]))
         ));
     }
 
@@ -1290,14 +1354,24 @@ mod tests {
         player.velocity = Velocity::new(0.5, -0.7, -0.5);
         player.fall_distance = 12.0;
 
-        handle_on_climbable(&mut player, &chunks, false);
+        handle_on_climbable(
+            &mut player,
+            CollisionWorld::new(&chunks, test_blocks()),
+            &BlockTags::default(),
+            false,
+        );
 
         let max = f64::from(CLIMB_MAX_FALL_SPEED);
         assert_eq!(player.velocity, Velocity::new(max, -max, -max));
         assert_eq!(player.fall_distance, 0.0);
 
         player.velocity.y = -0.1;
-        handle_on_climbable(&mut player, &chunks, true);
+        handle_on_climbable(
+            &mut player,
+            CollisionWorld::new(&chunks, test_blocks()),
+            &BlockTags::default(),
+            true,
+        );
         assert_eq!(player.velocity.y, 0.0);
     }
 
@@ -1308,7 +1382,7 @@ mod tests {
         let mut player = LocalPlayer::new();
         player.velocity.y = -0.4;
 
-        apply_climbable_velocity(&mut player, scaffolding, true);
+        apply_climbable_velocity(&mut player, test_blocks().block_data(scaffolding), true);
 
         assert_eq!(player.velocity.y, -f64::from(CLIMB_MAX_FALL_SPEED));
     }
@@ -1320,14 +1394,20 @@ mod tests {
         player.position = dvec3(8.5, 64.5, 8.5).into();
 
         player.flying = true;
-        assert!(on_climbable_state(&player, &chunks).is_none());
+        assert!(
+            on_climbable_state(&player, &chunks, test_blocks(), &BlockTags::default()).is_none()
+        );
 
         player.flying = false;
         player.game_mode = 3;
-        assert!(on_climbable_state(&player, &chunks).is_none());
+        assert!(
+            on_climbable_state(&player, &chunks, test_blocks(), &BlockTags::default()).is_none()
+        );
 
         player.game_mode = 0;
-        assert!(on_climbable_state(&player, &chunks).is_some());
+        assert!(
+            on_climbable_state(&player, &chunks, test_blocks(), &BlockTags::default()).is_some()
+        );
     }
 
     #[test]
@@ -1341,7 +1421,16 @@ mod tests {
         player.fall_distance = 12.0;
         let neutral = InputState::released();
 
-        tick_land(&mut player, &neutral, (&chunks).into(), 0.0, 0.0, 0.0, 1.0);
+        tick_land(
+            &mut player,
+            &neutral,
+            CollisionWorld::new(&chunks, test_blocks()),
+            &BlockTags::default(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
 
         assert!(player.horizontal_collision);
         assert!((player.position.z - (8.5 - f64::from(CLIMB_MAX_FALL_SPEED))).abs() < 1.0e-12);
@@ -1359,7 +1448,16 @@ mod tests {
         player.velocity = Velocity::new(0.5, 0.0, 0.0);
         let neutral = InputState::released();
 
-        tick_water(&mut player, &neutral, (&chunks).into(), 0.0, 0.0, 0.0, 1.0);
+        tick_water(
+            &mut player,
+            &neutral,
+            CollisionWorld::new(&chunks, test_blocks()),
+            &BlockTags::default(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
 
         assert!(player.horizontal_collision);
         let expected_y = CLIMB_UP_VELOCITY * f64::from(WATER_VERTICAL_DRAG) - GRAVITY / 16.0;
@@ -1432,8 +1530,8 @@ mod tests {
         tick(
             &mut shifted,
             &shift_input,
-            &chunks,
-            &block_entity_anim,
+            test_world(&chunks, &block_entity_anim),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -1441,8 +1539,8 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
-            &chunks,
-            &block_entity_anim,
+            test_world(&chunks, &block_entity_anim),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -1461,8 +1559,8 @@ mod tests {
         tick(
             &mut shifted,
             &shift_input,
-            &chunks,
-            &block_entity_anim,
+            test_world(&chunks, &block_entity_anim),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -1475,8 +1573,8 @@ mod tests {
         tick(
             &mut plain,
             &plain_input,
-            &chunks,
-            &block_entity_anim,
+            test_world(&chunks, &block_entity_anim),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -1493,8 +1591,8 @@ mod tests {
         tick(
             &mut shifted,
             &plain_input,
-            &chunks,
-            &block_entity_anim,
+            test_world(&chunks, &block_entity_anim),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -1508,8 +1606,8 @@ mod tests {
         tick(
             &mut shifted,
             &plain_input,
-            &chunks,
-            &block_entity_anim,
+            test_world(&chunks, &block_entity_anim),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -1524,7 +1622,11 @@ mod tests {
         player.position = dvec3(8.5, 64.0, 8.5).into();
         player.was_shift_pressed = true;
 
-        update_movement_crouching_state(&mut player, (&chunks).into(), true);
+        update_movement_crouching_state(
+            &mut player,
+            CollisionWorld::new(&chunks, test_blocks()),
+            true,
+        );
         assert!(
             !player.movement_crouching,
             "LocalPlayer private crouching flag is forced false while passenger"
@@ -1535,13 +1637,23 @@ mod tests {
         chunks.set_block_state(8, 65, 8, stone);
         let mut input = InputState::released();
         input.set_key_pressed_for_test(KeyCode::ShiftLeft, true);
-        update_player_pose(&mut player, &input, (&chunks).into(), true);
+        update_player_pose(
+            &mut player,
+            &input,
+            CollisionWorld::new(&chunks, test_blocks()),
+            true,
+        );
         assert!(player.crouching);
         assert!(!player.swimming_pose);
 
         player.crouching = false;
         player.swimming_pose = false;
-        update_player_pose(&mut player, &input, (&chunks).into(), false);
+        update_player_pose(
+            &mut player,
+            &input,
+            CollisionWorld::new(&chunks, test_blocks()),
+            false,
+        );
         assert!(
             player.swimming_pose,
             "unmounted player falls back to SWIMMING when desired crouch pose does not fit"
@@ -1598,7 +1710,15 @@ mod tests {
         input.set_key_pressed_for_test(KeyCode::ShiftLeft, true);
         let anim = BlockEntityAnimStore::default();
 
-        tick(&mut player, &input, &chunks, &anim, 1.0, false, None);
+        tick(
+            &mut player,
+            &input,
+            test_world(&chunks, &anim),
+            &BlockTags::default(),
+            1.0,
+            false,
+            None,
+        );
 
         let target_vy = vanilla_look_y(-38.0);
         let expected = target_vy * 0.06 * f64::from(WATER_VERTICAL_DRAG);
@@ -1625,7 +1745,7 @@ mod tests {
 
         let mut player = LocalPlayer::new();
         player.position = dvec3(8.5, 64.0, 8.5).into();
-        player.refresh_water_interaction(&chunks);
+        player.refresh_water_interaction(&chunks, test_blocks());
 
         let expected_horizontal = 0.014_f64 / 37.0_f64.sqrt();
         assert!(
@@ -1704,8 +1824,26 @@ mod tests {
         dry_player.on_ground = true;
 
         let neutral = InputState::released();
-        tick_land(&mut wet_player, &neutral, (&wet).into(), 0.0, 0.0, 0.0, 1.0);
-        tick_land(&mut dry_player, &neutral, (&dry).into(), 0.0, 0.0, 0.0, 1.0);
+        tick_land(
+            &mut wet_player,
+            &neutral,
+            CollisionWorld::new(&wet, test_blocks()),
+            &BlockTags::default(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
+        tick_land(
+            &mut dry_player,
+            &neutral,
+            CollisionWorld::new(&dry, test_blocks()),
+            &BlockTags::default(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        );
 
         assert!(
             wet_player.in_water,
@@ -1732,12 +1870,15 @@ mod tests {
             "water has no collision shape"
         );
         assert!(
-            contains_any_liquid(&chunks, &wet_box),
+            contains_any_liquid(CollisionWorld::new(&chunks, test_blocks()), &wet_box),
             "vanilla Entity.isFree must still reject a collision-free box containing fluid"
         );
 
         let dry_box = wet_box.offset(dvec3(2.0, 0.0, 0.0));
-        assert!(!contains_any_liquid(&chunks, &dry_box));
+        assert!(!contains_any_liquid(
+            CollisionWorld::new(&chunks, test_blocks()),
+            &dry_box
+        ));
     }
 
     #[test]
@@ -1951,8 +2092,8 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
-            &chunks,
-            &BlockEntityAnimStore::default(),
+            test_world(&chunks, &BlockEntityAnimStore::default()),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -1977,7 +2118,12 @@ mod tests {
 
         player.death_time = 1;
         let starting_height = player.height();
-        tick_dead(&mut player, &chunks, &block_entity_anim, false);
+        tick_dead(
+            &mut player,
+            test_world(&chunks, &block_entity_anim),
+            &BlockTags::default(),
+            false,
+        );
 
         assert_eq!(
             starting_height, CROUCH_HEIGHT,
@@ -1993,7 +2139,12 @@ mod tests {
             "the first dead tick must still use the pre-tick crouching eye height"
         );
         player.death_time = 2;
-        tick_dead(&mut player, &chunks, &block_entity_anim, false);
+        tick_dead(
+            &mut player,
+            test_world(&chunks, &block_entity_anim),
+            &BlockTags::default(),
+            false,
+        );
         assert!(
             player.eye_height > 1.27,
             "the next dead tick must smooth toward the neutral standing pose"
@@ -2044,8 +2195,8 @@ mod tests {
         tick(
             &mut player,
             &input,
-            &chunks,
-            &BlockEntityAnimStore::default(),
+            test_world(&chunks, &BlockEntityAnimStore::default()),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -2070,8 +2221,8 @@ mod tests {
         tick(
             &mut player,
             &InputState::released(),
-            &chunks,
-            &BlockEntityAnimStore::default(),
+            test_world(&chunks, &BlockEntityAnimStore::default()),
+            &BlockTags::default(),
             1.0,
             false,
             None,
@@ -2086,8 +2237,14 @@ mod tests {
         chunks.set_block_state(8, 64, 8, find_state("soul_sand", &[]));
         let mut player = LocalPlayer::new();
         player.position = dvec3(8.5, 65.0, 8.5).into();
-        assert_eq!(block_speed_factor(&player, &chunks), 0.4);
+        assert_eq!(
+            block_speed_factor(&player, CollisionWorld::new(&chunks, test_blocks())),
+            0.4
+        );
         player.flying = true;
-        assert_eq!(block_speed_factor(&player, &chunks), 1.0);
+        assert_eq!(
+            block_speed_factor(&player, CollisionWorld::new(&chunks, test_blocks())),
+            1.0
+        );
     }
 }

@@ -11,7 +11,7 @@ use crate::entity::HURT_DURATION;
 use crate::entity::components::{LookDirection, Position, Velocity};
 use crate::physics::aabb::Aabb;
 use crate::world::block::model::Direction;
-use crate::world::block::{Fluid, FluidKind, block_id, blocks_motion, fluid, is_full_face_sturdy};
+use crate::world::block::{Fluid, FluidKind, VersionBlockData};
 
 pub const MAX_AIR_SUPPLY: i32 = 300;
 // Vanilla stores player dimensions/eye heights as floats and only widens them
@@ -53,8 +53,8 @@ pub fn is_spectator(game_mode: u8) -> bool {
     game_mode == 3
 }
 
-fn is_water_block(state: azalea_block::BlockState) -> bool {
-    fluid(state).kind == FluidKind::Water
+fn is_water_block(state: azalea_block::BlockState, blocks: VersionBlockData) -> bool {
+    blocks.block_data(state).fluid().kind == FluidKind::Water
 }
 
 #[inline]
@@ -82,6 +82,7 @@ fn affects_water_flow(f: Fluid) -> bool {
 
 fn water_flow_at(
     chunks: &crate::world::chunk::ChunkStore,
+    blocks: VersionBlockData,
     x: i32,
     y: i32,
     z: i32,
@@ -97,7 +98,8 @@ fn water_flow_at(
         let nx = x + dx;
         let nz = z + dz;
         let neighbor_state = chunks.get_block_state(nx, y, nz);
-        let neighbor_fluid = fluid(neighbor_state);
+        let neighbor_data = blocks.block_data(neighbor_state);
+        let neighbor_fluid = neighbor_data.fluid();
         if !affects_water_flow(neighbor_fluid) {
             continue;
         }
@@ -105,8 +107,10 @@ fn water_flow_at(
         let mut neighbor_height = neighbor_fluid.height();
         let mut distance = 0.0_f32;
         if neighbor_height == 0.0 {
-            let below_fluid = fluid(chunks.get_block_state(nx, y - 1, nz));
-            if !blocks_motion(neighbor_state) && affects_water_flow(below_fluid) && {
+            let below_fluid = blocks
+                .block_data(chunks.get_block_state(nx, y - 1, nz))
+                .fluid();
+            if !neighbor_data.blocks_motion() && affects_water_flow(below_fluid) && {
                 neighbor_height = below_fluid.height();
                 neighbor_height > 0.0
             } {
@@ -129,10 +133,11 @@ fn water_flow_at(
             let nz = z + dz;
             let solid_face = |by| {
                 let state = chunks.get_block_state(nx, by, nz);
-                let same_water = fluid(state).kind == FluidKind::Water;
+                let data = blocks.block_data(state);
+                let same_water = data.fluid().kind == FluidKind::Water;
                 !same_water
-                    && !matches!(block_id(state), "ice" | "frosted_ice")
-                    && is_full_face_sturdy(state, direction) == Some(true)
+                    && !matches!(data.id(), "ice" | "frosted_ice")
+                    && data.is_full_face_sturdy(direction) == Some(true)
             };
             if solid_face(y) || solid_face(y + 1) {
                 flow = vanilla_vec3_normalize(flow) + dvec3(0.0, -6.0, 0.0);
@@ -549,15 +554,20 @@ impl LocalPlayer {
     pub fn update_water_state(
         &mut self,
         chunks: &crate::world::chunk::ChunkStore,
+        blocks: VersionBlockData,
         is_passenger: bool,
     ) {
-        self.refresh_water_interaction(chunks);
-        self.update_swimming_state(chunks, is_passenger);
+        self.refresh_water_interaction(chunks, blocks);
+        self.update_swimming_state(chunks, blocks, is_passenger);
     }
 
     /// Vanilla `Entity.updateFluidInteraction`, which
     /// `LivingEntity.checkFallDamage` repeats mid-move.
-    pub(crate) fn refresh_water_interaction(&mut self, chunks: &crate::world::chunk::ChunkStore) {
+    pub(crate) fn refresh_water_interaction(
+        &mut self,
+        chunks: &crate::world::chunk::ChunkStore,
+        blocks: VersionBlockData,
+    ) {
         let half_w = PLAYER_HALF_WIDTH;
         let height = self.height();
         let eye_height = f64::from(self.target_eye_height());
@@ -579,23 +589,26 @@ impl LocalPlayer {
         for bx in x0..=x1 {
             for by in y0..=y1 {
                 for bz in z0..=z1 {
-                    let f = fluid(chunks.get_block_state(bx, by, bz));
+                    let f = blocks
+                        .block_data(chunks.get_block_state(bx, by, bz))
+                        .fluid();
                     if f.kind != FluidKind::Water {
                         continue;
                     }
-                    let block_height = if is_water_block(chunks.get_block_state(bx, by + 1, bz)) {
-                        1.0
-                    } else {
-                        // f32 to match vanilla's float math.
-                        f64::from(f.amount as f32 / 9.0)
-                    };
+                    let block_height =
+                        if is_water_block(chunks.get_block_state(bx, by + 1, bz), blocks) {
+                            1.0
+                        } else {
+                            // f32 to match vanilla's float math.
+                            f64::from(f.amount as f32 / 9.0)
+                        };
                     let fluid_top = f64::from(by) + block_height;
                     if fluid_top < feet_y + MARGIN {
                         continue;
                     }
 
                     fluid_height = fluid_height.max(fluid_top - feet_y);
-                    let mut flow = water_flow_at(chunks, bx, by, bz, f);
+                    let mut flow = water_flow_at(chunks, blocks, bx, by, bz, f);
                     // Shallow contact scales the flow by the height so far.
                     if fluid_height < 0.4 {
                         flow *= fluid_height;
@@ -626,11 +639,13 @@ impl LocalPlayer {
         let eye_block_x = self.position.x.floor() as i32;
         let eye_block_y = eye_y.floor() as i32;
         let eye_block_z = self.position.z.floor() as i32;
-        let eye_fluid = fluid(chunks.get_block_state(eye_block_x, eye_block_y, eye_block_z));
+        let eye_fluid = blocks
+            .block_data(chunks.get_block_state(eye_block_x, eye_block_y, eye_block_z))
+            .fluid();
         let eye_fluid_top = if eye_fluid.kind == FluidKind::Water {
             let above = chunks.get_block_state(eye_block_x, eye_block_y + 1, eye_block_z);
             f64::from(eye_block_y)
-                + if is_water_block(above) {
+                + if is_water_block(above, blocks) {
                     1.0
                 } else {
                     f64::from(eye_fluid.height())
@@ -653,6 +668,7 @@ impl LocalPlayer {
     fn update_swimming_state(
         &mut self,
         chunks: &crate::world::chunk::ChunkStore,
+        blocks: VersionBlockData,
         is_passenger: bool,
     ) {
         // `Entity.updateSwimming`: starts with eyes and feet in water, latches
@@ -667,7 +683,10 @@ impl LocalPlayer {
                 self.position.y.floor() as i32,
                 self.position.z.floor() as i32,
             );
-            self.sprinting && self.under_water && self.in_water && is_water_block(feet_state)
+            self.sprinting
+                && self.under_water
+                && self.in_water
+                && is_water_block(feet_state, blocks)
         };
     }
 
@@ -761,6 +780,14 @@ impl LocalPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_blocks() -> VersionBlockData {
+        VersionBlockData::for_protocol(
+            pomme_protocol::ProtocolVersion::from_name("26.2")
+                .unwrap()
+                .protocol,
+        )
+    }
 
     #[test]
     fn local_player_is_removed_at_vanilla_death_tick() {
@@ -1050,14 +1077,14 @@ mod tests {
 
         let mut player = LocalPlayer::new();
         player.position = Position::new(8.5, 64.2, 8.5);
-        player.update_water_state(&chunks, false);
+        player.update_water_state(&chunks, test_blocks(), false);
         assert!(
             !player.in_water,
             "level-7 water is only 1/9 block high; feet above its surface are not in water"
         );
 
         player.position = Position::new(8.5, 64.05, 8.5);
-        player.update_water_state(&chunks, false);
+        player.update_water_state(&chunks, test_blocks(), false);
         assert!(
             player.in_water,
             "feet below the level-7 surface must still register water contact"
@@ -1076,14 +1103,14 @@ mod tests {
         unmounted.position = Position::new(8.5, 64.0, 8.5);
         unmounted.sprinting = true;
         unmounted.swimming = true;
-        unmounted.update_water_state(&chunks, false);
+        unmounted.update_water_state(&chunks, test_blocks(), false);
         assert!(unmounted.swimming);
 
         let mut mounted = LocalPlayer::new();
         mounted.position = Position::new(8.5, 64.0, 8.5);
         mounted.sprinting = true;
         mounted.swimming = true;
-        mounted.update_water_state(&chunks, true);
+        mounted.update_water_state(&chunks, test_blocks(), true);
         assert!(
             !mounted.swimming,
             "Entity.updateSwimming clears the shared swimming flag while passenger"
@@ -1098,7 +1125,14 @@ mod tests {
             chunks.set_block_state(x, 64, z, source);
         }
 
-        let flow = water_flow_at(&chunks, 8, 64, 8, fluid(source));
+        let flow = water_flow_at(
+            &chunks,
+            test_blocks(),
+            8,
+            64,
+            8,
+            test_blocks().block_data(source).fluid(),
+        );
         assert_eq!(flow, glam::DVec3::ZERO);
     }
 
@@ -1113,7 +1147,14 @@ mod tests {
         chunks.set_block_state(8, 64, 9, source);
         chunks.set_block_state(7, 64, 8, source);
 
-        let flow = water_flow_at(&chunks, 8, 64, 8, fluid(source));
+        let flow = water_flow_at(
+            &chunks,
+            test_blocks(),
+            8,
+            64,
+            8,
+            test_blocks().block_data(source).fluid(),
+        );
         assert_eq!(flow, glam::DVec3::X);
     }
 
@@ -1125,7 +1166,14 @@ mod tests {
         chunks.set_block_state(8, 64, 8, falling);
         chunks.set_block_state(9, 64, 8, stone);
 
-        let flow = water_flow_at(&chunks, 8, 64, 8, fluid(falling));
+        let flow = water_flow_at(
+            &chunks,
+            test_blocks(),
+            8,
+            64,
+            8,
+            test_blocks().block_data(falling).fluid(),
+        );
         assert_eq!(flow, glam::DVec3::NEG_Y);
     }
 

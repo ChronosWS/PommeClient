@@ -2285,13 +2285,15 @@ pub fn update_game(
             game.player.effects.tick();
             game.player.tick_sleep();
         }
-        game.item_entity_store.tick(&game.chunk_store);
+        game.item_entity_store
+            .tick(&game.chunk_store, game.block_registry.version_data());
         game.level_runtime.animate_tick(
             &game.block_registry,
             &game.chunk_store,
             *game.player.position,
         );
-        game.particle_store.tick(&game.chunk_store);
+        game.particle_store
+            .tick(&game.chunk_store, game.block_registry.version_data());
         game.block_entity_anim.tick();
         game.title.tick();
         tick_tool_highlight(core, game);

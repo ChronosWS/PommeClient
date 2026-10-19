@@ -9,18 +9,16 @@
 
 use azalea_block::BlockState;
 
-use crate::world::block::{
-    PropMap, SpecialCollision, block_id, block_properties, has_collision, special_collision,
-};
+use crate::world::block::{BlockData, PropMap, SpecialCollision, block_id};
 
 /// A block-local axis-aligned box: `[min_x, min_y, min_z, max_x, max_y,
 /// max_z]`.
 pub type LocalBox = [f64; 6];
 
-/// Cached collision boxes for `state`: `None` for a full cube, `Some(&[])` for
-/// no collision, `Some(boxes)` for a partial shape.
-pub fn partial_shape(state: BlockState) -> Option<&'static [LocalBox]> {
-    crate::world::block::block_shape(state)
+/// Cached collision boxes for resolved data: `None` for a full cube,
+/// `Some(&[])` for no collision, `Some(boxes)` for a partial shape.
+pub fn partial_shape(block_data: &BlockData) -> Option<&'static [LocalBox]> {
+    block_data.collision_boxes()
 }
 
 const FULL_CUBE_SHAPE: &[LocalBox] = &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
@@ -87,17 +85,17 @@ impl CollisionContext {
 /// `context.getCollisionShape(state, level, pos)` in `partial_shape`'s
 /// encoding. Scaffolding is `noCollision()` but overrides the shape anyway.
 pub fn collision_shape(
-    state: BlockState,
+    block_data: &BlockData,
     pos_y: i32,
     ctx: &CollisionContext,
 ) -> Option<&'static [LocalBox]> {
-    match special_collision(state) {
+    match block_data.special_collision() {
         // `ScaffoldingBlock.getCollisionShape`: the table holds SHAPE_STABLE.
         SpecialCollision::Scaffolding => {
             if ctx.is_above(1.0, pos_y, true) && !ctx.descending {
-                return partial_shape(state);
+                return partial_shape(block_data);
             }
-            let props = block_properties(state);
+            let props = block_data.properties();
             if props.get("distance") != Some("0")
                 && props.get("bottom") == Some("true")
                 && ctx.is_above(0.0, pos_y, true)
@@ -118,8 +116,8 @@ pub fn collision_shape(
         }
         // Explicit shapes beat `noCollision` (`PitcherCropBlock`,
         // `WallHangingSignBlock`); only the full-cube default needs the flag.
-        _ => match partial_shape(state) {
-            None if !has_collision(state) => Some(&[]),
+        _ => match partial_shape(block_data) {
+            None if !block_data.has_collision() => Some(&[]),
             shape => shape,
         },
     }

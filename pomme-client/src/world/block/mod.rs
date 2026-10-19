@@ -236,6 +236,71 @@ pub(crate) struct BlockData {
     light: LightProps,
 }
 
+impl BlockData {
+    pub(crate) fn id(&self) -> &'static str {
+        self.id
+    }
+
+    pub(crate) fn properties(&self) -> &PropMap {
+        &self.properties
+    }
+
+    pub(crate) fn fluid(&self) -> Fluid {
+        self.fluid
+    }
+
+    pub(crate) fn has_collision(&self) -> bool {
+        self.collides
+    }
+
+    pub(crate) fn special_collision(&self) -> SpecialCollision {
+        self.special_collision
+    }
+
+    pub(crate) fn has_large_collision_shape(&self) -> bool {
+        self.large_collision_shape
+    }
+
+    pub(crate) fn collision_boxes(&self) -> Option<&'static [LocalBox]> {
+        self.shape
+    }
+
+    /// Collision stands in where the selected table lacks `blocksMotion`.
+    pub(crate) fn blocks_motion(&self) -> bool {
+        self.blocks_motion.unwrap_or_else(|| self.has_collision())
+    }
+
+    pub(crate) fn is_full_face_sturdy(&self, direction: model::Direction) -> Option<bool> {
+        self.full_face_sturdy
+            .map(|mask| mask & (1 << direction as u8) != 0)
+    }
+
+    // TODO: read friction, speed and jump factors from the generated state table.
+    pub(crate) fn movement_friction(&self) -> f32 {
+        match self.id() {
+            "ice" | "packed_ice" | "frosted_ice" => 0.98,
+            "blue_ice" => 0.989,
+            "slime_block" => 0.8,
+            _ => 0.6,
+        }
+    }
+
+    pub(crate) fn movement_speed_factor(&self) -> f32 {
+        match self.id() {
+            "soul_sand" | "honey_block" => 0.4,
+            _ => 1.0,
+        }
+    }
+
+    pub(crate) fn movement_jump_factor(&self) -> f32 {
+        if self.id() == "honey_block" { 0.5 } else { 1.0 }
+    }
+
+    pub(crate) fn collision_shape_position(&self, x: i32, y: i32, z: i32) -> DVec3 {
+        shape_position(self, x, y, z, self.collision_shape_uses_offset)
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct BlockFile {
     version: String,
@@ -1000,11 +1065,11 @@ pub fn try_state(id: u32) -> Option<BlockState> {
 }
 
 pub fn block_id(state: BlockState) -> &'static str {
-    block_data(state).id
+    block_data(state).id()
 }
 
 pub fn block_properties(state: BlockState) -> &'static PropMap {
-    &block_data(state).properties
+    block_data(state).properties()
 }
 
 pub fn block_behavior(state: BlockState) -> &'static BlockBehavior {
@@ -1012,31 +1077,21 @@ pub fn block_behavior(state: BlockState) -> &'static BlockBehavior {
 }
 
 /// Vanilla `BlockBehaviour` movement friction.
-// TODO: read friction, speed and jump factors from the generated state table.
+#[cfg(test)]
 pub fn movement_friction(state: BlockState) -> f32 {
-    match block_id(state) {
-        "ice" | "packed_ice" | "frosted_ice" => 0.98,
-        "blue_ice" => 0.989,
-        "slime_block" => 0.8,
-        _ => 0.6,
-    }
+    block_data(state).movement_friction()
 }
 
 /// Vanilla `BlockBehaviour.speedFactor`.
+#[cfg(test)]
 pub fn movement_speed_factor(state: BlockState) -> f32 {
-    match block_id(state) {
-        "soul_sand" | "honey_block" => 0.4,
-        _ => 1.0,
-    }
+    block_data(state).movement_speed_factor()
 }
 
 /// Vanilla `BlockBehaviour.jumpFactor`.
+#[cfg(test)]
 pub fn movement_jump_factor(state: BlockState) -> f32 {
-    if block_id(state) == "honey_block" {
-        0.5
-    } else {
-        1.0
-    }
+    block_data(state).movement_jump_factor()
 }
 
 /// Vanilla `RedStoneWireBlock.getColorForPower`: dust tint for the state's
@@ -1079,7 +1134,7 @@ pub fn is_air(state: BlockState) -> bool {
 
 /// Whether the state's block collides with entities (vanilla `hasCollision`).
 pub fn has_collision(state: BlockState) -> bool {
-    block_data(state).collides
+    block_data(state).has_collision()
 }
 
 /// Blocks the collision scan special-cases, tagged at table build so it
@@ -1093,16 +1148,11 @@ pub(crate) enum SpecialCollision {
     ShulkerBox,
 }
 
-pub(crate) fn special_collision(state: BlockState) -> SpecialCollision {
-    block_data(state).special_collision
-}
-
 /// Vanilla `BlockState.blocksMotion()`, distinct from collision and occlusion;
 /// collision stands in where the table lacks it.
+#[cfg(test)]
 pub fn blocks_motion(state: BlockState) -> bool {
-    block_data(state)
-        .blocks_motion
-        .unwrap_or_else(|| has_collision(state))
+    block_data(state).blocks_motion()
 }
 
 /// Vanilla cached `BlockState.isSolid()` / `legacySolid`.
@@ -1142,24 +1192,19 @@ pub fn is_replaceable(state: BlockState) -> Option<bool> {
     block_data(state).replaceable
 }
 
-/// Vanilla `BlockState.isFaceSturdy(..., SupportType.FULL)`.
-pub fn is_full_face_sturdy(state: BlockState, direction: model::Direction) -> Option<bool> {
-    block_data(state)
-        .full_face_sturdy
-        .map(|mask| mask & (1 << direction as u8) != 0)
-}
-
 /// Vanilla `BlockState.hasLargeCollisionShape()`.
+#[cfg(test)]
 pub(crate) fn has_large_collision_shape(state: BlockState) -> bool {
-    block_data(state).large_collision_shape
+    block_data(state).has_large_collision_shape()
 }
 
 pub fn fluid(state: BlockState) -> Fluid {
-    block_data(state).fluid
+    block_data(state).fluid()
 }
 
+#[cfg(test)]
 pub(crate) fn block_shape(state: BlockState) -> Option<&'static [LocalBox]> {
-    block_data(state).shape
+    block_data(state).collision_boxes()
 }
 
 #[derive(Clone, Copy)]
@@ -1227,33 +1272,35 @@ pub(crate) fn block_position_offset(state: BlockState, x: i32, z: i32) -> DVec3 
 
 /// The generated shapes already hold ZERO's offset, so a position only adds
 /// the difference to its own.
-fn generated_shape_position_delta(state: BlockState, x: i32, z: i32) -> DVec3 {
-    block_data(state)
+fn generated_shape_position_delta(block_data: &BlockData, x: i32, z: i32) -> DVec3 {
+    block_data
         .position_offset
         .map_or(DVec3::ZERO, |offset| offset.at(x, z) - offset.zero)
 }
 
-fn shape_position(state: BlockState, x: i32, y: i32, z: i32, uses_position_offset: bool) -> DVec3 {
+fn shape_position(
+    block_data: &BlockData,
+    x: i32,
+    y: i32,
+    z: i32,
+    uses_position_offset: bool,
+) -> DVec3 {
     let origin = dvec3(x as f64, y as f64, z as f64);
     if uses_position_offset {
-        origin + generated_shape_position_delta(state, x, z)
+        origin + generated_shape_position_delta(block_data, x, z)
     } else {
         origin
     }
 }
 
+#[cfg(test)]
 pub(crate) fn collision_shape_position(state: BlockState, x: i32, y: i32, z: i32) -> DVec3 {
-    shape_position(
-        state,
-        x,
-        y,
-        z,
-        block_data(state).collision_shape_uses_offset,
-    )
+    block_data(state).collision_shape_position(x, y, z)
 }
 
 pub(crate) fn outline_shape_position(state: BlockState, x: i32, y: i32, z: i32) -> DVec3 {
-    shape_position(state, x, y, z, block_data(state).outline_shape_uses_offset)
+    let data = block_data(state);
+    shape_position(data, x, y, z, data.outline_shape_uses_offset)
 }
 
 /// Outline shape for interaction raycasts (vanilla `getShape`), falling back to
@@ -1470,14 +1517,14 @@ mod tests {
         setup();
 
         let bamboo = find_state("bamboo", &[]);
-        let bamboo_delta = generated_shape_position_delta(bamboo, 5, -7);
+        let bamboo_delta = generated_shape_position_delta(block_data(bamboo), 5, -7);
         assert_eq!(bamboo_delta.x.to_bits(), 0x3fc9_9999_a000_0000_u64);
         assert_eq!(bamboo_delta.y, 0.0);
         assert_eq!(bamboo_delta.z.to_bits(), 0x3fd7_7777_8000_0000_u64);
 
         let dandelion = find_state("dandelion", &[]);
         assert_eq!(
-            generated_shape_position_delta(dandelion, 5, -7),
+            generated_shape_position_delta(block_data(dandelion), 5, -7),
             bamboo_delta
         );
         assert_eq!(
@@ -1490,7 +1537,7 @@ mod tests {
         );
 
         let short_grass = find_state("short_grass", &[]);
-        let xyz_delta = generated_shape_position_delta(short_grass, 5, -7);
+        let xyz_delta = generated_shape_position_delta(block_data(short_grass), 5, -7);
         assert_eq!(xyz_delta.x.to_bits(), 0x3fc9_9999_a000_0000_u64);
         assert_eq!(xyz_delta.y.to_bits(), 0x3f8b_4e81_d3a0_6d40_u64);
         assert_eq!(xyz_delta.z.to_bits(), 0x3fd7_7777_8000_0000_u64);
@@ -1522,7 +1569,7 @@ mod tests {
                 ("waterlogged", "false"),
             ],
         );
-        let delta = generated_shape_position_delta(dripstone, 12345, -54321);
+        let delta = generated_shape_position_delta(block_data(dripstone), 12345, -54321);
         assert_eq!(delta.x, 0.0);
         assert_eq!(delta.z.to_bits(), 0x3fb3_3333_4000_0000_u64);
     }

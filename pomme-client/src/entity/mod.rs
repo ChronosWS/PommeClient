@@ -1017,10 +1017,14 @@ impl ItemEntityStore {
         }
     }
 
-    pub fn tick(&mut self, chunk_store: &ChunkStore) {
+    pub fn tick(
+        &mut self,
+        chunk_store: &ChunkStore,
+        blocks: crate::world::block::VersionBlockData,
+    ) {
         for (&id, entity) in self.items.iter_mut() {
             entity.prev_position = entity.position;
-            tick_item_physics(id, entity, chunk_store);
+            tick_item_physics(id, entity, chunk_store, blocks);
             entity.age += 1;
         }
         for pickup in &mut self.pickups {
@@ -1071,7 +1075,12 @@ const ITEM_HALF_WIDTH: f64 = 0.125;
 /// Client-side port of `ItemEntity.tick` movement: gravity or fluid drift,
 /// collide-and-slide, friction, then the half-speed landing bounce.
 /// Server-only parts (merging, despawn, pickup delay) are omitted.
-fn tick_item_physics(id: i32, entity: &mut ItemEntity, chunk_store: &ChunkStore) {
+fn tick_item_physics(
+    id: i32,
+    entity: &mut ItemEntity,
+    chunk_store: &ChunkStore,
+    blocks: crate::world::block::VersionBlockData,
+) {
     let block_x = entity.position.x.floor() as i32;
     let block_y = entity.position.y.floor() as i32;
     let block_z = entity.position.z.floor() as i32;
@@ -1082,7 +1091,7 @@ fn tick_item_physics(id: i32, entity: &mut ItemEntity, chunk_store: &ChunkStore)
     }
 
     let state = chunk_store.get_block_state(block_x, block_y, block_z);
-    let fluid = fluid(state);
+    let fluid = blocks.block_data(state).fluid();
     // Vanilla `getFluidHeight(...) > 0.1`: how far the fluid surface sits
     // above the item's feet, sampled at the position block.
     let fluid_height = block_y as f64 + fluid.height() as f64 - entity.position.y;
@@ -1104,7 +1113,7 @@ fn tick_item_physics(id: i32, entity: &mut ItemEntity, chunk_store: &ChunkStore)
     let aabb = Aabb::from_center(entity.position.into(), ITEM_HALF_WIDTH, ITEM_HALF_WIDTH);
     let ctx = CollisionContext::entity(entity.position.y, false, false);
     let (delta, on_ground) = resolve_collision(
-        chunk_store.into(),
+        crate::physics::collision::CollisionWorld::new(chunk_store, blocks),
         aabb,
         entity.velocity.into(),
         0.0,

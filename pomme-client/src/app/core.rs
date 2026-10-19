@@ -182,7 +182,12 @@ fn apply_server_block(
 fn local_push_box(game: &GameState) -> Option<crate::physics::aabb::Aabb> {
     (game.player.health > 0.0
         && !crate::player::is_spectator(game.player.game_mode)
-        && !movement::on_climbable(&game.player, &game.chunk_store))
+        && !movement::on_climbable(
+            &game.player,
+            &game.chunk_store,
+            game.block_registry.version_data(),
+            game.block_registry.tags(),
+        ))
     .then(|| game.player.bounding_box())
 }
 
@@ -2959,8 +2964,12 @@ impl AppCore {
             if !removed_this_tick {
                 movement::tick_dead(
                     &mut game.player,
-                    &game.chunk_store,
-                    &game.block_entity_anim,
+                    crate::physics::collision::CollisionWorld {
+                        chunks: &game.chunk_store,
+                        blocks: game.block_registry.version_data(),
+                        block_entity_anim: Some(&game.block_entity_anim),
+                    },
+                    game.block_registry.tags(),
                     game.riding_vehicle_id.is_some(),
                 );
                 crate::entity::stop_walk_animation(
@@ -3173,8 +3182,12 @@ impl AppCore {
         movement::tick(
             &mut game.player,
             input,
-            &game.chunk_store,
-            &game.block_entity_anim,
+            crate::physics::collision::CollisionWorld {
+                chunks: &game.chunk_store,
+                blocks: game.block_registry.version_data(),
+                block_entity_anim: Some(&game.block_entity_anim),
+            },
+            game.block_registry.tags(),
             game.interaction.use_speed_multiplier(),
             game.interaction.slow_due_to_using_item(),
             vehicle,

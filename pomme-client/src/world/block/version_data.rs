@@ -50,7 +50,7 @@ impl VersionBlockData {
             .table
             .iter()
             .enumerate()
-            .filter(|(_, data)| data.id == item_name);
+            .filter(|(_, block_data)| block_data.id == item_name);
         let (id, _) = matches.next()?;
         if matches.next().is_some() {
             return None;

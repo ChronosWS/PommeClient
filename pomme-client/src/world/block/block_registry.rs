@@ -179,7 +179,7 @@ impl BlockRegistry {
 
     pub(crate) fn get(&self, state: BlockState) -> BlockStateView<'_> {
         BlockStateView {
-            data: self.version_data.block_data(state),
+            block_data: self.version_data.block_data(state),
             definition: self.bindings.get(&self.definitions, state),
         }
     }
@@ -200,7 +200,7 @@ impl BlockRegistry {
 
 /// Borrows metadata and a shared rule without copying either into the session.
 pub(crate) struct BlockStateView<'a> {
-    data: &'a BlockData,
+    block_data: &'a BlockData,
     definition: &'a dyn Block,
 }
 
@@ -208,7 +208,7 @@ impl BlockStateView<'_> {
     /// Includes the state's key/value `PropMap`, not definition properties.
     #[expect(dead_code, reason = "state metadata consumers migrate in a later step")]
     pub(crate) fn state_data(&self) -> &BlockData {
-        self.data
+        self.block_data
     }
 
     /// The shared rule exposes immutable `BlockProperties` via `properties()`.
