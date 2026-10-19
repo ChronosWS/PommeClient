@@ -197,6 +197,7 @@ pub fn run(args: LaunchArgs, platform: Platform) {
             .or(args
                 .quick_access_singleplayer
                 .map(app::QuickPlay::Singleplayer)),
+        winit::dpi::LogicalSize::new(args.width, args.height),
     );
     if require_account {
         app.require_account();

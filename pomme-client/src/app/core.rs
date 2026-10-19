@@ -479,6 +479,8 @@ pub struct AppCore {
     pub user: UserData,
     pub presence: Option<DiscordPresence>,
     pub display_mode: DisplayMode,
+    /// The windowed size the window opens at (`--width`/`--height`).
+    pub window_size: winit::dpi::LogicalSize<u32>,
     pub input: InputState,
     pub menu: MainMenu,
     pub tokio_rt: Arc<tokio::runtime::Runtime>,
@@ -620,6 +622,7 @@ impl AppCore {
         tokio_rt: Arc<tokio::runtime::Runtime>,
         presence: Option<DiscordPresence>,
         user: UserData,
+        window_size: winit::dpi::LogicalSize<u32>,
     ) -> Self {
         let resource_packs = ResourcePackManager::new(&data_dirs.game_dir);
 
@@ -641,6 +644,7 @@ impl AppCore {
             user,
             presence,
             display_mode,
+            window_size,
             input: InputState::new(),
             menu,
             tokio_rt,

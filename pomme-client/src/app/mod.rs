@@ -203,10 +203,11 @@ impl App {
         presence: Option<crate::discord::DiscordPresence>,
         user: UserData,
         quick_play: Option<QuickPlay>,
+        window_size: winit::dpi::LogicalSize<u32>,
     ) -> Self {
         let installed = data_dirs.is_installed(&version);
         let pending_skin_uuid = user.has_profile.then_some(user.uuid);
-        let core = AppCore::new(version, data_dirs, tokio_rt, presence, user);
+        let core = AppCore::new(version, data_dirs, tokio_rt, presence, user, window_size);
         Self {
             phase: StateSlot::new(AppPhase::Setup {
                 quick_play,
@@ -288,7 +289,7 @@ impl App {
 /// creation would leave it built for the windowed size.
 fn create_window(
     event_loop: &ActiveEventLoop,
-    display_mode: crate::app::core::DisplayMode,
+    core: &AppCore,
 ) -> Result<Arc<Window>, winit::error::OsError> {
     let window_icon = {
         let img =
@@ -305,11 +306,11 @@ fn create_window(
     // the first frame couldn't show a hidden one.
     let mut window_attrs = Window::default_attributes()
         .with_title("Pomme")
-        .with_fullscreen(display_mode.fullscreen_for(monitor))
+        .with_fullscreen(core.display_mode.fullscreen_for(monitor))
         .with_visible(cfg!(mobile))
         .with_window_icon(window_icon);
     if cfg!(not(mobile)) {
-        window_attrs = window_attrs.with_inner_size(winit::dpi::LogicalSize::new(854, 480));
+        window_attrs = window_attrs.with_inner_size(core.window_size);
     }
     event_loop.create_window(window_attrs).map(Arc::new)
 }
@@ -352,7 +353,7 @@ impl ApplicationHandler for App {
                 let window = match self
                     .installed_window
                     .take()
-                    .map_or_else(|| create_window(event_loop, self.core.display_mode), Ok)
+                    .map_or_else(|| create_window(event_loop, &self.core), Ok)
                 {
                     Ok(w) => w,
                     Err(e) => {

@@ -77,7 +77,7 @@ impl Install {
         self.retry(core);
         let window = match self.window.take() {
             Some(window) => window,
-            None => match super::create_window(event_loop, core.display_mode) {
+            None => match super::create_window(event_loop, core) {
                 Ok(window) => window,
                 Err(e) => {
                     tracing::error!("Failed to create window: {e}");
