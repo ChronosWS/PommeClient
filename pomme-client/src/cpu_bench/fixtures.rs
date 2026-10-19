@@ -12,8 +12,8 @@ use glam::DVec3;
 use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
 use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_names};
+use crate::world::block::BlockStateTable;
 use crate::world::block::render_registry::BlockRenderRegistry;
-use crate::world::block::{BlockStateTable, find_state};
 use crate::world::chunk::{ChunkLightData, ChunkStore};
 
 pub struct Assets {
@@ -125,19 +125,19 @@ struct States {
 }
 
 impl States {
-    fn lookup() -> Self {
+    fn lookup(block_state_table: BlockStateTable) -> Self {
         Self {
-            stone: find_state("stone", &[]),
-            dirt: find_state("dirt", &[]),
-            grass_block: find_state("grass_block", &[("snowy", "false")]),
-            short_grass: find_state("short_grass", &[]),
-            poppy: find_state("poppy", &[]),
-            dandelion: find_state("dandelion", &[]),
-            water: find_state("water", &[("level", "0")]),
-            coal_ore: find_state("coal_ore", &[]),
-            iron_ore: find_state("iron_ore", &[]),
-            oak_log: find_state("oak_log", &[("axis", "y")]),
-            oak_leaves: find_state(
+            stone: block_state_table.find_state("stone", &[]),
+            dirt: block_state_table.find_state("dirt", &[]),
+            grass_block: block_state_table.find_state("grass_block", &[("snowy", "false")]),
+            short_grass: block_state_table.find_state("short_grass", &[]),
+            poppy: block_state_table.find_state("poppy", &[]),
+            dandelion: block_state_table.find_state("dandelion", &[]),
+            water: block_state_table.find_state("water", &[("level", "0")]),
+            coal_ore: block_state_table.find_state("coal_ore", &[]),
+            iron_ore: block_state_table.find_state("iron_ore", &[]),
+            oak_log: block_state_table.find_state("oak_log", &[("axis", "y")]),
+            oak_leaves: block_state_table.find_state(
                 "oak_leaves",
                 &[
                     ("distance", "1"),
@@ -145,14 +145,14 @@ impl States {
                     ("waterlogged", "false"),
                 ],
             ),
-            air: find_state("air", &[]),
+            air: block_state_table.find_state("air", &[]),
         }
     }
 }
 
 /// Builds `scene` from a fixed seed, so runs compare like for like.
-pub fn build_world(scene: Scene) -> ChunkStore {
-    let s = States::lookup();
+pub fn build_world(scene: Scene, block_state_table: BlockStateTable) -> ChunkStore {
+    let s = States::lookup(block_state_table);
     let mut store = ChunkStore::new(8);
     for pos in columns_within(1) {
         store
@@ -233,14 +233,14 @@ pub fn build_world(scene: Scene) -> ChunkStore {
             }
         }
     }
-    add_sky_light(&mut store);
+    add_sky_light(&mut store, block_state_table);
     store
 }
 
 /// Sky light 15 above each column's highest block and 0 below, no block
 /// light: the light reads a real world pays, without running the engine.
 // TODO: run the light engine for propagated light under overhangs and caves.
-fn add_sky_light(store: &mut ChunkStore) {
+fn add_sky_light(store: &mut ChunkStore, block_state_table: BlockStateTable) {
     let min_y = store.min_y();
     let top_y = min_y + store.height() as i32;
     let layer_count = store.section_count() as usize + 2;
@@ -256,7 +256,11 @@ fn add_sky_light(store: &mut ChunkStore) {
             for z in pos.z * 16..pos.z * 16 + 16 {
                 let surface = (min_y..top_y)
                     .rev()
-                    .find(|&y| !crate::world::block::is_air(store.get_block_state(x, y, z)))
+                    .find(|&y| {
+                        !block_state_table
+                            .block_data(store.get_block_state(x, y, z))
+                            .is_air()
+                    })
                     .unwrap_or(min_y - 1);
                 for y in surface + 1..top_y {
                     light.set_sky_light(x, y, z, 15);

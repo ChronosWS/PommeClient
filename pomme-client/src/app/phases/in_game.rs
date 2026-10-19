@@ -1057,8 +1057,11 @@ impl GameState {
     /// them tier-gated), individual lit sections remesh on the priority lane.
     pub fn update_light(&mut self, chunk_detail: u32) {
         let mut dirty = crate::world::light::LightDirty::default();
-        self.light_engine
-            .poll_and_run(&mut self.chunk_store, &mut dirty);
+        self.light_engine.poll_and_run(
+            &mut self.chunk_store,
+            self.block_registry.block_state_table(),
+            &mut dirty,
+        );
         if dirty.columns.is_empty() && dirty.sections.is_empty() {
             return;
         }

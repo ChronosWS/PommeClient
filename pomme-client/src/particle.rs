@@ -356,7 +356,14 @@ impl ParticleStore {
                 Tint::Redstone => crate::world::block::redstone_wire_rgb(state),
                 Tint::Stem => crate::world::block::stem_rgb(state),
                 Tint::Constant(color) => crate::renderer::chunk::mesher::int_to_rgb(color as i32),
-                _ => self.blend_tint(faces.tint, state, pos, chunks, biome_climate),
+                _ => self.blend_tint(
+                    faces.tint,
+                    state,
+                    pos,
+                    chunks,
+                    biome_climate,
+                    registry.block_state_table(),
+                ),
             };
             for (c, t) in color.iter_mut().zip(tint) {
                 *c *= t;
@@ -514,8 +521,9 @@ impl ParticleStore {
         pos: BlockPos,
         chunks: &ChunkStore,
         biome_climate: &HashMap<u32, BiomeClimate>,
+        block_state_table: BlockStateTable,
     ) -> [f32; 3] {
-        let sample_y = tint_sample_y(tint, state, pos.y);
+        let sample_y = tint_sample_y(tint, state, pos.y, block_state_table);
         blend_color(pos.x, pos.z, |x, z| {
             let climate = biome_climate
                 .get(&chunks.biome_id(x, sample_y, z))

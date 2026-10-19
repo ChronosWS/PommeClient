@@ -23,7 +23,7 @@ pub fn bench_sections(c: &mut Criterion, assets: &Assets) {
     let registry = assets.registry.for_version(assets.block_state_table);
     let mut group = c.benchmark_group("visgraph");
     for scene in Scene::ALL {
-        let store = build_world(scene);
+        let store = build_world(scene, assets.block_state_table);
         let min_y = store.min_y();
         let sections: Vec<Vec<bool>> = (0..store.section_count())
             .map(|si| {

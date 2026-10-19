@@ -105,7 +105,10 @@ fn light_bytes(light: &PacketLightData) -> (Vec<u8>, Vec<u8>) {
 /// The bench plains column at the origin as a native frame, with every
 /// light section present.
 fn plains_frame() -> Box<[u8]> {
-    let store = build_world(Scene::Plains);
+    let block_state_table = crate::world::block::BlockStateTable::for_protocol(
+        pomme_protocol::version::NATIVE.protocol,
+    );
+    let store = build_world(Scene::Plains, block_state_table);
     let chunk = store.get_chunk(&ChunkPos::new(0, 0)).expect("bench column");
     let mut data = Vec::new();
     for section in chunk.read().sections.iter() {

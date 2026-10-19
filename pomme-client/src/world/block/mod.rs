@@ -252,6 +252,65 @@ impl BlockData {
         self.fluid
     }
 
+    /// Baked light properties (vanilla `BlockStateBase` light cache).
+    pub(crate) fn light_props(&self) -> LightProps {
+        self.light
+    }
+
+    /// Vanilla `LightEngine.isEmptyShape`.
+    pub(crate) fn is_empty_shape(&self) -> bool {
+        let light = self.light;
+        !light.can_occlude || !light.use_shape_for_light_occlusion
+    }
+
+    /// Cached `legacySolid`, falling back to `BlockBehaviour.calculateSolid`.
+    // TODO: older tables lack forceSolidOn/forceSolidOff (cobweb, bamboo_sapling).
+    pub(crate) fn legacy_solid(&self) -> bool {
+        self.legacy_solid
+            .unwrap_or_else(|| calculate_solid(self.shape))
+    }
+
+    /// Vanilla `BlockState.getOffset(pos)`; zero for tables without offsets.
+    pub(crate) fn block_position_offset(&self, x: i32, z: i32) -> DVec3 {
+        self.position_offset
+            .map_or(DVec3::ZERO, |offset| offset.at(x, z))
+    }
+
+    /// Vanilla `RedStoneWireBlock.getColorForPower`.
+    pub(crate) fn redstone_wire_rgb(&self) -> [f32; 3] {
+        static COLORS: std::sync::LazyLock<[[f32; 3]; 16]> = std::sync::LazyLock::new(|| {
+            std::array::from_fn(|power| {
+                let f = power as f32 / 15.0;
+                let red = f * 0.6 + if power > 0 { 0.4 } else { 0.3 };
+                let green = (f * f * 0.7 - 0.5).clamp(0.0, 1.0);
+                let blue = (f * f * 0.6 - 0.7).clamp(0.0, 1.0);
+                [red, green, blue]
+            })
+        });
+        let power: usize = self
+            .properties()
+            .get("power")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(0);
+        COLORS[power.min(15)]
+    }
+
+    /// Vanilla `StemBlock` tint: `ARGB.color(age * 32, 255 - age * 8, age *
+    /// 4)`.
+    pub(crate) fn stem_rgb(&self) -> [f32; 3] {
+        let age: u32 = self
+            .properties()
+            .get("age")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+            .min(7);
+        [
+            (age * 32) as f32 / 255.0,
+            (255 - age * 8) as f32 / 255.0,
+            (age * 4) as f32 / 255.0,
+        ]
+    }
+
     pub(crate) fn has_collision(&self) -> bool {
         self.collides
     }
@@ -994,6 +1053,7 @@ fn block_data(state: BlockState) -> &'static BlockData {
 }
 
 /// Every valid block state paired with its cached data, in id order.
+#[cfg(test)]
 fn all_states() -> impl Iterator<Item = (BlockState, &'static BlockData)> {
     slot_states(active_table_slot())
 }
@@ -1038,8 +1098,12 @@ fn placeable_block_in_slot(slot: usize, item_name: &str) -> Option<BlockState> {
 
 /// First declared state of the named block, e.g. the light engine's bedrock
 /// fallback for unloaded-chunk reads.
+#[allow(
+    dead_code,
+    reason = "compatibility wrapper retained until global API removal"
+)]
 pub(crate) fn first_state_of(name: &str) -> Option<BlockState> {
-    all_states().find(|(_, d)| d.id == name).map(|(s, _)| s)
+    BlockStateTable::from_initialized_slot(active_table_slot()).first_state_of(name)
 }
 
 /// Converts a wire-side numeric state id, validated against the loaded table.
@@ -1080,34 +1144,12 @@ pub fn movement_jump_factor(state: BlockState) -> f32 {
 /// Vanilla `RedStoneWireBlock.getColorForPower`: dust tint for the state's
 /// `power` value.
 pub fn redstone_wire_rgb(state: BlockState) -> [f32; 3] {
-    static COLORS: std::sync::LazyLock<[[f32; 3]; 16]> = std::sync::LazyLock::new(|| {
-        std::array::from_fn(|power| {
-            let f = power as f32 / 15.0;
-            let red = f * 0.6 + if power > 0 { 0.4 } else { 0.3 };
-            let green = (f * f * 0.7 - 0.5).clamp(0.0, 1.0);
-            let blue = (f * f * 0.6 - 0.7).clamp(0.0, 1.0);
-            [red, green, blue]
-        })
-    });
-    let power: usize = block_properties(state)
-        .get("power")
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(0);
-    COLORS[power.min(15)]
+    block_data(state).redstone_wire_rgb()
 }
 
 /// Vanilla `StemBlock` tint: `ARGB.color(age * 32, 255 - age * 8, age * 4)`.
 pub fn stem_rgb(state: BlockState) -> [f32; 3] {
-    let age: u32 = block_properties(state)
-        .get("age")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0)
-        .min(7);
-    [
-        (age * 32) as f32 / 255.0,
-        (255 - age * 8) as f32 / 255.0,
-        (age * 4) as f32 / 255.0,
-    ]
+    block_data(state).stem_rgb()
 }
 
 /// Vanilla `isAir`: includes cave and void air.
@@ -1140,15 +1182,22 @@ pub fn blocks_motion(state: BlockState) -> bool {
 }
 
 /// Vanilla cached `BlockState.isSolid()` / `legacySolid`.
+#[allow(
+    dead_code,
+    reason = "compatibility wrapper retained until global API removal"
+)]
 pub fn is_solid(state: BlockState) -> Option<bool> {
     block_data(state).legacy_solid
 }
 
 /// [`is_solid`], falling back to `BlockBehaviour.calculateSolid` over the
 /// collision shape for tables without it.
-// TODO: older tables lack forceSolidOn/forceSolidOff (cobweb, bamboo_sapling).
+#[allow(
+    dead_code,
+    reason = "compatibility wrapper retained until global API removal"
+)]
 pub fn legacy_solid(state: BlockState) -> bool {
-    is_solid(state).unwrap_or_else(|| calculate_solid(block_data(state).shape))
+    block_data(state).legacy_solid()
 }
 
 fn calculate_solid(collision: Option<&[LocalBox]>) -> bool {
@@ -1249,9 +1298,7 @@ fn vanilla_position_seed(x: i32, z: i32) -> i64 {
 /// Vanilla `BlockState.getOffset(pos)`; zero for tables without offsets.
 #[allow(dead_code)]
 pub(crate) fn block_position_offset(state: BlockState, x: i32, z: i32) -> DVec3 {
-    block_data(state)
-        .position_offset
-        .map_or(DVec3::ZERO, |offset| offset.at(x, z))
+    block_data(state).block_position_offset(x, z)
 }
 
 /// The generated shapes already hold ZERO's offset, so a position only adds
@@ -1294,15 +1341,22 @@ pub(crate) fn block_outline(state: BlockState) -> Option<&'static [LocalBox]> {
 }
 
 /// Baked light properties for a state (vanilla `BlockStateBase` light cache).
+#[allow(
+    dead_code,
+    reason = "compatibility wrapper retained until global API removal"
+)]
 pub fn light_props(state: BlockState) -> LightProps {
-    block_data(state).light
+    block_data(state).light_props()
 }
 
 /// Vanilla `LightEngine.isEmptyShape`: the state needs no voxel-shape
 /// occlusion tests (full opaque cubes qualify — their opacity handles them).
+#[allow(
+    dead_code,
+    reason = "compatibility wrapper retained until global API removal"
+)]
 pub fn is_empty_shape(state: BlockState) -> bool {
-    let light = block_data(state).light;
-    !light.can_occlude || !light.use_shape_for_light_occlusion
+    block_data(state).is_empty_shape()
 }
 
 /// Vanilla `LightEngine.shapeOccludes(from, to, dir)` reduced to face masks:
@@ -1310,15 +1364,24 @@ pub fn is_empty_shape(state: BlockState) -> bool {
 /// face. `face` is the vanilla `Direction` ordinal (DOWN, UP, NORTH, SOUTH,
 /// WEST, EAST); opposites pair as `face ^ 1`. Empty-shape states contribute
 /// an empty mask, so two shapeless neighbors never occlude.
+#[allow(
+    dead_code,
+    reason = "compatibility wrapper retained until global API removal"
+)]
 pub fn shape_occludes(from: BlockState, to: BlockState, face: usize) -> bool {
-    let mask = |state: BlockState, face: usize| {
-        block_data(state)
-            .light
-            .face_occlusion
-            .map(|masks| &masks[face])
+    shape_occludes_data(block_data(from), block_data(to), face)
+}
+
+pub(crate) fn shape_occludes_data(
+    from_block_data: &BlockData,
+    to_block_data: &BlockData,
+    face: usize,
+) -> bool {
+    let mask = |block_data: &BlockData, face: usize| {
+        block_data.light.face_occlusion.map(|masks| &masks[face])
     };
-    let a = mask(from, face);
-    let b = mask(to, face ^ 1);
+    let a = mask(from_block_data, face);
+    let b = mask(to_block_data, face ^ 1);
     if a.is_none() && b.is_none() {
         return false;
     }
@@ -1329,16 +1392,12 @@ pub fn shape_occludes(from: BlockState, to: BlockState, face: usize) -> bool {
 /// take whatever the first match has); shared with the light-engine tests
 /// and the CPU bench.
 #[cfg(any(test, feature = "cpu-bench"))]
+#[allow(
+    dead_code,
+    reason = "compatibility wrapper retained until global API removal"
+)]
 pub(crate) fn find_state(name: &str, props: &[(&str, &str)]) -> BlockState {
-    all_states()
-        .find(|(s, d)| {
-            d.id == name
-                && props
-                    .iter()
-                    .all(|&(k, v)| block_properties(*s).get(k) == Some(v))
-        })
-        .unwrap_or_else(|| panic!("no state {name} {props:?}"))
-        .0
+    BlockStateTable::from_initialized_slot(active_table_slot()).find_state(name, props)
 }
 
 #[cfg(test)]

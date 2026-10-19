@@ -125,6 +125,10 @@ pub(crate) struct OwnedBlockRenderView {
 }
 
 impl OwnedBlockRenderView {
+    pub(crate) fn block_state_table(&self) -> BlockStateTable {
+        self.block_state_table
+    }
+
     pub(crate) fn new(
         registry: Arc<BlockRenderRegistry>,
         block_state_table: BlockStateTable,
@@ -360,6 +364,10 @@ impl BlockRenderRegistry {
 }
 
 impl<'a> BlockRenderView<'a> {
+    pub(crate) fn block_state_table(self) -> BlockStateTable {
+        self.block_state_table
+    }
+
     pub(crate) fn get_textures(self, state: BlockState) -> Option<&'a FaceTextures> {
         self.registry
             .textures

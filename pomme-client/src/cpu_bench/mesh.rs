@@ -28,7 +28,7 @@ pub fn bench(c: &mut Criterion, assets: &Assets) {
     let mut group = c.benchmark_group("mesh");
     group.sample_size(30);
     for scene in Scene::ALL {
-        let store = build_world(scene);
+        let store = build_world(scene, assets.block_state_table);
         let sections = 0..store.section_count();
         group.bench_function(scene.name(), |b| {
             b.iter(|| {

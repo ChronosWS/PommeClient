@@ -162,6 +162,7 @@ fn apply_server_block(
     crate::world::light::set_block_and_light(
         &game.chunk_store,
         &mut game.light_engine,
+        game.block_registry.block_state_table(),
         pos.x,
         pos.y,
         pos.z,
@@ -1395,8 +1396,11 @@ impl AppCore {
                         tracing::error!("Failed to load chunk [{}, {}]: {e}", pos.x, pos.z);
                         continue;
                     }
-                    game.light_engine
-                        .on_chunk_loaded(&mut game.chunk_store, (pos.x, pos.z));
+                    game.light_engine.on_chunk_loaded(
+                        &mut game.chunk_store,
+                        game.block_registry.block_state_table(),
+                        (pos.x, pos.z),
+                    );
                     // The column meshes once its queued light applies (vanilla
                     // schedules the rebuild from enableChunkLight, not here).
                     queue_light_apply(game, pos, &light, true);
@@ -2181,8 +2185,13 @@ impl AppCore {
                     let min_y = game.chunk_store.min_y();
                     let n = game.chunk_store.section_count();
                     for b in ack_dirty {
-                        game.light_engine
-                            .on_block_dirty(&game.chunk_store, b.x, b.y, b.z);
+                        game.light_engine.on_block_dirty(
+                            &game.chunk_store,
+                            game.block_registry.block_state_table(),
+                            b.x,
+                            b.y,
+                            b.z,
+                        );
                         dirty_sections_for_block(&mut priority_remesh, b.x, b.y, b.z, min_y, n);
                     }
                 }
@@ -3222,8 +3231,13 @@ impl AppCore {
                 // Light lands in this frame's update_light, matching vanilla's
                 // prediction timing (setBlockState queues; the per-frame
                 // ClientLevel.update drains).
-                game.light_engine
-                    .on_block_dirty(&game.chunk_store, b.x, b.y, b.z);
+                game.light_engine.on_block_dirty(
+                    &game.chunk_store,
+                    game.block_registry.block_state_table(),
+                    b.x,
+                    b.y,
+                    b.z,
+                );
                 dirty_sections_for_block(&mut sections, b.x, b.y, b.z, min_y, n);
             }
             // One span per column so each column builds its mesh snapshot

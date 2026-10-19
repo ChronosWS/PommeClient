@@ -41,6 +41,28 @@ impl BlockStateTable {
         self.slot
     }
 
+    pub(crate) fn first_state_of(self, name: &str) -> Option<BlockState> {
+        self.table
+            .iter()
+            .position(|block_data| block_data.id() == name)
+            .map(|id| BlockState::try_from(id as u32).expect("table indices fit the id repr"))
+    }
+
+    #[cfg(any(test, feature = "cpu-bench"))]
+    pub(crate) fn find_state(self, name: &str, props: &[(&str, &str)]) -> BlockState {
+        let id = self
+            .table
+            .iter()
+            .position(|block_data| {
+                block_data.id() == name
+                    && props
+                        .iter()
+                        .all(|&(k, v)| block_data.properties().get(k) == Some(v))
+            })
+            .unwrap_or_else(|| panic!("no state {name} {props:?}"));
+        BlockState::try_from(id as u32).expect("table indices fit the id repr")
+    }
+
     /// State metadata in wire-id order for binding the selected definitions.
     pub(super) fn table(self) -> &'static [BlockData] {
         self.table
