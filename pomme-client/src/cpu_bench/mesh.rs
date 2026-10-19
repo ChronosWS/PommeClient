@@ -16,7 +16,7 @@ pub fn bench(c: &mut Criterion, assets: &Assets) {
     // `mesh_sections_now` meshes on the calling thread; the dispatcher's
     // workers stay idle.
     let dispatcher = MeshDispatcher::load(
-        OwnedBlockRenderView::new(assets.registry.clone(), assets.version_data),
+        OwnedBlockRenderView::new(assets.registry.clone(), assets.block_state_table),
         assets.uv_map.clone(),
         &assets.jar_assets_dir,
         &assets.asset_index,

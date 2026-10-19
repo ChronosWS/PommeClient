@@ -2286,21 +2286,23 @@ pub fn update_game(
             game.player.tick_sleep();
         }
         game.item_entity_store
-            .tick(&game.chunk_store, game.block_registry.version_data());
+            .tick(&game.chunk_store, game.block_registry.block_state_table());
         game.level_runtime.animate_tick(
             &game.block_registry,
             &game.chunk_store,
             *game.player.position,
         );
         game.particle_store
-            .tick(&game.chunk_store, game.block_registry.version_data());
+            .tick(&game.chunk_store, game.block_registry.block_state_table());
         game.block_entity_anim.tick();
         game.title.tick();
         tick_tool_highlight(core, game);
         // LocalPlayer.handlePortalTransitionEffect belongs to aiStep, which is
         // skipped once tickDeath removes the player at exactly death tick 20.
         let local_player_ai_step_ran = !game.dead || !game.player.death_animation_finished();
-        let inside_portal = game.player.is_inside_nether_portal(&game.chunk_store);
+        let inside_portal = game
+            .player
+            .is_inside_nether_portal(&game.chunk_store, game.block_registry.block_state_table());
         if local_player_ai_step_ran && game.player.tick_portal_effect(inside_portal) {
             // Vanilla forLocalAmbience: AMBIENT category at the listener,
             // volume 0.25, pitch 0.8..1.2.

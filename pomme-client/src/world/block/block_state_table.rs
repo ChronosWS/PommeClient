@@ -1,21 +1,24 @@
-//! Immutable metadata selected independently of the active session table.
+//! Immutable, version-selected state-ID table, independent of the active
+//! session. Each entry is one state's `BlockData`; this handle selects the
+//! whole table.
 
 use azalea_block::BlockState;
 
 use super::{
-    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockData, DEFAULT_BEHAVIOR, NATIVE_SLOT, NO_FLUID,
-    PropMap, SpecialCollision, block_data_slot, build_table,
+    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockData, NATIVE_SLOT, NO_FLUID, PropMap,
+    SpecialCollision, block_data_slot, build_table,
 };
 
-/// A cheap, immutable handle to one cached protocol table. Aliases share data;
-/// unsupported protocols use the native table, as the compatibility API does.
+/// A cheap, immutable handle to one cached version-selected state-ID table.
+/// Aliases share data; unsupported protocols use the native table, as the
+/// compatibility API does.
 #[derive(Clone, Copy)]
-pub(crate) struct VersionBlockData {
+pub(crate) struct BlockStateTable {
     slot: usize,
     table: &'static [BlockData],
 }
 
-impl VersionBlockData {
+impl BlockStateTable {
     /// Builds only the explicitly selected table, without reading or changing
     /// the active protocol. The cache owns the data for the process lifetime.
     pub(crate) fn for_protocol(protocol: i32) -> Self {
@@ -63,7 +66,6 @@ impl VersionBlockData {
         static UNKNOWN: std::sync::LazyLock<BlockData> = std::sync::LazyLock::new(|| BlockData {
             id: "unknown",
             properties: PropMap::from_pairs(Vec::new()),
-            behavior: DEFAULT_BEHAVIOR,
             shape: None,
             outline: None,
             is_air: false,

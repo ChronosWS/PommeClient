@@ -1020,11 +1020,11 @@ impl ItemEntityStore {
     pub fn tick(
         &mut self,
         chunk_store: &ChunkStore,
-        blocks: crate::world::block::VersionBlockData,
+        block_state_table: crate::world::block::BlockStateTable,
     ) {
         for (&id, entity) in self.items.iter_mut() {
             entity.prev_position = entity.position;
-            tick_item_physics(id, entity, chunk_store, blocks);
+            tick_item_physics(id, entity, chunk_store, block_state_table);
             entity.age += 1;
         }
         for pickup in &mut self.pickups {
@@ -1079,7 +1079,7 @@ fn tick_item_physics(
     id: i32,
     entity: &mut ItemEntity,
     chunk_store: &ChunkStore,
-    blocks: crate::world::block::VersionBlockData,
+    block_state_table: crate::world::block::BlockStateTable,
 ) {
     let block_x = entity.position.x.floor() as i32;
     let block_y = entity.position.y.floor() as i32;
@@ -1091,7 +1091,7 @@ fn tick_item_physics(
     }
 
     let state = chunk_store.get_block_state(block_x, block_y, block_z);
-    let fluid = blocks.block_data(state).fluid();
+    let fluid = block_state_table.block_data(state).fluid();
     // Vanilla `getFluidHeight(...) > 0.1`: how far the fluid surface sits
     // above the item's feet, sampled at the position block.
     let fluid_height = block_y as f64 + fluid.height() as f64 - entity.position.y;
@@ -1113,7 +1113,7 @@ fn tick_item_physics(
     let aabb = Aabb::from_center(entity.position.into(), ITEM_HALF_WIDTH, ITEM_HALF_WIDTH);
     let ctx = CollisionContext::entity(entity.position.y, false, false);
     let (delta, on_ground) = resolve_collision(
-        crate::physics::collision::CollisionWorld::new(chunk_store, blocks),
+        crate::physics::collision::CollisionWorld::new(chunk_store, block_state_table),
         aabb,
         entity.velocity.into(),
         0.0,

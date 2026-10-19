@@ -13,14 +13,14 @@ use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
 use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_names};
 use crate::world::block::render_registry::BlockRenderRegistry;
-use crate::world::block::{VersionBlockData, find_state};
+use crate::world::block::{BlockStateTable, find_state};
 use crate::world::chunk::{ChunkLightData, ChunkStore};
 
 pub struct Assets {
     pub jar_assets_dir: PathBuf,
     pub asset_index: Option<AssetIndex>,
     pub registry: Arc<BlockRenderRegistry>,
-    pub version_data: VersionBlockData,
+    pub block_state_table: BlockStateTable,
     pub uv_map: AtlasUVMap,
 }
 
@@ -46,7 +46,7 @@ impl Assets {
         let protocol = pomme_protocol::ProtocolVersion::from_name(version)
             .unwrap_or(pomme_protocol::version::NATIVE)
             .protocol;
-        let version_data = VersionBlockData::for_protocol(protocol);
+        let block_state_table = BlockStateTable::for_protocol(protocol);
 
         eprintln!("cpu-bench: packing texture atlas...");
         let (texture_names, generated_item_textures) = atlas_texture_names(&registry);
@@ -63,7 +63,7 @@ impl Assets {
             jar_assets_dir: dirs.jar_assets_dir.clone(),
             asset_index,
             registry,
-            version_data,
+            block_state_table,
             uv_map,
         })
     }

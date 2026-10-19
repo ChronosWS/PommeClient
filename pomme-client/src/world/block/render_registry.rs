@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 
 const BLOCK_CACHE_FILE: &str = "block_cache_v4.json";
 
+use super::block_state_table::BlockStateTable;
 use super::model;
 use super::model::BakedModel;
-use super::version_data::VersionBlockData;
 use crate::assets::AssetIndex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +90,7 @@ struct StateRender {
     hidden_when_enclosed: bool,
 }
 
+#[derive(Default)]
 pub struct BlockRenderRegistry {
     textures: HashMap<String, FaceTextures>,
     baked: HashMap<String, HashMap<String, Arc<BakedModel>>>,
@@ -111,7 +112,7 @@ pub struct BlockRenderRegistry {
 #[derive(Clone, Copy)]
 pub(crate) struct BlockRenderView<'a> {
     registry: &'a BlockRenderRegistry,
-    version_data: VersionBlockData,
+    block_state_table: BlockStateTable,
 }
 
 /// Owned, lightweight view of CPU-asset and state-table snapshot for deferred
@@ -120,19 +121,22 @@ pub(crate) struct BlockRenderView<'a> {
 #[derive(Clone)]
 pub(crate) struct OwnedBlockRenderView {
     registry: Arc<BlockRenderRegistry>,
-    version_data: VersionBlockData,
+    block_state_table: BlockStateTable,
 }
 
 impl OwnedBlockRenderView {
-    pub(crate) fn new(registry: Arc<BlockRenderRegistry>, version_data: VersionBlockData) -> Self {
+    pub(crate) fn new(
+        registry: Arc<BlockRenderRegistry>,
+        block_state_table: BlockStateTable,
+    ) -> Self {
         Self {
             registry,
-            version_data,
+            block_state_table,
         }
     }
 
     pub(crate) fn as_view(&self) -> BlockRenderView<'_> {
-        self.registry.for_version(self.version_data)
+        self.registry.for_version(self.block_state_table)
     }
 }
 
@@ -204,10 +208,10 @@ impl BlockRenderRegistry {
         }
     }
 
-    pub(crate) fn for_version(&self, version_data: VersionBlockData) -> BlockRenderView<'_> {
+    pub(crate) fn for_version(&self, block_state_table: BlockStateTable) -> BlockRenderView<'_> {
         BlockRenderView {
             registry: self,
-            version_data,
+            block_state_table,
         }
     }
 
@@ -269,20 +273,22 @@ impl BlockRenderRegistry {
 
     fn state_render(
         &self,
-        version_data: VersionBlockData,
+        block_state_table: BlockStateTable,
         state: BlockState,
     ) -> Option<&StateRender> {
-        let slot = version_data.table_slot();
+        let slot = block_state_table.table_slot();
         self.state_render[slot]
             .get_or_init(|| {
-                version_data
+                block_state_table
                     .table()
                     .iter()
-                    .map(|info| {
-                        let model = self.resolve_model(info.id, &info.properties).cloned();
+                    .map(|block_data| {
+                        let model = self
+                            .resolve_model(block_data.id, &block_data.properties)
+                            .cloned();
                         let opaque_full_cube =
-                            !info.is_air && model.as_ref().is_some_and(|m| m.is_full_cube);
-                        let occludes = opaque_full_cube && info.light.can_occlude;
+                            !block_data.is_air && model.as_ref().is_some_and(|m| m.is_full_cube);
+                        let occludes = opaque_full_cube && block_data.light.can_occlude;
                         let all_quads_cull = model
                             .as_ref()
                             .is_some_and(|m| m.quads.iter().all(|q| q.cullface.is_some()));
@@ -292,7 +298,7 @@ impl BlockRenderRegistry {
                             occludes,
                             hidden_when_enclosed: occludes
                                 && all_quads_cull
-                                && matches!(info.fluid.kind, super::FluidKind::Empty),
+                                && matches!(block_data.fluid.kind, super::FluidKind::Empty),
                         }
                     })
                     .collect()
@@ -357,12 +363,12 @@ impl<'a> BlockRenderView<'a> {
     pub(crate) fn get_textures(self, state: BlockState) -> Option<&'a FaceTextures> {
         self.registry
             .textures
-            .get(self.version_data.block_data(state).id)
+            .get(self.block_state_table.block_data(state).id)
     }
 
     pub(crate) fn get_baked_model(self, state: BlockState) -> Option<&'a BakedModel> {
         self.registry
-            .state_render(self.version_data, state)?
+            .state_render(self.block_state_table, state)?
             .model
             .as_deref()
     }
@@ -371,12 +377,12 @@ impl<'a> BlockRenderView<'a> {
         self,
         state: BlockState,
     ) -> Option<Vec<&'a model::BakedQuad>> {
-        let data = self.version_data.block_data(state);
-        let entries = self.registry.multipart.get(data.id)?;
+        let block_data = self.block_state_table.block_data(state);
+        let entries = self.registry.multipart.get(block_data.id)?;
         let mut quads = Vec::new();
         for entry in entries {
             let when = entry.when.iter().map(|(k, v)| (k.as_str(), v.as_str()));
-            if constraints_match(&data.properties, when) {
+            if constraints_match(&block_data.properties, when) {
                 quads.extend(entry.quads.iter());
             }
         }
@@ -385,7 +391,7 @@ impl<'a> BlockRenderView<'a> {
 
     pub(crate) fn is_opaque_full_cube(self, state: BlockState) -> bool {
         self.registry
-            .state_render(self.version_data, state)
+            .state_render(self.block_state_table, state)
             .is_some_and(|r| r.opaque_full_cube)
     }
 
@@ -393,14 +399,14 @@ impl<'a> BlockRenderView<'a> {
     /// cubes.
     pub(crate) fn occludes_neighbor(self, state: BlockState) -> bool {
         self.registry
-            .state_render(self.version_data, state)
+            .state_render(self.block_state_table, state)
             .is_some_and(|r| r.occludes)
     }
 
     /// Non-fluid occluders whose every quad has a cullface.
     pub(crate) fn hidden_when_enclosed(self, state: BlockState) -> bool {
         self.registry
-            .state_render(self.version_data, state)
+            .state_render(self.block_state_table, state)
             .is_some_and(|r| r.hidden_when_enclosed)
     }
 }

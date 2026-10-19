@@ -41,12 +41,12 @@ impl LevelRuntime {
     /// Vanilla `ClientLevel.animateTick`, called once per simulation tick.
     pub(crate) fn animate_tick(
         &mut self,
-        registry: &BlockRegistry,
+        block_registry: &BlockRegistry,
         chunks: &ChunkStore,
         player_pos: DVec3,
     ) {
         animate_tick_with_draw(
-            registry,
+            block_registry,
             player_pos,
             |radius| self.animation_rng.i32(0..radius),
             &mut LevelContext::new(chunks),
@@ -57,14 +57,14 @@ impl LevelRuntime {
 
 /// Own the effect stream for this pass; all sampled callbacks borrow it.
 fn animate_tick_with_draw(
-    registry: &BlockRegistry,
+    block_registry: &BlockRegistry,
     player_pos: DVec3,
     next: impl FnMut(i32) -> i32,
     level: &mut LevelContext<'_>,
     mut random: fastrand::Rng,
 ) {
     sample_animation_blocks(player_pos, next, |pos| {
-        registry.animate_tick(pos, level, &mut random);
+        block_registry.animate_tick(pos, level, &mut random);
     });
 }
 

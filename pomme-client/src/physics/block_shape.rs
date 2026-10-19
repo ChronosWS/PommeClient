@@ -3,13 +3,14 @@
 //! older tables fall back to the native computations below. Boxes are
 //! block-local; callers translate them through the shape offset helpers.
 //!
-//! [`collision_shape`] and [`outline_shape_holding`] layer the entity-context
-//! branches of `ScaffoldingBlock`, `PowderSnowBlock` and `LightBlock` on top.
-//! TODO: `LiquidBlock.getCollisionShape`'s `canStandOnFluid` branch.
+//! [`collision_shape`] and [`outline_shape_holding_data`] layer the
+//! entity-context branches of `ScaffoldingBlock`, `PowderSnowBlock` and
+//! `LightBlock` on top. TODO: `LiquidBlock.getCollisionShape`'s
+//! `canStandOnFluid` branch.
 
 use azalea_block::BlockState;
 
-use crate::world::block::{BlockData, PropMap, SpecialCollision, block_id};
+use crate::world::block::{BlockData, PropMap, SpecialCollision};
 
 /// A block-local axis-aligned box: `[min_x, min_y, min_z, max_x, max_y,
 /// max_z]`.
@@ -132,12 +133,16 @@ pub fn outline_shape(state: BlockState) -> &'static [LocalBox] {
 
 /// [`outline_shape`] under a player's context: `LightBlock` and
 /// `ScaffoldingBlock.getShape` fill the cell while their own item is held.
-pub fn outline_shape_holding(state: BlockState, held_item: Option<&str>) -> &'static [LocalBox] {
-    let id = block_id(state);
+/// Uses already resolved session metadata.
+pub(crate) fn outline_shape_holding_data(
+    block_data: &BlockData,
+    held_item: Option<&str>,
+) -> &'static [LocalBox] {
+    let id = block_data.id();
     if matches!(id, "light" | "scaffolding") && held_item == Some(id) {
         FULL_CUBE_SHAPE
     } else {
-        outline_shape(state)
+        block_data.outline_boxes().unwrap_or(FULL_CUBE_SHAPE)
     }
 }
 
@@ -284,6 +289,14 @@ mod tests {
     #[test]
     fn held_item_fills_light_and_scaffolding_outlines() {
         crate::world::block::init("26.2");
+        let block_state_table = crate::world::block::BlockStateTable::for_protocol(
+            pomme_protocol::ProtocolVersion::from_name("26.2")
+                .unwrap()
+                .protocol,
+        );
+        let outline_shape_holding = |state, held_item| {
+            outline_shape_holding_data(block_state_table.block_data(state), held_item)
+        };
         let light = find_state("light", &[]);
         assert!(outline_shape_holding(light, None).is_empty());
         assert!(outline_shape_holding(light, Some("scaffolding")).is_empty());

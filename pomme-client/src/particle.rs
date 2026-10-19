@@ -20,7 +20,7 @@ use crate::renderer::chunk::mesher::{
 };
 use crate::renderer::pipelines::particle::MAX_PARTICLE_QUADS as MAX_PARTICLES;
 use crate::world::block::render_registry::{BlockRenderView, Tint};
-use crate::world::block::{VersionBlockData, block_id, is_air, outline_shape_position};
+use crate::world::block::{BlockStateTable, block_id, is_air, outline_shape_position};
 use crate::world::chunk::ChunkStore;
 
 /// Vanilla `ParticleGroup.RESERVOIR_START` — above this, new particles are
@@ -174,7 +174,7 @@ impl Particle {
     fn tick(
         &mut self,
         chunks: &ChunkStore,
-        blocks: VersionBlockData,
+        block_state_table: BlockStateTable,
         end_rod_frames: &[AtlasRegion; 8],
     ) -> bool {
         self.prev_pos = self.pos;
@@ -184,7 +184,7 @@ impl Particle {
         self.age += 1;
         self.vel.y -= 0.04 * self.gravity;
         match self.kind {
-            Kind::Terrain => self.move_with_collision(chunks, blocks),
+            Kind::Terrain => self.move_with_collision(chunks, block_state_table),
             // EndRodParticle.move() skips collision entirely.
             Kind::EndRod => self.pos += self.vel,
         }
@@ -218,7 +218,7 @@ impl Particle {
     }
 
     /// Vanilla `Particle.move`.
-    fn move_with_collision(&mut self, chunks: &ChunkStore, blocks: VersionBlockData) {
+    fn move_with_collision(&mut self, chunks: &ChunkStore, block_state_table: BlockStateTable) {
         if self.stopped_by_collision {
             return;
         }
@@ -227,7 +227,7 @@ impl Particle {
         if delta != DVec3::ZERO && delta.length_squared() < MAX_COLLISION_VELOCITY_SQ {
             let aabb = Aabb::from_center(self.pos, HALF_WIDTH, HALF_WIDTH);
             (delta, _) = resolve_collision(
-                crate::physics::collision::CollisionWorld::new(chunks, blocks),
+                crate::physics::collision::CollisionWorld::new(chunks, block_state_table),
                 aabb,
                 orig.into(),
                 0.0,
@@ -550,10 +550,10 @@ impl ParticleStore {
         self.pending.push(particle);
     }
 
-    pub fn tick(&mut self, chunks: &ChunkStore, blocks: VersionBlockData) {
+    pub fn tick(&mut self, chunks: &ChunkStore, block_state_table: BlockStateTable) {
         let frames = self.end_rod_frames;
         self.particles
-            .retain_mut(|p| p.tick(chunks, blocks, &frames));
+            .retain_mut(|p| p.tick(chunks, block_state_table, &frames));
         self.particles.append(&mut self.pending);
     }
 

@@ -11,7 +11,7 @@ use super::collision::{CollisionWorld, find_supporting_block, no_collision, reso
 use crate::app::input::{self, InputState};
 use crate::entity::components::Velocity;
 use crate::player::{CROUCH_HEIGHT, LocalPlayer, PLAYER_HALF_WIDTH, STANDING_HEIGHT, is_spectator};
-use crate::world::block::{BlockData, BlockTags, FluidKind, VersionBlockData};
+use crate::world::block::{BlockData, BlockStateTable, BlockTags, FluidKind};
 use crate::world::chunk::ChunkStore;
 
 // TODO: read movement speed, sprint modifier, jump strength, step height,
@@ -86,7 +86,7 @@ pub fn tick(
     // `Player.tick` snapshots `wasUnderwater` before `Entity.baseTick`
     // refreshes fluid contact (and applies its current).
     player.under_water = player.eyes_in_water;
-    player.update_water_state(world.chunks, world.blocks, is_passenger);
+    player.update_water_state(world.chunks, world.block_state_table, is_passenger);
 
     if player.flying {
         // Vanilla `Player.aiStep`.
@@ -245,7 +245,7 @@ pub fn tick_dead(
     let neutral = InputState::released();
     let vehicle = is_passenger.then_some(Vehicle { jumpable: false });
     update_sprint_state(player, &neutral, false, false, vehicle);
-    player.update_water_state(world.chunks, world.blocks, is_passenger);
+    player.update_water_state(world.chunks, world.block_state_table, is_passenger);
     player.tick_eye_height();
 
     let (sin_y_rot, cos_y_rot) = vanilla_yaw_sin_cos(player.look_dir.y_rot_deg());
@@ -321,18 +321,21 @@ fn is_climbable_state(block_data: &BlockData, tags: &BlockTags) -> bool {
     tags.contains("minecraft:climbable", block_data.id())
 }
 
-fn trapdoor_usable_as_ladder(trapdoor: &BlockData, below: &BlockData) -> bool {
-    let props = trapdoor.properties();
-    trapdoor.id().ends_with("_trapdoor")
+fn trapdoor_usable_as_ladder(
+    trapdoor_block_data: &BlockData,
+    below_block_data: &BlockData,
+) -> bool {
+    let props = trapdoor_block_data.properties();
+    trapdoor_block_data.id().ends_with("_trapdoor")
         && props.get("open") == Some("true")
-        && below.id() == "ladder"
-        && props.get("facing") == below.properties().get("facing")
+        && below_block_data.id() == "ladder"
+        && props.get("facing") == below_block_data.properties().get("facing")
 }
 
 fn on_climbable_state(
     player: &LocalPlayer,
     chunk_store: &ChunkStore,
-    blocks: VersionBlockData,
+    block_state_table: BlockStateTable,
     tags: &BlockTags,
 ) -> Option<azalea_block::BlockState> {
     // TODO: `onClimbable` also rejects fall-flying in `can_glide_through`.
@@ -344,12 +347,16 @@ fn on_climbable_state(
     let y = player.position.y.floor() as i32;
     let z = player.position.z.floor() as i32;
     let state = chunk_store.get_block_state(x, y, z);
-    if is_climbable_state(blocks.block_data(state), tags) {
+    if is_climbable_state(block_state_table.block_data(state), tags) {
         return Some(state);
     }
 
     let below = chunk_store.get_block_state(x, y - 1, z);
-    trapdoor_usable_as_ladder(blocks.block_data(state), blocks.block_data(below)).then_some(state)
+    trapdoor_usable_as_ladder(
+        block_state_table.block_data(state),
+        block_state_table.block_data(below),
+    )
+    .then_some(state)
 }
 
 fn apply_climbable_velocity(
@@ -374,20 +381,25 @@ fn handle_on_climbable(
     tags: &BlockTags,
     suppress_slide: bool,
 ) {
-    let Some(state) = on_climbable_state(player, world.chunks, world.blocks, tags) else {
+    let Some(state) = on_climbable_state(player, world.chunks, world.block_state_table, tags)
+    else {
         return;
     };
-    apply_climbable_velocity(player, world.blocks.block_data(state), suppress_slide);
+    apply_climbable_velocity(
+        player,
+        world.block_state_table.block_data(state),
+        suppress_slide,
+    );
 }
 
 /// `Player.onClimbable`.
 pub(crate) fn on_climbable(
     player: &LocalPlayer,
     chunk_store: &ChunkStore,
-    blocks: VersionBlockData,
+    block_state_table: BlockStateTable,
     tags: &BlockTags,
 ) -> bool {
-    on_climbable_state(player, chunk_store, blocks, tags).is_some()
+    on_climbable_state(player, chunk_store, block_state_table, tags).is_some()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -408,7 +420,7 @@ fn tick_land(
     let saved_vy = player.velocity.y;
     let block_friction = if on_ground_at_start {
         world
-            .blocks
+            .block_state_table
             .block_data(block_below_affecting_movement(player, world))
             .movement_friction()
     } else {
@@ -429,7 +441,7 @@ fn tick_land(
 
     // TODO: `wasInPowderSnow && canEntityWalkOnPowderSnow` also takes the impulse.
     if (player.horizontal_collision || input.performing_action(input::Action::Jump))
-        && on_climbable(player, world.chunks, world.blocks, tags)
+        && on_climbable(player, world.chunks, world.block_state_table, tags)
     {
         player.velocity.y = CLIMB_UP_VELOCITY;
     }
@@ -490,7 +502,7 @@ fn tick_water(
         let target_vy = vanilla_look_y(player.look_dir.x_rot_deg());
         let surface_y = (player.position.y + 1.0 - 0.1).floor() as i32;
         let surface_fluid = world
-            .blocks
+            .block_state_table
             .block_data(world.chunks.get_block_state(
                 player.position.x.floor() as i32,
                 surface_y,
@@ -522,7 +534,9 @@ fn tick_water(
     apply_collision(player, input, world, forward, strafe, sin_y_rot, cos_y_rot);
     // TODO: `Entity.move`'s block speed factor also applies in water.
 
-    if player.horizontal_collision && on_climbable(player, world.chunks, world.blocks, tags) {
+    if player.horizontal_collision
+        && on_climbable(player, world.chunks, world.block_state_table, tags)
+    {
         player.velocity.y = CLIMB_UP_VELOCITY;
     }
 
@@ -577,7 +591,7 @@ fn contains_any_liquid(world: CollisionWorld<'_>, aabb: &Aabb) -> bool {
         for y in y0..y1 {
             for z in z0..z1 {
                 if world
-                    .blocks
+                    .block_state_table
                     .block_data(world.chunks.get_block_state(x, y, z))
                     .fluid()
                     .kind
@@ -635,7 +649,7 @@ fn apply_collision(
     // (adding any current) before collided axes are zeroed; the fall distance
     // narrows the movement Y to float.
     if !player.in_water {
-        player.refresh_water_interaction(world.chunks, world.blocks);
+        player.refresh_water_interaction(world.chunks, world.block_state_table);
     }
     if !player.in_water && resolved.y < 0.0 {
         player.fall_distance -= f64::from(resolved.y as f32);
@@ -963,7 +977,7 @@ fn block_below_affecting_movement(
 
     if let Some(support) = player.main_supporting_block_pos {
         let support_state = chunk_store.get_block_state(support.x, support.y, support.z);
-        let support_id = world.blocks.block_data(support_state).id();
+        let support_id = world.block_state_table.block_data(support_state).id();
         // `Entity.getOnPos`: walls and fence gates keep the support's own Y.
         if support_id.ends_with("_wall") || support_id.ends_with("_fence_gate") {
             return support_state;
@@ -1015,12 +1029,12 @@ fn update_supporting_block(
 
 fn block_jump_factor(player: &LocalPlayer, world: CollisionWorld<'_>) -> f32 {
     let here_factor = world
-        .blocks
+        .block_state_table
         .block_data(block_state_at_player_position(player, world.chunks))
         .movement_jump_factor();
     if f64::from(here_factor) == 1.0 {
         world
-            .blocks
+            .block_state_table
             .block_data(block_below_affecting_movement(player, world))
             .movement_jump_factor()
     } else {
@@ -1033,15 +1047,15 @@ fn block_speed_factor(player: &LocalPlayer, world: CollisionWorld<'_>) -> f32 {
     if player.flying {
         return 1.0;
     }
-    let here = world
-        .blocks
+    let block_data = world
+        .block_state_table
         .block_data(block_state_at_player_position(player, world.chunks));
-    let here_factor = here.movement_speed_factor();
-    if matches!(here.id(), "water" | "bubble_column") || f64::from(here_factor) != 1.0 {
+    let here_factor = block_data.movement_speed_factor();
+    if matches!(block_data.id(), "water" | "bubble_column") || f64::from(here_factor) != 1.0 {
         here_factor
     } else {
         world
-            .blocks
+            .block_state_table
             .block_data(block_below_affecting_movement(player, world))
             .movement_speed_factor()
     }
@@ -1221,8 +1235,8 @@ mod tests {
     use crate::world::block::find_state;
     use crate::world::block_entity_anim::BlockEntityAnimStore;
 
-    fn test_blocks() -> VersionBlockData {
-        VersionBlockData::for_protocol(
+    fn test_blocks() -> BlockStateTable {
+        BlockStateTable::for_protocol(
             pomme_protocol::ProtocolVersion::from_name("26.2")
                 .unwrap()
                 .protocol,
@@ -1235,7 +1249,7 @@ mod tests {
     ) -> CollisionWorld<'a> {
         CollisionWorld {
             chunks,
-            blocks: test_blocks(),
+            block_state_table: test_blocks(),
             block_entity_anim: Some(anim),
         }
     }

@@ -8,16 +8,12 @@ use azalea_core::position::BlockPos;
 
 use super::render_registry::{BlockRenderRegistry, BlockRenderView, OwnedBlockRenderView};
 use super::{
-    BlockData, BlockTags, VersionBlockData, load_behaviors, registry_names, resolve_block_tags,
+    BlockData, BlockStateTable, BlockTags, load_behaviors, registry_names, resolve_block_tags,
 };
 use crate::world::level::LevelContext;
 
 /// Shared, immutable block rules, independent of the compact wire state ID.
 pub trait Block {
-    #[expect(
-        dead_code,
-        reason = "definition properties precede mining consumer migration"
-    )]
     fn properties(&self) -> &BlockProperties;
 
     fn animate_tick(
@@ -39,10 +35,6 @@ pub struct BlockProperties {
 }
 
 struct DefaultBlock {
-    #[expect(
-        dead_code,
-        reason = "definition properties precede mining consumer migration"
-    )]
     properties: BlockProperties,
 }
 
@@ -82,21 +74,6 @@ impl GlobalBlockDefinitions {
         registry
     }
 
-    /// Acquire a definition by its unnamespaced data name, independent of the
-    /// active protocol. Unknown names use the same fallback as unknown states.
-    #[expect(
-        dead_code,
-        reason = "named acquisition precedes mining consumer migration"
-    )]
-    pub(crate) fn get(&self, name: &str) -> &dyn Block {
-        self.definitions
-            .iter()
-            .find(|(registered, _)| *registered == name)
-            .unwrap_or(&self.definitions[0])
-            .1
-            .as_ref()
-    }
-
     /// Register one shared rule for all property states of a known block.
     fn register(&mut self, name: &'static str, definition: Box<dyn Block>) {
         self.definitions.push((name, definition));
@@ -108,7 +85,7 @@ pub(crate) struct BlockRegistry {
     definitions: Rc<GlobalBlockDefinitions>,
     render_registry: Arc<BlockRenderRegistry>,
     protocol: i32,
-    version_data: VersionBlockData,
+    block_state_table: BlockStateTable,
     bindings: BlockBindings,
     tags: BlockTags,
 }
@@ -119,13 +96,13 @@ impl BlockRegistry {
         render_registry: Arc<BlockRenderRegistry>,
         protocol: i32,
     ) -> Self {
-        let version_data = VersionBlockData::for_protocol(protocol);
-        let bindings = BlockBindings::new(&definitions, version_data);
+        let block_state_table = BlockStateTable::for_protocol(protocol);
+        let bindings = BlockBindings::new(&definitions, block_state_table);
         Self {
             definitions,
             render_registry,
             protocol,
-            version_data,
+            block_state_table,
             bindings,
             tags: BlockTags::default(),
         }
@@ -134,26 +111,31 @@ impl BlockRegistry {
     /// Keep wire identity even when two protocols share a canonical table.
     pub(crate) fn select_protocol(&mut self, protocol: i32) {
         if self.protocol != protocol {
-            let version_data = VersionBlockData::for_protocol(protocol);
-            if self.version_data.table_slot() != version_data.table_slot() {
-                self.bindings = BlockBindings::new(&self.definitions, version_data);
+            let block_state_table = BlockStateTable::for_protocol(protocol);
+            if self.block_state_table.table_slot() != block_state_table.table_slot() {
+                self.bindings = BlockBindings::new(&self.definitions, block_state_table);
             }
-            self.version_data = version_data;
+            self.block_state_table = block_state_table;
             self.protocol = protocol;
         }
         self.clear_tags();
     }
 
-    pub(crate) fn version_data(&self) -> VersionBlockData {
-        self.version_data
+    pub(crate) fn block_state_table(&self) -> BlockStateTable {
+        self.block_state_table
+    }
+
+    /// Requested wire protocol, including aliases sharing a metadata table.
+    pub(crate) fn protocol(&self) -> i32 {
+        self.protocol
     }
 
     pub(crate) fn render_view(&self) -> BlockRenderView<'_> {
-        self.render_registry.for_version(self.version_data)
+        self.render_registry.for_version(self.block_state_table)
     }
 
     pub(crate) fn owned_render_view(&self) -> OwnedBlockRenderView {
-        OwnedBlockRenderView::new(self.render_registry.clone(), self.version_data)
+        OwnedBlockRenderView::new(self.render_registry.clone(), self.block_state_table)
     }
 
     pub(crate) fn replace_render_registry(&mut self, registry: Arc<BlockRenderRegistry>) {
@@ -161,11 +143,11 @@ impl BlockRegistry {
     }
 
     pub(crate) fn placeable_block_for_item(&self, item_name: &str) -> Option<BlockState> {
-        self.version_data.placeable_block_for_item(item_name)
+        self.block_state_table.placeable_block_for_item(item_name)
     }
 
     pub(crate) fn replace_tags(&mut self, raw_tags: Vec<(String, Vec<i32>)>) {
-        let names: Vec<_> = registry_names(self.version_data.table()).collect();
+        let names: Vec<_> = registry_names(self.block_state_table.table()).collect();
         self.tags = resolve_block_tags(raw_tags, &names);
     }
 
@@ -177,11 +159,14 @@ impl BlockRegistry {
         &self.tags
     }
 
-    pub(crate) fn get(&self, state: BlockState) -> BlockStateView<'_> {
-        BlockStateView {
-            block_data: self.version_data.block_data(state),
-            definition: self.bindings.get(&self.definitions, state),
-        }
+    /// Includes the state's key/value `PropMap`, not definition properties.
+    pub(crate) fn block_data(&self, state: BlockState) -> &'static BlockData {
+        self.block_state_table.block_data(state)
+    }
+
+    /// The shared rule exposes immutable `BlockProperties` via `properties()`.
+    pub(crate) fn block(&self, state: BlockState) -> &dyn Block {
+        self.bindings.get(&self.definitions, state)
     }
 
     /// Select and invoke together so callbacks receive the queried state.
@@ -192,28 +177,7 @@ impl BlockRegistry {
         random: &mut fastrand::Rng,
     ) {
         let state = level.get_block_state(pos);
-        self.get(state)
-            .definition()
-            .animate_tick(state, pos, level, random);
-    }
-}
-
-/// Borrows metadata and a shared rule without copying either into the session.
-pub(crate) struct BlockStateView<'a> {
-    block_data: &'a BlockData,
-    definition: &'a dyn Block,
-}
-
-impl BlockStateView<'_> {
-    /// Includes the state's key/value `PropMap`, not definition properties.
-    #[expect(dead_code, reason = "state metadata consumers migrate in a later step")]
-    pub(crate) fn state_data(&self) -> &BlockData {
-        self.block_data
-    }
-
-    /// The shared rule exposes immutable `BlockProperties` via `properties()`.
-    pub(crate) fn definition(&self) -> &dyn Block {
-        self.definition
+        self.block(state).animate_tick(state, pos, level, random);
     }
 }
 
@@ -223,15 +187,21 @@ struct BlockBindings {
 }
 
 impl BlockBindings {
-    fn new(definitions: &GlobalBlockDefinitions, version_data: VersionBlockData) -> Self {
-        let table = version_data.table();
+    fn new(definitions: &GlobalBlockDefinitions, block_state_table: BlockStateTable) -> Self {
+        let table = block_state_table.table();
         let mut state_definitions = Vec::with_capacity(table.len());
         for states in table.chunk_by(|a, b| a.id == b.id) {
             let index = definitions
                 .definitions
                 .iter()
                 .position(|(name, _)| *name == states[0].id)
-                .unwrap_or(0);
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        "no behavior entry for block '{}', using defaults",
+                        states[0].id
+                    );
+                    0
+                });
             state_definitions.extend(std::iter::repeat_n(index, states.len()));
         }
         Self { state_definitions }

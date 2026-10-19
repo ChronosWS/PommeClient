@@ -5,7 +5,7 @@ use glam::{DVec3, dvec3};
 use super::aabb::Aabb;
 use super::block_shape::{self, CollisionContext};
 use crate::entity::components::Velocity;
-use crate::world::block::{SpecialCollision, VersionBlockData};
+use crate::world::block::{BlockStateTable, SpecialCollision};
 use crate::world::block_entity_anim::BlockEntityAnimStore;
 use crate::world::chunk::ChunkStore;
 
@@ -13,16 +13,16 @@ use crate::world::chunk::ChunkStore;
 #[derive(Clone, Copy)]
 pub struct CollisionWorld<'a> {
     pub chunks: &'a ChunkStore,
-    pub blocks: VersionBlockData,
+    pub block_state_table: BlockStateTable,
     /// Shulker lids follow their open animation; `None` keeps them closed.
     pub block_entity_anim: Option<&'a BlockEntityAnimStore>,
 }
 
 impl<'a> CollisionWorld<'a> {
-    pub fn new(chunks: &'a ChunkStore, blocks: VersionBlockData) -> Self {
+    pub fn new(chunks: &'a ChunkStore, block_state_table: BlockStateTable) -> Self {
         Self {
             chunks,
-            blocks,
+            block_state_table,
             block_entity_anim: None,
         }
     }
@@ -32,8 +32,8 @@ impl CollisionWorld<'_> {
     /// `ShulkerBoxBlockEntity.getBoundingBox` moved to `pos`; `None` while
     /// closed, where the static full cube applies.
     fn shulker_lid(&self, state: BlockState, pos: BlockPos) -> Option<Aabb> {
-        let data = self.blocks.block_data(state);
-        if data.special_collision() != SpecialCollision::ShulkerBox {
+        let block_data = self.block_state_table.block_data(state);
+        if block_data.special_collision() != SpecialCollision::ShulkerBox {
             return None;
         }
         let extension = f64::from(0.5 * self.block_entity_anim?.container(&pos)?.openness(1.0));
@@ -41,7 +41,7 @@ impl CollisionWorld<'_> {
             return None;
         }
         let mut local = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-        match data.properties().get("facing").unwrap_or("up") {
+        match block_data.properties().get("facing").unwrap_or("up") {
             "down" => local[1] -= extension,
             "up" => local[4] += extension,
             "north" => local[2] -= extension,
@@ -52,7 +52,7 @@ impl CollisionWorld<'_> {
         }
         Some(Aabb::from_local(
             local,
-            data.collision_shape_position(pos.x, pos.y, pos.z),
+            block_data.collision_shape_position(pos.x, pos.y, pos.z),
         ))
     }
 
@@ -63,7 +63,7 @@ impl CollisionWorld<'_> {
         visit: impl FnMut(BlockPos, &[Aabb]),
     ) {
         for_each_block_collision(
-            self.blocks,
+            self.block_state_table,
             region,
             ctx,
             |x, y, z| self.chunks.get_block_state(x, y, z),
@@ -78,7 +78,7 @@ impl CollisionWorld<'_> {
 /// padding shell, and visits each block whose shape intersects the region
 /// with that whole shape.
 fn for_each_block_collision(
-    blocks: VersionBlockData,
+    block_state_table: BlockStateTable,
     region: &Aabb,
     ctx: &CollisionContext,
     state_at: impl Fn(i32, i32, i32) -> BlockState,
@@ -102,9 +102,10 @@ fn for_each_block_collision(
                     continue;
                 }
                 let state = state_at(bx, by, bz);
-                let data = blocks.block_data(state);
-                if shell_axes == 1 && !data.has_large_collision_shape()
-                    || shell_axes == 2 && data.special_collision() != SpecialCollision::MovingPiston
+                let block_data = block_state_table.block_data(state);
+                if shell_axes == 1 && !block_data.has_large_collision_shape()
+                    || shell_axes == 2
+                        && block_data.special_collision() != SpecialCollision::MovingPiston
                 {
                     continue;
                 }
@@ -113,9 +114,9 @@ fn for_each_block_collision(
                 if let Some(lid) = shulker_lid(state, pos) {
                     boxes.push(lid);
                 } else {
-                    match block_shape::collision_shape(data, by, ctx) {
+                    match block_shape::collision_shape(block_data, by, ctx) {
                         Some(local) => {
-                            let offset = data.collision_shape_position(bx, by, bz);
+                            let offset = block_data.collision_shape_position(bx, by, bz);
                             boxes.extend(local.iter().map(|&b| Aabb::from_local(b, offset)));
                         }
                         None => boxes.push(Aabb::block(bx, by, bz)),
@@ -308,8 +309,8 @@ mod tests {
     use crate::player::PLAYER_HALF_WIDTH;
     use crate::world::block::{find_state, has_collision};
 
-    fn test_blocks() -> VersionBlockData {
-        VersionBlockData::for_protocol(
+    fn test_blocks() -> BlockStateTable {
+        BlockStateTable::for_protocol(
             pomme_protocol::ProtocolVersion::from_name("26.2")
                 .unwrap()
                 .protocol,
@@ -440,7 +441,7 @@ mod tests {
         let chunks = ChunkStore::new(2);
         let world = CollisionWorld {
             chunks: &chunks,
-            blocks: test_blocks(),
+            block_state_table: test_blocks(),
             block_entity_anim: Some(&anim),
         };
 

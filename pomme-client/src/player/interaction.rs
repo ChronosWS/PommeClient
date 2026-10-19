@@ -31,9 +31,10 @@ use crate::physics::block_shape::{self, LocalBox};
 use crate::player::inventory::item_resource_name;
 use crate::renderer::pipelines::held_item::UseAnim;
 use crate::tool::{LegacyMiningEnchantments, stack_tool, sword_instantly_mines_legacy};
+use crate::world::block::BlockStateTable;
+use crate::world::block::block_registry::BlockRegistry;
 use crate::world::block::render_registry::BlockRenderView;
-use crate::world::block::sound::block_sounds;
-use crate::world::block::{block_tags, has_collision, is_air, outline_shape_position};
+use crate::world::block::sound::block_sounds_for_id;
 use crate::world::chunk::ChunkStore;
 
 const DESTROY_COOLDOWN: u32 = 5;
@@ -197,6 +198,7 @@ impl InteractionState {
     #[allow(clippy::too_many_arguments)]
     fn predict_destroy(
         &mut self,
+        block_registry: &BlockRegistry,
         pos: BlockPos,
         state: BlockState,
         player_pos: DVec3,
@@ -208,7 +210,7 @@ impl InteractionState {
         self.retain_known_server_state(pos, state, player_pos);
         chunks.set_block_state(pos.x, pos.y, pos.z, BlockState::AIR);
         mark_dirty(&pos, dirty_chunks);
-        play_break_sound(audio, state, pos);
+        play_break_sound_for_id(audio, block_registry.block_data(state).id(), pos);
         effects.particles.add_destroy_block_effect(
             pos,
             state,
@@ -225,6 +227,7 @@ impl InteractionState {
     /// snap the player back to when a restored block overlaps them.
     pub fn acknowledge(
         &mut self,
+        block_state_table: BlockStateTable,
         seq: u32,
         chunks: &ChunkStore,
         player: Aabb,
@@ -247,7 +250,7 @@ impl InteractionState {
                 chunks.set_block_state(pos.x, pos.y, pos.z, verified.state);
                 mark_dirty(pos, dirty_chunks);
                 // Full-cube collision, as the engine has no per-shape voxels.
-                if snap_allowed && has_collision(verified.state) {
+                if snap_allowed && block_state_table.block_data(verified.state).has_collision() {
                     let block = Aabb::block(pos.x, pos.y, pos.z);
                     let key = (pos.x, pos.y, pos.z);
                     if block.intersects(&player) && snap_to.is_none_or(|(best, _)| key < best) {
@@ -315,6 +318,7 @@ impl InteractionState {
     #[allow(clippy::too_many_arguments)]
     pub fn update_target(
         &mut self,
+        block_registry: &BlockRegistry,
         eye_pos: Position,
         look_dir: LookDirection,
         chunks: &ChunkStore,
@@ -326,12 +330,19 @@ impl InteractionState {
         // Vanilla `LocalPlayer.pick`: raycast blocks out to the larger normal
         // interaction range, then filter the winning hit by its own range.
         let (block_reach, entity_reach) =
-            interaction_ranges(attributes, creative, crate::version::session_protocol());
+            interaction_ranges(attributes, creative, block_registry.protocol());
         let max_dist = block_reach.max(entity_reach);
 
         let from: DVec3 = eye_pos.into();
         let dir = look_dir.as_vec();
-        let block_hit = raycast(from, dir, max_dist as f32, chunks, held_item);
+        let block_hit = raycast(
+            from,
+            dir,
+            max_dist as f32,
+            chunks,
+            block_registry.block_state_table(),
+            held_item,
+        );
 
         let block_dist_sq = block_hit
             .map(|h| h.hit_point.distance_squared(from))
@@ -357,6 +368,7 @@ impl InteractionState {
     #[allow(clippy::too_many_arguments)]
     pub fn tick_actions(
         &mut self,
+        block_registry: &BlockRegistry,
         input: &InputState,
         chunks: &ChunkStore,
         sender: &PacketSender,
@@ -398,6 +410,7 @@ impl InteractionState {
 
         if !using && input.action_just_pressed(input::Action::Destroy) {
             self.start_attack(
+                block_registry,
                 chunks,
                 sender,
                 audio,
@@ -429,6 +442,7 @@ impl InteractionState {
             let sneaking = input.performing_action(input::Action::Sneak);
             let suppress_block_use = sneaking && !hands_empty;
             let success = self.start_use_item(
+                block_registry,
                 sender,
                 audio,
                 chunks,
@@ -463,6 +477,7 @@ impl InteractionState {
         if self.using_item.is_none() {
             if attack_down {
                 self.continue_attack(
+                    block_registry,
                     chunks,
                     sender,
                     audio,
@@ -562,6 +577,7 @@ impl InteractionState {
     #[allow(clippy::too_many_arguments)]
     fn start_attack(
         &mut self,
+        block_registry: &BlockRegistry,
         chunks: &ChunkStore,
         sender: &PacketSender,
         audio: &AudioEngine,
@@ -606,7 +622,7 @@ impl InteractionState {
         };
 
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
-        if is_air(state) {
+        if block_registry.block_data(state).is_air() {
             self.miss_time = MISS_COOLDOWN;
             self.attack_strength_ticker = 0;
             self.swing(sender);
@@ -614,6 +630,7 @@ impl InteractionState {
         }
 
         self.start_destroy_block(
+            block_registry,
             hit,
             chunks,
             sender,
@@ -635,6 +652,7 @@ impl InteractionState {
     #[allow(clippy::too_many_arguments)]
     fn continue_attack(
         &mut self,
+        block_registry: &BlockRegistry,
         chunks: &ChunkStore,
         sender: &PacketSender,
         audio: &AudioEngine,
@@ -661,12 +679,13 @@ impl InteractionState {
         };
 
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
-        if is_air(state) {
+        if block_registry.block_data(state).is_air() {
             self.stop_destroying(sender);
             return;
         }
 
         self.continue_destroy_block(
+            block_registry,
             hit,
             chunks,
             sender,
@@ -691,6 +710,7 @@ impl InteractionState {
     #[allow(clippy::too_many_arguments)]
     fn start_use_item(
         &mut self,
+        block_registry: &BlockRegistry,
         sender: &PacketSender,
         audio: &AudioEngine,
         chunks: &ChunkStore,
@@ -749,13 +769,14 @@ impl InteractionState {
             if !suppress_block_use {
                 let target =
                     chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
-                if opens_menu(target) {
+                if opens_menu(block_registry.block_data(target).id()) {
                     return true;
                 }
             }
             if place_block.is_some() {
                 self.swing_use(sender);
                 self.predict_place(
+                    block_registry.block_state_table(),
                     hit,
                     place_block,
                     chunks,
@@ -1077,8 +1098,10 @@ impl InteractionState {
     /// block, and marks it for remesh. `acknowledge` reverts it if the
     /// server doesn't confirm. Skips anything not clearly placeable so the
     /// worst case is just no prediction.
+    #[allow(clippy::too_many_arguments)]
     fn predict_place(
         &mut self,
+        block_state_table: BlockStateTable,
         hit: BlockHitResult,
         place_block: Option<BlockState>,
         chunks: &ChunkStore,
@@ -1092,12 +1115,17 @@ impl InteractionState {
         let pos = hit.block_pos.offset_with_direction(hit.face);
 
         // Only predict into an empty cell; replacing grass/water isn't handled yet.
-        if !is_air(chunks.get_block_state(pos.x, pos.y, pos.z)) {
+        if !block_state_table
+            .block_data(chunks.get_block_state(pos.x, pos.y, pos.z))
+            .is_air()
+        {
             return;
         }
 
         // Don't predict a solid block overlapping the player; the server denies it.
-        if has_collision(state) && Aabb::block(pos.x, pos.y, pos.z).intersects(&player_aabb) {
+        if block_state_table.block_data(state).has_collision()
+            && Aabb::block(pos.x, pos.y, pos.z).intersects(&player_aabb)
+        {
             return;
         }
 
@@ -1109,6 +1137,7 @@ impl InteractionState {
     #[allow(clippy::too_many_arguments)]
     fn start_destroy_block(
         &mut self,
+        block_registry: &BlockRegistry,
         hit: BlockHitResult,
         chunks: &ChunkStore,
         sender: &PacketSender,
@@ -1126,14 +1155,15 @@ impl InteractionState {
     ) {
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
 
-        if is_air(state) {
+        let block_data = block_registry.block_data(state);
+        if block_data.is_air() {
             return;
         }
 
         // Vanilla `Item.canDestroyBlock`.
         if creative
             && held_stack
-                .and_then(|stack| stack_tool(stack, crate::version::session_protocol()))
+                .and_then(|stack| stack_tool(stack, block_registry.protocol()))
                 .is_some_and(|tool| !tool.can_destroy_blocks_in_creative)
         {
             self.seq += 1;
@@ -1149,6 +1179,7 @@ impl InteractionState {
         }
 
         let progress = destroy_progress(
+            block_registry,
             state,
             on_ground,
             creative,
@@ -1180,6 +1211,7 @@ impl InteractionState {
                 seq,
             );
             self.predict_destroy(
+                block_registry,
                 hit.block_pos,
                 state,
                 player_pos,
@@ -1225,6 +1257,7 @@ impl InteractionState {
     #[allow(clippy::too_many_arguments)]
     fn continue_destroy_block(
         &mut self,
+        block_registry: &BlockRegistry,
         hit: BlockHitResult,
         chunks: &ChunkStore,
         sender: &PacketSender,
@@ -1247,6 +1280,7 @@ impl InteractionState {
 
         if !self.same_destroy_target(hit.block_pos, held_stack) {
             self.start_destroy_block(
+                block_registry,
                 hit,
                 chunks,
                 sender,
@@ -1266,12 +1300,14 @@ impl InteractionState {
         }
 
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
-        if is_air(state) {
+        let block_data = block_registry.block_data(state);
+        if block_data.is_air() {
             self.is_destroying = false;
             return;
         }
 
         self.destroy_progress += destroy_progress(
+            block_registry,
             state,
             on_ground,
             creative,
@@ -1282,7 +1318,7 @@ impl InteractionState {
             legacy_mining,
         );
         if self.destroy_ticks % 4.0 == 0.0 {
-            play_hit_sound(audio, state, hit.block_pos);
+            play_hit_sound(audio, block_data.id(), hit.block_pos);
         }
         self.destroy_ticks += 1.0;
 
@@ -1297,6 +1333,7 @@ impl InteractionState {
                 seq,
             );
             self.predict_destroy(
+                block_registry,
                 hit.block_pos,
                 state,
                 player_pos,
@@ -1396,8 +1433,7 @@ fn same_item_same_components(a: Option<&ItemStackData>, b: Option<&ItemStackData
 
 /// Whether right-clicking this block opens a menu we render (so the use
 /// click is consumed: no block placement, no item use).
-fn opens_menu(state: BlockState) -> bool {
-    let id = crate::world::block::block_id(state);
+fn opens_menu(id: &str) -> bool {
     matches!(
         id,
         "crafting_table"
@@ -1417,6 +1453,7 @@ fn opens_menu(state: BlockState) -> bool {
 /// with the correct tool for drops and 100 without.
 #[allow(clippy::too_many_arguments)]
 fn destroy_progress(
+    block_registry: &BlockRegistry,
     state: BlockState,
     on_ground: bool,
     creative: bool,
@@ -1429,13 +1466,17 @@ fn destroy_progress(
     if creative {
         return 1.0;
     }
-    let protocol = crate::version::session_protocol();
-    let block = crate::world::block::block_id(state);
-    if held_stack.is_some_and(|stack| sword_instantly_mines_legacy(stack.kind, block, protocol)) {
+    let block_data = block_registry.block_data(state);
+    let properties = block_registry.block(state).properties();
+    let tags = block_registry.tags();
+    let protocol = block_registry.protocol();
+    let block_name = block_data.id();
+    if held_stack
+        .is_some_and(|stack| sword_instantly_mines_legacy(stack.kind, block_name, protocol))
+    {
         return 1.0;
     }
-    let behavior = crate::world::block::block_behavior(state);
-    let hardness = behavior.destroy_time;
+    let hardness = properties.destroy_time;
 
     if hardness < 0.0 {
         return 0.0;
@@ -1445,10 +1486,9 @@ fn destroy_progress(
     }
 
     let tool = held_stack.and_then(|stack| stack_tool(stack, protocol));
-    let tags = block_tags();
     let speed = destroy_speed(
         tool.as_deref()
-            .map_or(1.0, |tool| tool.mining_speed(block, &tags)),
+            .map_or(1.0, |tool| tool.mining_speed(block_name, tags)),
         on_ground,
         attributes,
         mob_effects,
@@ -1457,10 +1497,10 @@ fn destroy_progress(
         legacy_mining,
     );
 
-    let correct_tool = !behavior.requires_correct_tool_for_drops
+    let correct_tool = !properties.requires_correct_tool_for_drops
         || tool
             .as_deref()
-            .is_some_and(|tool| tool.correct_for_drops(block, &tags, protocol));
+            .is_some_and(|tool| tool.correct_for_drops(block_name, tags, protocol));
     let divisor = if correct_tool { 30.0 } else { 100.0 };
     speed / hardness / divisor
 }
@@ -1520,8 +1560,8 @@ fn destroy_speed(
 /// Plays a block's mining hit sound, matching vanilla
 /// `MultiPlayerGameMode.continueDestroyBlock`: volume `(volume + 1) / 8`, pitch
 /// `pitch * 0.5`.
-fn play_hit_sound(audio: &AudioEngine, state: BlockState, pos: BlockPos) {
-    let s = block_sounds(state);
+fn play_hit_sound(audio: &AudioEngine, id: &str, pos: BlockPos) {
+    let s = block_sounds_for_id(id);
     play_block_sound(
         audio,
         &s.hit_event,
@@ -1534,7 +1574,11 @@ fn play_hit_sound(audio: &AudioEngine, state: BlockState, pos: BlockPos) {
 /// Plays a block's break sound, matching vanilla `LevelEventHandler` event
 /// 2001: volume `(volume + 1) / 2`, pitch `pitch * 0.8`.
 pub fn play_break_sound(audio: &AudioEngine, state: BlockState, pos: BlockPos) {
-    let s = block_sounds(state);
+    play_break_sound_for_id(audio, crate::world::block::block_id(state), pos);
+}
+
+fn play_break_sound_for_id(audio: &AudioEngine, id: &str, pos: BlockPos) {
+    let s = block_sounds_for_id(id);
     play_block_sound(
         audio,
         &s.break_event,
@@ -1628,6 +1672,7 @@ pub fn raycast(
     dir: Vec3,
     max_dist: f32,
     chunks: &ChunkStore,
+    block_state_table: BlockStateTable,
     held_item: Option<&str>,
 ) -> Option<BlockHitResult> {
     let dir = dir.as_dvec3();
@@ -1675,14 +1720,15 @@ pub fn raycast(
     let mut t = 0.0_f64;
     while t <= max_dist as f64 {
         let state = chunks.get_block_state(bx, by, bz);
-        if !is_air(state) {
+        let block_data = block_state_table.block_data(state);
+        if !block_data.is_air() {
             let block_pos = BlockPos {
                 x: bx,
                 y: by,
                 z: bz,
             };
-            let outline = block_shape::outline_shape_holding(state, held_item);
-            let shape_offset = outline_shape_position(state, bx, by, bz);
+            let outline = block_shape::outline_shape_holding_data(block_data, held_item);
+            let shape_offset = block_data.outline_shape_position(bx, by, bz);
             if let Some((hit_point, face)) = clip_shape(origin, reach_end, shape_offset, outline) {
                 return Some(BlockHitResult {
                     block_pos,
@@ -1852,6 +1898,9 @@ mod tests {
     use super::*;
     use crate::attribute::AttributeSnapshot;
     use crate::mob_effect::{CONDUIT_POWER, HASTE, MobEffectInstance};
+    use crate::world::block::block_registry::GlobalBlockDefinitions;
+    use crate::world::block::block_tags;
+    use crate::world::block::render_registry::BlockRenderRegistry;
 
     #[test]
     fn carried_slot_starts_at_vanilla_zero_and_only_sends_on_change() {
@@ -2177,9 +2226,9 @@ mod tests {
         );
     }
 
-    fn seed_standard_tool_tags() {
+    fn seed_standard_tool_tags() -> Vec<(String, Vec<i32>)> {
         crate::world::block::init("26.2");
-        crate::world::block::replace_block_tags_for_test(&[
+        let entries: &[(&str, &[&str])] = &[
             ("mineable/pickaxe", &["stone"]),
             ("mineable/shovel", &["dirt"]),
             ("mineable/axe", &["oak_log"]),
@@ -2193,18 +2242,42 @@ mod tests {
             ("incorrect_for_netherite_tool", &[]),
             ("sword_instantly_mines", &[]),
             ("sword_efficient", &[]),
-        ]);
+        ];
+        crate::world::block::replace_block_tags_for_test(entries);
+        let names: Vec<_> = (0..)
+            .map_while(|id| crate::world::block::block_registry_name(NATIVE.protocol, id))
+            .collect();
+        entries
+            .iter()
+            .map(|(tag, blocks)| {
+                let ids = blocks
+                    .iter()
+                    .map(|block| names.iter().position(|name| name == block).unwrap() as i32)
+                    .collect();
+                (format!("minecraft:{tag}"), ids)
+            })
+            .collect()
     }
 
     #[test]
     fn runtime_destroy_progress_differs_by_tool() {
-        seed_standard_tool_tags();
+        let tags = seed_standard_tool_tags();
         let stone = crate::world::block::first_state_of("stone").expect("stone state");
+        let protocol = pomme_protocol::ProtocolVersion::from_name("26.2")
+            .unwrap()
+            .protocol;
+        let mut block_registry = BlockRegistry::new(
+            std::rc::Rc::new(GlobalBlockDefinitions::new()),
+            std::sync::Arc::new(BlockRenderRegistry::default()),
+            protocol,
+        );
+        block_registry.replace_tags(tags);
         let attributes = AttributeMap::player();
         let effects = ActiveMobEffects::default();
         let progress = |kind: Option<ItemKind>| {
             let stack = kind.map(|kind| ItemStackData::new(kind, 1));
             destroy_progress(
+                &block_registry,
                 stone,
                 true,
                 false,

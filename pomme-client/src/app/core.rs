@@ -185,7 +185,7 @@ fn local_push_box(game: &GameState) -> Option<crate::physics::aabb::Aabb> {
         && !movement::on_climbable(
             &game.player,
             &game.chunk_store,
-            game.block_registry.version_data(),
+            game.block_registry.block_state_table(),
             game.block_registry.tags(),
         ))
     .then(|| game.player.bounding_box())
@@ -1310,11 +1310,11 @@ impl AppCore {
         while let Ok(event) = rx.try_recv() {
             match event {
                 NetworkEvent::ProtocolSelected { protocol } => {
-                    let previous_slot = game.block_registry.version_data().table_slot();
+                    let previous_slot = game.block_registry.block_state_table().table_slot();
                     game.block_registry.select_protocol(protocol);
                     crate::world::block::mirror_block_tags(game.block_registry.tags());
-                    let version_data = game.block_registry.version_data();
-                    if previous_slot != version_data.table_slot() {
+                    let block_state_table = game.block_registry.block_state_table();
+                    if previous_slot != block_state_table.table_slot() {
                         game.mesh_dispatcher = game
                             .mesh_dispatcher
                             .recreate_for_version(game.block_registry.owned_render_view());
@@ -2168,6 +2168,7 @@ impl AppCore {
                     let mut ack_dirty: Vec<azalea_core::position::BlockPos> = Vec::new();
                     let player_aabb = game.player.bounding_box();
                     let snap = game.interaction.acknowledge(
+                        game.block_registry.block_state_table(),
                         seq,
                         &game.chunk_store,
                         player_aabb,
@@ -2966,7 +2967,7 @@ impl AppCore {
                     &mut game.player,
                     crate::physics::collision::CollisionWorld {
                         chunks: &game.chunk_store,
-                        blocks: game.block_registry.version_data(),
+                        block_state_table: game.block_registry.block_state_table(),
                         block_entity_anim: Some(&game.block_entity_anim),
                     },
                     game.block_registry.tags(),
@@ -3113,6 +3114,7 @@ impl AppCore {
             .as_ref()
             .map(|data| crate::player::inventory::item_resource_name(data.kind));
         game.interaction.update_target(
+            &game.block_registry,
             game.player.eye_pos(),
             game.player.look_dir,
             &game.chunk_store,
@@ -3128,7 +3130,7 @@ impl AppCore {
                 .armor_slots()
                 .iter()
                 .filter_map(|stack| stack.as_present()),
-            crate::version::session_protocol(),
+            game.block_registry.protocol(),
         );
         let place_block = held_item
             .as_deref()
@@ -3141,6 +3143,7 @@ impl AppCore {
             biome_climate: &game.biome_climate,
         };
         let dirty = game.interaction.tick_actions(
+            &game.block_registry,
             input,
             &game.chunk_store,
             &connection.packet_tx,
@@ -3184,7 +3187,7 @@ impl AppCore {
             input,
             crate::physics::collision::CollisionWorld {
                 chunks: &game.chunk_store,
-                blocks: game.block_registry.version_data(),
+                block_state_table: game.block_registry.block_state_table(),
                 block_entity_anim: Some(&game.block_entity_anim),
             },
             game.block_registry.tags(),
