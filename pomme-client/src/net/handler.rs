@@ -627,7 +627,11 @@ mod tests {
         let (event_tx, event_rx) = crossbeam_channel::bounded(1);
         let mut raw = native_frame("ping");
         raw.extend(0x1234_5678i32.to_be_bytes());
-        let (took, mut out_rx) = handle_raw_for_test(&raw, &event_tx);
+        let (took, mut out_rx) = handle_raw_for_test(
+            &raw,
+            BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol),
+            &event_tx,
+        );
         assert!(took);
 
         assert!(matches!(

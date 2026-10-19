@@ -156,7 +156,10 @@ impl BlockRenderAssets {
 
         let textures = cache_path.as_deref().and_then(load_cache);
         if let Some(cached) = &textures {
-            tracing::info!("Block render assets: {} blocks (cached textures)", cached.len());
+            tracing::info!(
+                "Block render assets: {} blocks (cached textures)",
+                cached.len()
+            );
         }
 
         let textures = textures.unwrap_or_else(|| {
