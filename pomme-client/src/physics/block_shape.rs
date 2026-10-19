@@ -8,7 +8,7 @@
 //! `LightBlock` on top. TODO: `LiquidBlock.getCollisionShape`'s
 //! `canStandOnFluid` branch.
 
-use crate::world::block::{BlockData, PropMap, SpecialCollision};
+use crate::world::block::{BlockStateData, PropMap, SpecialCollision};
 
 /// A block-local axis-aligned box: `[min_x, min_y, min_z, max_x, max_y,
 /// max_z]`.
@@ -16,8 +16,8 @@ pub type LocalBox = [f64; 6];
 
 /// Cached collision boxes for resolved data: `None` for a full cube,
 /// `Some(&[])` for no collision, `Some(boxes)` for a partial shape.
-pub fn partial_shape(block_data: &BlockData) -> Option<&'static [LocalBox]> {
-    block_data.collision_boxes()
+pub fn partial_shape(block_state_data: &BlockStateData) -> Option<&'static [LocalBox]> {
+    block_state_data.collision_boxes()
 }
 
 const FULL_CUBE_SHAPE: &[LocalBox] = &[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
@@ -84,17 +84,17 @@ impl CollisionContext {
 /// `context.getCollisionShape(state, level, pos)` in `partial_shape`'s
 /// encoding. Scaffolding is `noCollision()` but overrides the shape anyway.
 pub fn collision_shape(
-    block_data: &BlockData,
+    block_state_data: &BlockStateData,
     pos_y: i32,
     ctx: &CollisionContext,
 ) -> Option<&'static [LocalBox]> {
-    match block_data.special_collision() {
+    match block_state_data.special_collision() {
         // `ScaffoldingBlock.getCollisionShape`: the table holds SHAPE_STABLE.
         SpecialCollision::Scaffolding => {
             if ctx.is_above(1.0, pos_y, true) && !ctx.descending {
-                return partial_shape(block_data);
+                return partial_shape(block_state_data);
             }
-            let props = block_data.properties();
+            let props = block_state_data.properties();
             if props.get("distance") != Some("0")
                 && props.get("bottom") == Some("true")
                 && ctx.is_above(0.0, pos_y, true)
@@ -115,8 +115,8 @@ pub fn collision_shape(
         }
         // Explicit shapes beat `noCollision` (`PitcherCropBlock`,
         // `WallHangingSignBlock`); only the full-cube default needs the flag.
-        _ => match partial_shape(block_data) {
-            None if !block_data.has_collision() => Some(&[]),
+        _ => match partial_shape(block_state_data) {
+            None if !block_state_data.has_collision() => Some(&[]),
             shape => shape,
         },
     }
@@ -125,22 +125,22 @@ pub fn collision_shape(
 /// Boxes the interaction raycast clips against (vanilla `getShape`). Unlike
 /// `partial_shape` the full-cube case is already resolved, so an empty slice
 /// means "not targetable" rather than "no collision".
-pub fn outline_shape(block_data: &BlockData) -> &'static [LocalBox] {
-    block_data.outline_boxes().unwrap_or(FULL_CUBE_SHAPE)
+pub fn outline_shape(block_state_data: &BlockStateData) -> &'static [LocalBox] {
+    block_state_data.outline_boxes().unwrap_or(FULL_CUBE_SHAPE)
 }
 
 /// [`outline_shape`] under a player's context: `LightBlock` and
 /// `ScaffoldingBlock.getShape` fill the cell while their own item is held.
 /// Uses already resolved session metadata.
 pub(crate) fn outline_shape_holding_data(
-    block_data: &BlockData,
+    block_state_data: &BlockStateData,
     held_item: Option<&str>,
 ) -> &'static [LocalBox] {
-    let id = block_data.id();
+    let id = block_state_data.id();
     if matches!(id, "light" | "scaffolding") && held_item == Some(id) {
         FULL_CUBE_SHAPE
     } else {
-        block_data.outline_boxes().unwrap_or(FULL_CUBE_SHAPE)
+        block_state_data.outline_boxes().unwrap_or(FULL_CUBE_SHAPE)
     }
 }
 
@@ -291,7 +291,7 @@ mod tests {
                 .protocol,
         );
         let outline_shape_holding = |state, held_item| {
-            outline_shape_holding_data(block_state_table.block_data(state), held_item)
+            outline_shape_holding_data(block_state_table.block_state_data(state), held_item)
         };
         let light = block_state_table.find_state("light", &[]);
         assert!(outline_shape_holding(light, None).is_empty());

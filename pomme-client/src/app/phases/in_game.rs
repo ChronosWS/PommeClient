@@ -44,7 +44,7 @@ use crate::ui::death::{self, DeathAction};
 use crate::ui::pause::{self, PauseAction, PauseScreen};
 use crate::ui::{common, hud};
 use crate::world::block::BedDirection;
-use crate::world::block::block_registry::{BlockRegistry, GlobalBlockDefinitions};
+use crate::world::block::block_registry::{BlockDefinitions, BlockRegistry};
 use crate::world::block::model::CardinalLightType;
 use crate::world::block_entity_anim::BlockEntityAnimStore;
 use crate::world::chunk::ChunkStore;
@@ -362,11 +362,11 @@ impl GameState {
         render_distance: u32,
         singleplayer: bool,
         chat_options: crate::ui::chat::ChatOptions,
-        block_definitions: Rc<GlobalBlockDefinitions>,
+        block_definitions: Rc<BlockDefinitions>,
         protocol: i32,
     ) -> Self {
         let block_registry =
-            BlockRegistry::new(block_definitions, renderer.render_registry(), protocol);
+            BlockRegistry::new(block_definitions, renderer.shared_render_assets(), protocol);
         let biome_climate = Arc::new(HashMap::new());
         // The dimension's shade table arrives with `DimensionInfo`, which
         // builds a fresh dispatcher.
@@ -867,14 +867,14 @@ impl GameState {
                         t.block_pos.y,
                         t.block_pos.z,
                     );
-                    let block_data = self.block_registry.block_data(state);
-                    let props = block_data
+                    let block_state_data = self.block_registry.block_state_data(state);
+                    let props = block_state_data
                         .properties()
                         .entries()
                         .map(|(k, v)| format!("{k}={v}"))
                         .collect::<Vec<_>>()
                         .join(",");
-                    let block = block_data.id();
+                    let block = block_state_data.id();
                     let desc = if props.is_empty() {
                         block.to_string()
                     } else {
@@ -2133,7 +2133,7 @@ fn bed_orientation(
 ) -> Option<BedDirection> {
     let pos = sleeping_pos?;
     game.block_registry
-        .block_data(game.chunk_store.get_block_state(pos.x, pos.y, pos.z))
+        .block_state_data(game.chunk_store.get_block_state(pos.x, pos.y, pos.z))
         .bed_direction()
 }
 
@@ -2565,13 +2565,18 @@ pub fn update_game(
                 let state =
                     game.chunk_store
                         .get_block_state(t.block_pos.x, t.block_pos.y, t.block_pos.z);
-                let block_data = game.block_registry.block_data(state);
-                let props = block_data
+                let block_state_data = game.block_registry.block_state_data(state);
+                let props = block_state_data
                     .properties()
                     .entries()
                     .map(|(k, v)| format!("{k}: {v}"))
                     .collect();
-                Some((t.block_pos, t.face, block_data.id().to_string(), props))
+                Some((
+                    t.block_pos,
+                    t.face,
+                    block_state_data.id().to_string(),
+                    props,
+                ))
             }),
             chunk_count: gfx.renderer.loaded_chunk_count(),
             sections_drawn: gfx.renderer.sections_drawn(),
@@ -3951,14 +3956,14 @@ pub fn update_game(
             .iter()
             .filter_map(|(pos, be)| {
                 let state = game.chunk_store.get_block_state(pos.x, pos.y, pos.z);
-                let block_data = game.block_registry.block_data(state);
-                let id = block_data.id();
+                let block_state_data = game.block_registry.block_state_data(state);
+                let id = block_state_data.id();
                 // A predicted break leaves a stale entry until the server
                 // confirms; don't render entries whose block is gone.
                 if !crate::world::block_entity::is_block_entity_block(id) {
                     return None;
                 }
-                let props = block_data.properties();
+                let props = block_state_data.properties();
                 let variant = block_entity::variant_for_block(be.kind, id, props);
                 let yaw = block_entity::yaw_for_block(be.kind, props);
                 let openness_at = |p: &BlockPos| {
@@ -4379,14 +4384,14 @@ fn dropped_item_geometry(renderer: &Renderer, item_name: &str) -> (glam::Mat4, f
     let mesh = renderer.item_mesh_info(item_name);
     let is_block_model = mesh
         .map(|mesh| mesh.is_block_model)
-        .unwrap_or_else(|| renderer.registry().get_item_model(item_name).is_some());
+        .unwrap_or_else(|| renderer.render_assets().get_item_model(item_name).is_some());
     let fallback_transform = if is_block_model {
         crate::world::block::model::default_block_ground_transform()
     } else {
         glam::Mat4::from_scale(glam::Vec3::splat(0.5))
     };
     let ground_transform = renderer
-        .registry()
+        .render_assets()
         .get_item_ground_transform(item_name)
         .unwrap_or(fallback_transform);
     let (bounds_min, bounds_max) = mesh
@@ -4412,7 +4417,7 @@ fn dropped_item_geometry(renderer: &Renderer, item_name: &str) -> (glam::Mat4, f
 #[allow(clippy::too_many_arguments)]
 fn emit_item_copies(
     infos: &mut Vec<crate::renderer::pipelines::item_entity::ItemRenderInfo>,
-    registry: &crate::world::block::render_registry::BlockRenderRegistry,
+    render_assets: &crate::world::block::render_assets::BlockRenderAssets,
     item_name: &str,
     item_id: u32,
     damage: i32,
@@ -4440,7 +4445,7 @@ fn emit_item_copies(
         * glam::Mat4::from_rotation_y(spin);
     // Dropped item entities are not LivingEntity owners in vanilla, so a
     // `team` tint source falls back to the JSON default here.
-    let tints: std::sync::Arc<[u32]> = registry
+    let tints: std::sync::Arc<[u32]> = render_assets
         .item_tint_palette(item_name, item_stack, None)
         .into();
     let mut push = |copy_offset: glam::Mat4| {
@@ -4495,7 +4500,7 @@ fn build_item_render_infos(
         let (ground_transform, min_y, z_size) = dropped_item_geometry(renderer, &item.item_name);
         emit_item_copies(
             &mut infos,
-            renderer.registry(),
+            renderer.render_assets(),
             &item.item_name,
             item.item_id,
             item.damage,
@@ -4520,7 +4525,7 @@ fn build_item_render_infos(
         let (ground_transform, min_y, z_size) = dropped_item_geometry(renderer, &pickup.item_name);
         emit_item_copies(
             &mut infos,
-            renderer.registry(),
+            renderer.render_assets(),
             &pickup.item_name,
             pickup.item_id,
             pickup.damage,

@@ -2,7 +2,8 @@ use crate::block_state::BlockState;
 
 /// Data-free stub: azalea-world's `get_fluid_state` compiles against this, but
 /// every state resolves to [`FluidKind::Empty`]. Pomme computes fluid content
-/// from explicitly selected per-version block metadata (`BlockData::fluid`).
+/// from explicitly selected per-version block metadata
+/// (`BlockStateData::fluid`).
 #[derive(Clone, Debug, Default)]
 pub struct FluidState {
     pub kind: FluidKind,

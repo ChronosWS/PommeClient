@@ -352,7 +352,7 @@ impl LightEngine for SkyLightEngine {
             }
             let to_state = world.state(to);
             let new_to_level =
-                from_level as i32 - opacity(block_state_table.block_data(to_state)) as i32;
+                from_level as i32 - opacity(block_state_table.block_state_data(to_state)) as i32;
             if new_to_level <= to_level {
                 continue;
             }
@@ -364,8 +364,8 @@ impl LightEngine for SkyLightEngine {
                 }
             });
             if block::shape_occludes_data(
-                block_state_table.block_data(from_state),
-                block_state_table.block_data(to_state),
+                block_state_table.block_state_data(from_state),
+                block_state_table.block_state_data(to_state),
                 dir as usize,
             ) {
                 continue;
@@ -376,7 +376,9 @@ impl LightEngine for SkyLightEngine {
                     to,
                     entry::increase_skip_one_direction(
                         new_to_level as u8,
-                        block_state_table.block_data(to_state).is_empty_shape(),
+                        block_state_table
+                            .block_state_data(to_state)
+                            .is_empty_shape(),
                         dir.opposite(),
                     ),
                 ));

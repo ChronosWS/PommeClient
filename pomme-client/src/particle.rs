@@ -20,7 +20,7 @@ use crate::renderer::chunk::mesher::{
 };
 use crate::renderer::pipelines::particle::MAX_PARTICLE_QUADS as MAX_PARTICLES;
 use crate::world::block::BlockStateTable;
-use crate::world::block::render_registry::{BlockRenderView, Tint};
+use crate::world::block::render_assets::{BlockRenderView, Tint};
 use crate::world::chunk::ChunkStore;
 
 /// Vanilla `ParticleGroup.RESERVOIR_START` — above this, new particles are
@@ -334,11 +334,11 @@ impl ParticleStore {
         chunks: &ChunkStore,
         biome_climate: &HashMap<u32, BiomeClimate>,
     ) {
-        let block_data = registry.block_state_table().block_data(state);
-        if block_data.is_air() {
+        let block_state_data = registry.block_state_table().block_state_data(state);
+        if block_state_data.is_air() {
             return;
         }
-        let block_id = block_data.id();
+        let block_id = block_state_data.id();
         // The only vanilla `noTerrainParticles` blocks.
         if matches!(block_id, "barrier" | "structure_void") {
             return;
@@ -354,8 +354,8 @@ impl ParticleStore {
             && block_id != "grass_block"
         {
             let tint = match faces.tint {
-                Tint::Redstone => block_data.redstone_wire_rgb(),
-                Tint::Stem => block_data.stem_rgb(),
+                Tint::Redstone => block_state_data.redstone_wire_rgb(),
+                Tint::Stem => block_state_data.stem_rgb(),
                 Tint::Constant(color) => crate::renderer::chunk::mesher::int_to_rgb(color as i32),
                 _ => self.blend_tint(
                     faces.tint,
@@ -382,8 +382,8 @@ impl ParticleStore {
 
         // Vanilla `ParticleEngine.destroy` scatters over the outline shape's
         // boxes, so a block with an empty outline emits nothing.
-        let boxes: &[LocalBox] = block_shape::outline_shape(block_data);
-        let shape_origin = block_data.outline_shape_position(pos.x, pos.y, pos.z);
+        let boxes: &[LocalBox] = block_shape::outline_shape(block_state_data);
+        let shape_origin = block_state_data.outline_shape_position(pos.x, pos.y, pos.z);
 
         for b in boxes {
             let width_x = (b[3] - b[0]).min(1.0);

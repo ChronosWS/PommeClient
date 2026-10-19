@@ -1,4 +1,4 @@
-//! Bench inputs: the block registry and atlas UV map loaded from the version's
+//! Bench inputs: block render assets and atlas UV map loaded from the version's
 //! assets on disk (CPU-only), and deterministic synthetic worlds.
 
 use std::path::PathBuf;
@@ -13,13 +13,13 @@ use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
 use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_names};
 use crate::world::block::BlockStateTable;
-use crate::world::block::render_registry::BlockRenderRegistry;
+use crate::world::block::render_assets::BlockRenderAssets;
 use crate::world::chunk::{ChunkLightData, ChunkStore};
 
 pub struct Assets {
     pub jar_assets_dir: PathBuf,
     pub asset_index: Option<AssetIndex>,
-    pub registry: Arc<BlockRenderRegistry>,
+    pub render_assets: Arc<BlockRenderAssets>,
     pub block_state_table: BlockStateTable,
     pub uv_map: AtlasUVMap,
 }
@@ -37,7 +37,7 @@ impl Assets {
         // No block cache, so the bench neither reads a stale one nor rewrites
         // the real one.
         eprintln!("cpu-bench: loading block models...");
-        let registry = Arc::new(BlockRenderRegistry::load(
+        let render_assets = Arc::new(BlockRenderAssets::load(
             &dirs.jar_assets_dir,
             &asset_index,
             None,
@@ -49,7 +49,7 @@ impl Assets {
         let block_state_table = BlockStateTable::for_protocol(protocol);
 
         eprintln!("cpu-bench: packing texture atlas...");
-        let (texture_names, generated_item_textures) = atlas_texture_names(&registry);
+        let (texture_names, generated_item_textures) = atlas_texture_names(&render_assets);
         let uv_map = TextureAtlas::build_cpu(
             &dirs.jar_assets_dir,
             &asset_index,
@@ -62,7 +62,7 @@ impl Assets {
         Ok(Self {
             jar_assets_dir: dirs.jar_assets_dir.clone(),
             asset_index,
-            registry,
+            render_assets,
             block_state_table,
             uv_map,
         })
@@ -258,7 +258,7 @@ fn add_sky_light(store: &mut ChunkStore, block_state_table: BlockStateTable) {
                     .rev()
                     .find(|&y| {
                         !block_state_table
-                            .block_data(store.get_block_state(x, y, z))
+                            .block_state_data(store.get_block_state(x, y, z))
                             .is_air()
                     })
                     .unwrap_or(min_y - 1);

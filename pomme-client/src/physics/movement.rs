@@ -11,7 +11,7 @@ use super::collision::{CollisionWorld, find_supporting_block, no_collision, reso
 use crate::app::input::{self, InputState};
 use crate::entity::components::Velocity;
 use crate::player::{CROUCH_HEIGHT, LocalPlayer, PLAYER_HALF_WIDTH, STANDING_HEIGHT, is_spectator};
-use crate::world::block::{BlockData, BlockStateTable, BlockTags, FluidKind};
+use crate::world::block::{BlockStateData, BlockStateTable, BlockTags, FluidKind};
 use crate::world::chunk::ChunkStore;
 
 // TODO: read movement speed, sprint modifier, jump strength, step height,
@@ -317,19 +317,19 @@ fn jump_from_ground(
     }
 }
 
-fn is_climbable_state(block_data: &BlockData, tags: &BlockTags) -> bool {
-    tags.contains("minecraft:climbable", block_data.id())
+fn is_climbable_state(block_state_data: &BlockStateData, tags: &BlockTags) -> bool {
+    tags.contains("minecraft:climbable", block_state_data.id())
 }
 
 fn trapdoor_usable_as_ladder(
-    trapdoor_block_data: &BlockData,
-    below_block_data: &BlockData,
+    trapdoor_block_state_data: &BlockStateData,
+    below_block_state_data: &BlockStateData,
 ) -> bool {
-    let props = trapdoor_block_data.properties();
-    trapdoor_block_data.id().ends_with("_trapdoor")
+    let props = trapdoor_block_state_data.properties();
+    trapdoor_block_state_data.id().ends_with("_trapdoor")
         && props.get("open") == Some("true")
-        && below_block_data.id() == "ladder"
-        && props.get("facing") == below_block_data.properties().get("facing")
+        && below_block_state_data.id() == "ladder"
+        && props.get("facing") == below_block_state_data.properties().get("facing")
 }
 
 fn on_climbable_state(
@@ -347,21 +347,21 @@ fn on_climbable_state(
     let y = player.position.y.floor() as i32;
     let z = player.position.z.floor() as i32;
     let state = chunk_store.get_block_state(x, y, z);
-    if is_climbable_state(block_state_table.block_data(state), tags) {
+    if is_climbable_state(block_state_table.block_state_data(state), tags) {
         return Some(state);
     }
 
     let below = chunk_store.get_block_state(x, y - 1, z);
     trapdoor_usable_as_ladder(
-        block_state_table.block_data(state),
-        block_state_table.block_data(below),
+        block_state_table.block_state_data(state),
+        block_state_table.block_state_data(below),
     )
     .then_some(state)
 }
 
 fn apply_climbable_velocity(
     player: &mut LocalPlayer,
-    block_data: &BlockData,
+    block_state_data: &BlockStateData,
     suppress_slide: bool,
 ) {
     player.fall_distance = 0.0;
@@ -370,7 +370,7 @@ fn apply_climbable_velocity(
     player.velocity.z = player.velocity.z.clamp(-max, max);
     player.velocity.y = player.velocity.y.max(-max);
 
-    if player.velocity.y < 0.0 && block_data.id() != "scaffolding" && suppress_slide {
+    if player.velocity.y < 0.0 && block_state_data.id() != "scaffolding" && suppress_slide {
         player.velocity.y = 0.0;
     }
 }
@@ -387,7 +387,7 @@ fn handle_on_climbable(
     };
     apply_climbable_velocity(
         player,
-        world.block_state_table.block_data(state),
+        world.block_state_table.block_state_data(state),
         suppress_slide,
     );
 }
@@ -421,7 +421,7 @@ fn tick_land(
     let block_friction = if on_ground_at_start {
         world
             .block_state_table
-            .block_data(block_below_affecting_movement(player, world))
+            .block_state_data(block_below_affecting_movement(player, world))
             .movement_friction()
     } else {
         1.0
@@ -503,7 +503,7 @@ fn tick_water(
         let surface_y = (player.position.y + 1.0 - 0.1).floor() as i32;
         let surface_fluid = world
             .block_state_table
-            .block_data(world.chunks.get_block_state(
+            .block_state_data(world.chunks.get_block_state(
                 player.position.x.floor() as i32,
                 surface_y,
                 player.position.z.floor() as i32,
@@ -592,7 +592,7 @@ fn contains_any_liquid(world: CollisionWorld<'_>, aabb: &Aabb) -> bool {
             for z in z0..z1 {
                 if world
                     .block_state_table
-                    .block_data(world.chunks.get_block_state(x, y, z))
+                    .block_state_data(world.chunks.get_block_state(x, y, z))
                     .fluid()
                     .kind
                     != FluidKind::Empty
@@ -977,7 +977,7 @@ fn block_below_affecting_movement(
 
     if let Some(support) = player.main_supporting_block_pos {
         let support_state = chunk_store.get_block_state(support.x, support.y, support.z);
-        let support_id = world.block_state_table.block_data(support_state).id();
+        let support_id = world.block_state_table.block_state_data(support_state).id();
         // `Entity.getOnPos`: walls and fence gates keep the support's own Y.
         if support_id.ends_with("_wall") || support_id.ends_with("_fence_gate") {
             return support_state;
@@ -1030,12 +1030,12 @@ fn update_supporting_block(
 fn block_jump_factor(player: &LocalPlayer, world: CollisionWorld<'_>) -> f32 {
     let here_factor = world
         .block_state_table
-        .block_data(block_state_at_player_position(player, world.chunks))
+        .block_state_data(block_state_at_player_position(player, world.chunks))
         .movement_jump_factor();
     if f64::from(here_factor) == 1.0 {
         world
             .block_state_table
-            .block_data(block_below_affecting_movement(player, world))
+            .block_state_data(block_below_affecting_movement(player, world))
             .movement_jump_factor()
     } else {
         here_factor
@@ -1047,16 +1047,16 @@ fn block_speed_factor(player: &LocalPlayer, world: CollisionWorld<'_>) -> f32 {
     if player.flying {
         return 1.0;
     }
-    let block_data = world
+    let block_state_data = world
         .block_state_table
-        .block_data(block_state_at_player_position(player, world.chunks));
-    let here_factor = block_data.movement_speed_factor();
-    if matches!(block_data.id(), "water" | "bubble_column") || f64::from(here_factor) != 1.0 {
+        .block_state_data(block_state_at_player_position(player, world.chunks));
+    let here_factor = block_state_data.movement_speed_factor();
+    if matches!(block_state_data.id(), "water" | "bubble_column") || f64::from(here_factor) != 1.0 {
         here_factor
     } else {
         world
             .block_state_table
-            .block_data(block_below_affecting_movement(player, world))
+            .block_state_data(block_below_affecting_movement(player, world))
             .movement_speed_factor()
     }
 }
@@ -1332,8 +1332,14 @@ mod tests {
         let stone = test_blocks().find_state("stone", &[]);
         let ladder = test_blocks().find_state("ladder", &[("facing", "north")]);
 
-        assert!(is_climbable_state(test_blocks().block_data(stone), &tags));
-        assert!(!is_climbable_state(test_blocks().block_data(ladder), &tags));
+        assert!(is_climbable_state(
+            test_blocks().block_state_data(stone),
+            &tags
+        ));
+        assert!(!is_climbable_state(
+            test_blocks().block_state_data(ladder),
+            &tags
+        ));
     }
 
     #[test]
@@ -1348,24 +1354,24 @@ mod tests {
             test_blocks().find_state("oak_trapdoor", &[("open", "false"), ("facing", "north")]);
 
         assert!(trapdoor_usable_as_ladder(
-            test_blocks().block_data(open_north),
-            test_blocks().block_data(north_ladder)
+            test_blocks().block_state_data(open_north),
+            test_blocks().block_state_data(north_ladder)
         ));
         assert!(!trapdoor_usable_as_ladder(
-            test_blocks().block_data(open_north),
-            test_blocks().block_data(south_ladder)
+            test_blocks().block_state_data(open_north),
+            test_blocks().block_state_data(south_ladder)
         ));
         assert!(!trapdoor_usable_as_ladder(
-            test_blocks().block_data(open_south),
-            test_blocks().block_data(north_ladder)
+            test_blocks().block_state_data(open_south),
+            test_blocks().block_state_data(north_ladder)
         ));
         assert!(!trapdoor_usable_as_ladder(
-            test_blocks().block_data(closed_north),
-            test_blocks().block_data(north_ladder)
+            test_blocks().block_state_data(closed_north),
+            test_blocks().block_state_data(north_ladder)
         ));
         assert!(!trapdoor_usable_as_ladder(
-            test_blocks().block_data(open_north),
-            test_blocks().block_data(test_blocks().find_state("stone", &[]))
+            test_blocks().block_state_data(open_north),
+            test_blocks().block_state_data(test_blocks().find_state("stone", &[]))
         ));
     }
 
@@ -1405,7 +1411,11 @@ mod tests {
         let mut player = LocalPlayer::new();
         player.velocity.y = -0.4;
 
-        apply_climbable_velocity(&mut player, test_blocks().block_data(scaffolding), true);
+        apply_climbable_velocity(
+            &mut player,
+            test_blocks().block_state_data(scaffolding),
+            true,
+        );
 
         assert_eq!(player.velocity.y, -f64::from(CLIMB_MAX_FALL_SPEED));
     }
@@ -1888,7 +1898,7 @@ mod tests {
 
         let wet_box = Aabb::new(dvec3(8.2, 64.2, 8.2), dvec3(8.8, 65.8, 8.8));
         assert!(
-            !test_blocks().block_data(water).has_collision(),
+            !test_blocks().block_state_data(water).has_collision(),
             "water has no collision shape"
         );
         assert!(

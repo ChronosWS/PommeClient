@@ -33,7 +33,7 @@ pub fn run(version: &str, dirs: &DataDirs, filter: Option<&str>) -> i32 {
         c = c.with_filter(filter);
     }
 
-    // The mesh and visgraph fixtures load the block registry and atlas from
+    // The mesh and visgraph fixtures load block render assets and the atlas from
     // disk; skip that when the filter leaves neither group to run.
     let needs_assets = filter.is_none_or(|f| {
         ["mesh", "visgraph"]

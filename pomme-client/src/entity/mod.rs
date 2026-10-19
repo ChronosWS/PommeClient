@@ -714,14 +714,14 @@ impl LivingEntity {
             for by in (min_y.floor() as i32)..=(max_y.ceil() as i32 - 1) {
                 for bz in (min_z.floor() as i32)..=(max_z.ceil() as i32 - 1) {
                     let f = block_state_table
-                        .block_data(chunks.get_block_state(bx, by, bz))
+                        .block_state_data(chunks.get_block_state(bx, by, bz))
                         .fluid();
                     if f.kind != FluidKind::Water {
                         continue;
                     }
                     // Full height when the block above is also water.
                     let above = block_state_table
-                        .block_data(chunks.get_block_state(bx, by + 1, bz))
+                        .block_state_data(chunks.get_block_state(bx, by + 1, bz))
                         .fluid();
                     let top = by as f64
                         + if above.kind == FluidKind::Water {
@@ -1095,7 +1095,7 @@ fn tick_item_physics(
     }
 
     let state = chunk_store.get_block_state(block_x, block_y, block_z);
-    let fluid = block_state_table.block_data(state).fluid();
+    let fluid = block_state_table.block_state_data(state).fluid();
     // Vanilla `getFluidHeight(...) > 0.1`: how far the fluid surface sits
     // above the item's feet, sampled at the position block.
     let fluid_height = block_y as f64 + fluid.height() as f64 - entity.position.y;

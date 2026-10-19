@@ -7,7 +7,7 @@ use pyronyx::vk;
 
 use crate::assets::{AssetId, AssetIndex};
 use crate::renderer::util;
-use crate::world::block::render_registry::BlockRenderRegistry;
+use crate::world::block::render_assets::BlockRenderAssets;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AtlasRegion {
@@ -460,13 +460,13 @@ fn load_source(
     }
 }
 
-/// Every texture the block atlas packs for `registry`, and the flat-generated
-/// item textures among them.
+/// Every texture the block atlas packs for `render_assets`, and the
+/// flat-generated item textures among them.
 pub(crate) fn atlas_texture_names(
-    registry: &BlockRenderRegistry,
+    render_assets: &BlockRenderAssets,
 ) -> (HashSet<&str>, HashSet<&str>) {
-    let generated_item_textures: HashSet<&str> = registry.flat_item_textures().collect();
-    let texture_names = registry
+    let generated_item_textures: HashSet<&str> = render_assets.flat_item_textures().collect();
+    let texture_names = render_assets
         .texture_names()
         .chain(generated_item_textures.iter().copied())
         .chain(crate::particle::END_ROD_SPRITES)

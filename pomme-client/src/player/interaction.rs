@@ -33,7 +33,7 @@ use crate::renderer::pipelines::held_item::UseAnim;
 use crate::tool::{LegacyMiningEnchantments, stack_tool, sword_instantly_mines_legacy};
 use crate::world::block::BlockStateTable;
 use crate::world::block::block_registry::BlockRegistry;
-use crate::world::block::render_registry::BlockRenderView;
+use crate::world::block::render_assets::BlockRenderView;
 use crate::world::block::sound::block_sounds_for_id;
 use crate::world::chunk::ChunkStore;
 
@@ -210,7 +210,7 @@ impl InteractionState {
         self.retain_known_server_state(pos, state, player_pos);
         chunks.set_block_state(pos.x, pos.y, pos.z, BlockState::AIR);
         mark_dirty(&pos, dirty_chunks);
-        play_break_sound_for_id(audio, block_registry.block_data(state).id(), pos);
+        play_break_sound_for_id(audio, block_registry.block_state_data(state).id(), pos);
         effects.particles.add_destroy_block_effect(
             pos,
             state,
@@ -250,7 +250,11 @@ impl InteractionState {
                 chunks.set_block_state(pos.x, pos.y, pos.z, verified.state);
                 mark_dirty(pos, dirty_chunks);
                 // Full-cube collision, as the engine has no per-shape voxels.
-                if snap_allowed && block_state_table.block_data(verified.state).has_collision() {
+                if snap_allowed
+                    && block_state_table
+                        .block_state_data(verified.state)
+                        .has_collision()
+                {
                     let block = Aabb::block(pos.x, pos.y, pos.z);
                     let key = (pos.x, pos.y, pos.z);
                     if block.intersects(&player) && snap_to.is_none_or(|(best, _)| key < best) {
@@ -622,7 +626,7 @@ impl InteractionState {
         };
 
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
-        if block_registry.block_data(state).is_air() {
+        if block_registry.block_state_data(state).is_air() {
             self.miss_time = MISS_COOLDOWN;
             self.attack_strength_ticker = 0;
             self.swing(sender);
@@ -679,7 +683,7 @@ impl InteractionState {
         };
 
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
-        if block_registry.block_data(state).is_air() {
+        if block_registry.block_state_data(state).is_air() {
             self.stop_destroying(sender);
             return;
         }
@@ -769,7 +773,7 @@ impl InteractionState {
             if !suppress_block_use {
                 let target =
                     chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
-                if opens_menu(block_registry.block_data(target).id()) {
+                if opens_menu(block_registry.block_state_data(target).id()) {
                     return true;
                 }
             }
@@ -1116,14 +1120,14 @@ impl InteractionState {
 
         // Only predict into an empty cell; replacing grass/water isn't handled yet.
         if !block_state_table
-            .block_data(chunks.get_block_state(pos.x, pos.y, pos.z))
+            .block_state_data(chunks.get_block_state(pos.x, pos.y, pos.z))
             .is_air()
         {
             return;
         }
 
         // Don't predict a solid block overlapping the player; the server denies it.
-        if block_state_table.block_data(state).has_collision()
+        if block_state_table.block_state_data(state).has_collision()
             && Aabb::block(pos.x, pos.y, pos.z).intersects(&player_aabb)
         {
             return;
@@ -1155,8 +1159,8 @@ impl InteractionState {
     ) {
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
 
-        let block_data = block_registry.block_data(state);
-        if block_data.is_air() {
+        let block_state_data = block_registry.block_state_data(state);
+        if block_state_data.is_air() {
             return;
         }
 
@@ -1300,8 +1304,8 @@ impl InteractionState {
         }
 
         let state = chunks.get_block_state(hit.block_pos.x, hit.block_pos.y, hit.block_pos.z);
-        let block_data = block_registry.block_data(state);
-        if block_data.is_air() {
+        let block_state_data = block_registry.block_state_data(state);
+        if block_state_data.is_air() {
             self.is_destroying = false;
             return;
         }
@@ -1318,7 +1322,7 @@ impl InteractionState {
             legacy_mining,
         );
         if self.destroy_ticks % 4.0 == 0.0 {
-            play_hit_sound(audio, block_data.id(), hit.block_pos);
+            play_hit_sound(audio, block_state_data.id(), hit.block_pos);
         }
         self.destroy_ticks += 1.0;
 
@@ -1466,17 +1470,17 @@ fn destroy_progress(
     if creative {
         return 1.0;
     }
-    let block_data = block_registry.block_data(state);
-    let properties = block_registry.block(state).properties();
+    let block_state_data = block_registry.block_state_data(state);
+    let block_data = block_registry.block(state).block_data();
     let tags = block_registry.tags();
     let protocol = block_registry.protocol();
-    let block_name = block_data.id();
+    let block_name = block_state_data.id();
     if held_stack
         .is_some_and(|stack| sword_instantly_mines_legacy(stack.kind, block_name, protocol))
     {
         return 1.0;
     }
-    let hardness = properties.destroy_time;
+    let hardness = block_data.destroy_time;
 
     if hardness < 0.0 {
         return 0.0;
@@ -1497,7 +1501,7 @@ fn destroy_progress(
         legacy_mining,
     );
 
-    let correct_tool = !properties.requires_correct_tool_for_drops
+    let correct_tool = !block_data.requires_correct_tool_for_drops
         || tool
             .as_deref()
             .is_some_and(|tool| tool.correct_for_drops(block_name, tags, protocol));
@@ -1716,15 +1720,15 @@ pub fn raycast(
     let mut t = 0.0_f64;
     while t <= max_dist as f64 {
         let state = chunks.get_block_state(bx, by, bz);
-        let block_data = block_state_table.block_data(state);
-        if !block_data.is_air() {
+        let block_state_data = block_state_table.block_state_data(state);
+        if !block_state_data.is_air() {
             let block_pos = BlockPos {
                 x: bx,
                 y: by,
                 z: bz,
             };
-            let outline = block_shape::outline_shape_holding_data(block_data, held_item);
-            let shape_offset = block_data.outline_shape_position(bx, by, bz);
+            let outline = block_shape::outline_shape_holding_data(block_state_data, held_item);
+            let shape_offset = block_state_data.outline_shape_position(bx, by, bz);
             if let Some((hit_point, face)) = clip_shape(origin, reach_end, shape_offset, outline) {
                 return Some(BlockHitResult {
                     block_pos,
@@ -1894,8 +1898,8 @@ mod tests {
     use super::*;
     use crate::attribute::AttributeSnapshot;
     use crate::mob_effect::{CONDUIT_POWER, HASTE, MobEffectInstance};
-    use crate::world::block::block_registry::GlobalBlockDefinitions;
-    use crate::world::block::render_registry::BlockRenderRegistry;
+    use crate::world::block::block_registry::BlockDefinitions;
+    use crate::world::block::render_assets::BlockRenderAssets;
     use crate::world::block::{BlockTags, block_tags_for_test};
 
     #[test]
@@ -2268,8 +2272,8 @@ mod tests {
             .first_state_of("stone")
             .expect("stone state");
         let mut block_registry = BlockRegistry::new(
-            std::rc::Rc::new(GlobalBlockDefinitions::new()),
-            std::sync::Arc::new(BlockRenderRegistry::default()),
+            std::rc::Rc::new(BlockDefinitions::new()),
+            std::sync::Arc::new(BlockRenderAssets::default()),
             protocol,
         );
         block_registry.replace_tags(tags);

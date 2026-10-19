@@ -1,5 +1,5 @@
 //! Immutable, version-selected state-ID table, independent of the active
-//! session. Each entry is one state's `BlockData`; this handle selects the
+//! session. Each entry is one state's `BlockStateData`; this handle selects the
 //! whole table.
 
 use std::collections::HashMap;
@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use azalea_block::BlockState;
 
 use super::{
-    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockData, NATIVE_SLOT, NO_FLUID, PLACEABLE_BLOCKS, PropMap,
-    SpecialCollision, block_data_slot, build_table,
+    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockStateData, NATIVE_SLOT, NO_FLUID, PLACEABLE_BLOCKS,
+    PropMap, SpecialCollision, block_data_slot, build_table,
 };
 
 /// A cheap, immutable handle to one cached version-selected state-ID table.
@@ -16,7 +16,7 @@ use super::{
 #[derive(Clone, Copy)]
 pub(crate) struct BlockStateTable {
     slot: usize,
-    table: &'static [BlockData],
+    table: &'static [BlockStateData],
 }
 
 impl BlockStateTable {
@@ -48,7 +48,7 @@ impl BlockStateTable {
     pub(crate) fn first_state_of(self, name: &str) -> Option<BlockState> {
         self.table
             .iter()
-            .position(|block_data| block_data.id() == name)
+            .position(|block_state_data| block_state_data.id() == name)
             .map(|id| BlockState::try_from(id as u32).expect("table indices fit the id repr"))
     }
 
@@ -57,18 +57,18 @@ impl BlockStateTable {
         let id = self
             .table
             .iter()
-            .position(|block_data| {
-                block_data.id() == name
+            .position(|block_state_data| {
+                block_state_data.id() == name
                     && props
                         .iter()
-                        .all(|&(k, v)| block_data.properties().get(k) == Some(v))
+                        .all(|&(k, v)| block_state_data.properties().get(k) == Some(v))
             })
             .unwrap_or_else(|| panic!("no state {name} {props:?}"));
         BlockState::try_from(id as u32).expect("table indices fit the id repr")
     }
 
     /// State metadata in wire-id order for binding the selected definitions.
-    pub(super) fn table(self) -> &'static [BlockData] {
+    pub(super) fn table(self) -> &'static [BlockStateData] {
         self.table
     }
 
@@ -91,26 +91,27 @@ impl BlockStateTable {
     }
 
     /// Unknown state ids use a solid, unlit fallback.
-    pub(crate) fn block_data(self, state: BlockState) -> &'static BlockData {
-        static UNKNOWN: std::sync::LazyLock<BlockData> = std::sync::LazyLock::new(|| BlockData {
-            id: "unknown",
-            properties: PropMap::from_pairs(Vec::new()),
-            shape: None,
-            outline: None,
-            is_air: false,
-            collides: true,
-            special_collision: SpecialCollision::None,
-            blocks_motion: None,
-            legacy_solid: None,
-            replaceable: None,
-            full_face_sturdy: None,
-            large_collision_shape: false,
-            collision_shape_uses_offset: false,
-            outline_shape_uses_offset: false,
-            position_offset: None,
-            fluid: NO_FLUID,
-            light: BEDROCK_LIGHT,
-        });
+    pub(crate) fn block_state_data(self, state: BlockState) -> &'static BlockStateData {
+        static UNKNOWN: std::sync::LazyLock<BlockStateData> =
+            std::sync::LazyLock::new(|| BlockStateData {
+                id: "unknown",
+                properties: PropMap::from_pairs(Vec::new()),
+                shape: None,
+                outline: None,
+                is_air: false,
+                collides: true,
+                special_collision: SpecialCollision::None,
+                blocks_motion: None,
+                legacy_solid: None,
+                replaceable: None,
+                full_face_sturdy: None,
+                large_collision_shape: false,
+                collision_shape_uses_offset: false,
+                outline_shape_uses_offset: false,
+                position_offset: None,
+                fluid: NO_FLUID,
+                light: BEDROCK_LIGHT,
+            });
         self.table
             .get(u32::from(state) as usize)
             .unwrap_or(&UNKNOWN)

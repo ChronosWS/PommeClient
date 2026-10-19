@@ -181,13 +181,13 @@ impl ChunkSkyLightSources {
         bottom_state: BlockState,
     ) -> bool {
         block_state_table
-            .block_data(bottom_state)
+            .block_state_data(bottom_state)
             .light_props()
             .dampening
             != 0
             || block::shape_occludes_data(
-                block_state_table.block_data(top_state),
-                block_state_table.block_data(bottom_state),
+                block_state_table.block_state_data(top_state),
+                block_state_table.block_state_data(bottom_state),
                 0, /* DOWN */
             )
     }

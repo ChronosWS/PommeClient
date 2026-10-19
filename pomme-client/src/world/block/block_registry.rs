@@ -6,15 +6,15 @@ use std::sync::Arc;
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 
-use super::render_registry::{BlockRenderRegistry, BlockRenderView, OwnedBlockRenderView};
+use super::render_assets::{BlockRenderAssets, BlockRenderView, OwnedBlockRenderView};
 use super::{
-    BlockData, BlockStateTable, BlockTags, load_behaviors, registry_names, resolve_block_tags,
+    BlockStateData, BlockStateTable, BlockTags, load_behaviors, registry_names, resolve_block_tags,
 };
 use crate::world::level::LevelContext;
 
 /// Shared, immutable block rules, independent of the compact wire state ID.
 pub trait Block {
-    fn properties(&self) -> &BlockProperties;
+    fn block_data(&self) -> &BlockData;
 
     fn animate_tick(
         &self,
@@ -29,47 +29,47 @@ pub trait Block {
 /// Immutable definition data shared by all states of one registered block.
 /// Distinct from the state's key/value properties in [`super::PropMap`].
 #[derive(Clone, Copy, Debug, Default)]
-pub struct BlockProperties {
+pub struct BlockData {
     pub destroy_time: f32,
     pub requires_correct_tool_for_drops: bool,
 }
 
 struct DefaultBlock {
-    properties: BlockProperties,
+    block_data: BlockData,
 }
 
-impl Block for DefaultBlock {
-    fn properties(&self) -> &BlockProperties {
-        &self.properties
+impl super::Block for DefaultBlock {
+    fn block_data(&self) -> &BlockData {
+        &self.block_data
     }
 }
 
 /// Selects and constructs block implementations, without owning definitions
 /// or protocol bindings. Add name-specific selections here as rules land;
 /// currently every name uses the default no-op animation behavior.
-pub(crate) struct BlockBehaviorCatalog;
+pub(crate) struct BlockFactory;
 
-impl BlockBehaviorCatalog {
-    pub(crate) fn create(&self, _name: &str, properties: BlockProperties) -> Box<dyn Block> {
-        Box::new(DefaultBlock { properties })
+impl BlockFactory {
+    pub(crate) fn create(&self, _name: &str, block_data: BlockData) -> Box<dyn Block> {
+        Box::new(DefaultBlock { block_data })
     }
 }
 
-pub(crate) struct GlobalBlockDefinitions {
+pub(crate) struct BlockDefinitions {
     definitions: Vec<(&'static str, Box<dyn Block>)>,
 }
 
-impl GlobalBlockDefinitions {
+impl BlockDefinitions {
     pub(crate) fn new() -> Self {
-        let catalog = BlockBehaviorCatalog;
+        let factory = BlockFactory;
         let mut entries: Vec<_> = load_behaviors().iter().collect();
         entries.sort_unstable_by_key(|(name, _)| *name);
         let mut registry = Self {
             definitions: Vec::with_capacity(entries.len() + 1),
         };
-        registry.register("", catalog.create("", BlockProperties::default()));
+        registry.register("", factory.create("", BlockData::default()));
         for (name, entry) in entries {
-            registry.register(name.as_str(), catalog.create(name, entry.properties()));
+            registry.register(name.as_str(), factory.create(name, entry.block_data()));
         }
         registry
     }
@@ -82,8 +82,8 @@ impl GlobalBlockDefinitions {
 
 /// Session-owned metadata selection and numeric bindings to shared definitions.
 pub(crate) struct BlockRegistry {
-    definitions: Rc<GlobalBlockDefinitions>,
-    render_registry: Arc<BlockRenderRegistry>,
+    definitions: Rc<BlockDefinitions>,
+    render_assets: Arc<BlockRenderAssets>,
     protocol: i32,
     block_state_table: BlockStateTable,
     bindings: BlockBindings,
@@ -92,15 +92,15 @@ pub(crate) struct BlockRegistry {
 
 impl BlockRegistry {
     pub(crate) fn new(
-        definitions: Rc<GlobalBlockDefinitions>,
-        render_registry: Arc<BlockRenderRegistry>,
+        definitions: Rc<BlockDefinitions>,
+        render_assets: Arc<BlockRenderAssets>,
         protocol: i32,
     ) -> Self {
         let block_state_table = BlockStateTable::for_protocol(protocol);
         let bindings = BlockBindings::new(&definitions, block_state_table);
         Self {
             definitions,
-            render_registry,
+            render_assets,
             protocol,
             block_state_table,
             bindings,
@@ -131,15 +131,15 @@ impl BlockRegistry {
     }
 
     pub(crate) fn render_view(&self) -> BlockRenderView<'_> {
-        self.render_registry.for_version(self.block_state_table)
+        self.render_assets.for_version(self.block_state_table)
     }
 
     pub(crate) fn owned_render_view(&self) -> OwnedBlockRenderView {
-        OwnedBlockRenderView::new(self.render_registry.clone(), self.block_state_table)
+        OwnedBlockRenderView::new(self.render_assets.clone(), self.block_state_table)
     }
 
-    pub(crate) fn replace_render_registry(&mut self, registry: Arc<BlockRenderRegistry>) {
-        self.render_registry = registry;
+    pub(crate) fn replace_render_assets(&mut self, render_assets: Arc<BlockRenderAssets>) {
+        self.render_assets = render_assets;
     }
 
     pub(crate) fn placeable_block_for_item(&self, item_name: &str) -> Option<BlockState> {
@@ -160,11 +160,11 @@ impl BlockRegistry {
     }
 
     /// Includes the state's key/value `PropMap`, not definition properties.
-    pub(crate) fn block_data(&self, state: BlockState) -> &'static BlockData {
-        self.block_state_table.block_data(state)
+    pub(crate) fn block_state_data(&self, state: BlockState) -> &'static BlockStateData {
+        self.block_state_table.block_state_data(state)
     }
 
-    /// The shared rule exposes immutable `BlockProperties` via `properties()`.
+    /// The shared rule exposes immutable `BlockData` via `block_data()`.
     pub(crate) fn block(&self, state: BlockState) -> &dyn Block {
         self.bindings.get(&self.definitions, state)
     }
@@ -187,7 +187,7 @@ struct BlockBindings {
 }
 
 impl BlockBindings {
-    fn new(definitions: &GlobalBlockDefinitions, block_state_table: BlockStateTable) -> Self {
+    fn new(definitions: &BlockDefinitions, block_state_table: BlockStateTable) -> Self {
         let table = block_state_table.table();
         let mut state_definitions = Vec::with_capacity(table.len());
         for states in table.chunk_by(|a, b| a.id == b.id) {
@@ -208,7 +208,7 @@ impl BlockBindings {
     }
 
     /// O(1) wire-state lookup, including an out-of-table fallback.
-    fn get<'a>(&self, definitions: &'a GlobalBlockDefinitions, state: BlockState) -> &'a dyn Block {
+    fn get<'a>(&self, definitions: &'a BlockDefinitions, state: BlockState) -> &'a dyn Block {
         let index = self
             .state_definitions
             .get(u32::from(state) as usize)

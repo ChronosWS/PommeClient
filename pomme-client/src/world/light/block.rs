@@ -47,8 +47,8 @@ impl BlockLightEngine {
         self.storage.set_light_enabled(column, enable);
     }
 
-    fn emission(&self, pos: LightPos, block_data: &block::BlockData) -> u8 {
-        let emission = block_data.light_props().emission;
+    fn emission(&self, pos: LightPos, block_state_data: &block::BlockStateData) -> u8 {
+        let emission = block_state_data.light_props().emission;
         if emission > 0 && self.storage.light_on_in_section(pos.section()) {
             emission
         } else {
@@ -83,8 +83,8 @@ impl LightEngine for BlockLightEngine {
             return;
         }
         let state = world.state(pos);
-        let block_data = world.block_state_table().block_data(state);
-        let emission = self.emission(pos, block_data);
+        let block_state_data = world.block_state_table().block_state_data(state);
+        let emission = self.emission(pos, block_state_data);
         let old_level = self.storage.get_stored_level(pos);
         if emission < old_level {
             self.storage.set_stored_level(pos, 0);
@@ -97,7 +97,7 @@ impl LightEngine for BlockLightEngine {
         if emission > 0 {
             self.increase_queue.push_back((
                 pos,
-                entry::increase_light_from_emission(emission, block_data.is_empty_shape()),
+                entry::increase_light_from_emission(emission, block_state_data.is_empty_shape()),
             ));
         }
     }
@@ -125,7 +125,7 @@ impl LightEngine for BlockLightEngine {
             }
             let to_state = world.state(to);
             let new_to_level =
-                from_level as i32 - opacity(block_state_table.block_data(to_state)) as i32;
+                from_level as i32 - opacity(block_state_table.block_state_data(to_state)) as i32;
             if new_to_level <= to_level {
                 continue;
             }
@@ -137,8 +137,8 @@ impl LightEngine for BlockLightEngine {
                 }
             });
             if block::shape_occludes_data(
-                block_state_table.block_data(from_state),
-                block_state_table.block_data(to_state),
+                block_state_table.block_state_data(from_state),
+                block_state_table.block_state_data(to_state),
                 dir as usize,
             ) {
                 continue;
@@ -151,7 +151,9 @@ impl LightEngine for BlockLightEngine {
                 to,
                 entry::increase_skip_one_direction(
                     new_to_level as u8,
-                    block_state_table.block_data(to_state).is_empty_shape(),
+                    block_state_table
+                        .block_state_data(to_state)
+                        .is_empty_shape(),
                     dir.opposite(),
                 ),
             ));
@@ -174,8 +176,8 @@ impl LightEngine for BlockLightEngine {
             }
             if (to_level as i32) < old_from_level {
                 let to_state = world.state(to);
-                let to_block_data = world.block_state_table().block_data(to_state);
-                let to_emission = self.emission(to, to_block_data);
+                let to_block_state_data = world.block_state_table().block_state_data(to_state);
+                let to_emission = self.emission(to, to_block_state_data);
                 self.storage.set_stored_level(to, 0);
                 if to_emission < to_level {
                     self.decrease_queue.push_back((
@@ -188,7 +190,7 @@ impl LightEngine for BlockLightEngine {
                         to,
                         entry::increase_light_from_emission(
                             to_emission,
-                            to_block_data.is_empty_shape(),
+                            to_block_state_data.is_empty_shape(),
                         ),
                     ));
                 }

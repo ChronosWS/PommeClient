@@ -37,7 +37,7 @@ use crate::ui::menu::{
 };
 use crate::ui::text::InlineObject;
 use crate::user::UserData;
-use crate::world::block::block_registry::GlobalBlockDefinitions;
+use crate::world::block::block_registry::BlockDefinitions;
 use crate::world::chunk::ChunkStore;
 
 pub struct PendingPackDownload {
@@ -158,7 +158,7 @@ fn apply_server_block(
     crate::world::block_entity::sync_block_entity(
         &mut game.chunk_store.block_entities,
         pos,
-        game.block_registry.block_data(state),
+        game.block_registry.block_state_data(state),
     );
     if game.interaction.update_known_server_state(&pos, state) {
         return;
@@ -499,7 +499,7 @@ pub struct AppCore {
     pub data_dirs: DataDirs,
     pub version: String,
     pub resource_packs: ResourcePackManager,
-    pub(crate) block_definitions: Rc<GlobalBlockDefinitions>,
+    pub(crate) block_definitions: Rc<BlockDefinitions>,
     pub pending_pack_download: Option<PendingPackDownload>,
     pub asset_index: Option<AssetIndex>,
     pub audio: crate::audio::AudioEngine,
@@ -664,7 +664,7 @@ impl AppCore {
             data_dirs,
             version,
             resource_packs,
-            block_definitions: Rc::new(GlobalBlockDefinitions::new()),
+            block_definitions: Rc::new(BlockDefinitions::new()),
             pending_pack_download: None,
             asset_index,
             audio,
@@ -1193,7 +1193,7 @@ impl AppCore {
         renderer.clear_chunk_meshes();
         self.reload_pack_assets(renderer);
         game.block_registry
-            .replace_render_registry(renderer.render_registry());
+            .replace_render_assets(renderer.shared_render_assets());
 
         let mesh_dispatcher = renderer.create_mesh_dispatcher(
             game.block_registry.owned_render_view(),
@@ -2336,11 +2336,11 @@ impl AppCore {
                     if event_type == 2001
                         && let Some(state) = game.block_registry.block_state_table().try_state(data)
                     {
-                        let block_data = game.block_registry.block_data(state);
-                        if !block_data.is_air() {
+                        let block_state_data = game.block_registry.block_state_data(state);
+                        if !block_state_data.is_air() {
                             crate::player::interaction::play_break_sound_for_id(
                                 &self.audio,
-                                block_data.id(),
+                                block_state_data.id(),
                                 pos,
                             );
                         }

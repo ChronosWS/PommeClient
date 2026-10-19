@@ -54,7 +54,7 @@ pub fn is_spectator(game_mode: u8) -> bool {
 }
 
 fn is_water_block(state: azalea_block::BlockState, block_state_table: BlockStateTable) -> bool {
-    block_state_table.block_data(state).fluid().kind == FluidKind::Water
+    block_state_table.block_state_data(state).fluid().kind == FluidKind::Water
 }
 
 #[inline]
@@ -98,8 +98,8 @@ fn water_flow_at(
         let nx = x + dx;
         let nz = z + dz;
         let neighbor_state = chunks.get_block_state(nx, y, nz);
-        let neighbor_block_data = block_state_table.block_data(neighbor_state);
-        let neighbor_fluid = neighbor_block_data.fluid();
+        let neighbor_block_state_data = block_state_table.block_state_data(neighbor_state);
+        let neighbor_fluid = neighbor_block_state_data.fluid();
         if !affects_water_flow(neighbor_fluid) {
             continue;
         }
@@ -108,9 +108,9 @@ fn water_flow_at(
         let mut distance = 0.0_f32;
         if neighbor_height == 0.0 {
             let below_fluid = block_state_table
-                .block_data(chunks.get_block_state(nx, y - 1, nz))
+                .block_state_data(chunks.get_block_state(nx, y - 1, nz))
                 .fluid();
-            if !neighbor_block_data.blocks_motion() && affects_water_flow(below_fluid) && {
+            if !neighbor_block_state_data.blocks_motion() && affects_water_flow(below_fluid) && {
                 neighbor_height = below_fluid.height();
                 neighbor_height > 0.0
             } {
@@ -133,11 +133,11 @@ fn water_flow_at(
             let nz = z + dz;
             let solid_face = |by| {
                 let state = chunks.get_block_state(nx, by, nz);
-                let block_data = block_state_table.block_data(state);
-                let same_water = block_data.fluid().kind == FluidKind::Water;
+                let block_state_data = block_state_table.block_state_data(state);
+                let same_water = block_state_data.fluid().kind == FluidKind::Water;
                 !same_water
-                    && !matches!(block_data.id(), "ice" | "frosted_ice")
-                    && block_data.is_full_face_sturdy(direction) == Some(true)
+                    && !matches!(block_state_data.id(), "ice" | "frosted_ice")
+                    && block_state_data.is_full_face_sturdy(direction) == Some(true)
             };
             if solid_face(y) || solid_face(y + 1) {
                 flow = vanilla_vec3_normalize(flow) + dvec3(0.0, -6.0, 0.0);
@@ -590,7 +590,7 @@ impl LocalPlayer {
             for by in y0..=y1 {
                 for bz in z0..=z1 {
                     let f = block_state_table
-                        .block_data(chunks.get_block_state(bx, by, bz))
+                        .block_state_data(chunks.get_block_state(bx, by, bz))
                         .fluid();
                     if f.kind != FluidKind::Water {
                         continue;
@@ -642,7 +642,7 @@ impl LocalPlayer {
         let eye_block_y = eye_y.floor() as i32;
         let eye_block_z = self.position.z.floor() as i32;
         let eye_fluid = block_state_table
-            .block_data(chunks.get_block_state(eye_block_x, eye_block_y, eye_block_z))
+            .block_state_data(chunks.get_block_state(eye_block_x, eye_block_y, eye_block_z))
             .fluid();
         let eye_fluid_top = if eye_fluid.kind == FluidKind::Water {
             let above = chunks.get_block_state(eye_block_x, eye_block_y + 1, eye_block_z);
@@ -712,7 +712,7 @@ impl LocalPlayer {
             for by in y0..=y1 {
                 for bz in z0..=z1 {
                     if block_state_table
-                        .block_data(chunks.get_block_state(bx, by, bz))
+                        .block_state_data(chunks.get_block_state(bx, by, bz))
                         .id()
                         == "nether_portal"
                     {
@@ -1139,7 +1139,7 @@ mod tests {
             8,
             64,
             8,
-            test_blocks().block_data(source).fluid(),
+            test_blocks().block_state_data(source).fluid(),
         );
         assert_eq!(flow, glam::DVec3::ZERO);
     }
@@ -1161,7 +1161,7 @@ mod tests {
             8,
             64,
             8,
-            test_blocks().block_data(source).fluid(),
+            test_blocks().block_state_data(source).fluid(),
         );
         assert_eq!(flow, glam::DVec3::X);
     }
@@ -1180,7 +1180,7 @@ mod tests {
             8,
             64,
             8,
-            test_blocks().block_data(falling).fluid(),
+            test_blocks().block_state_data(falling).fluid(),
         );
         assert_eq!(flow, glam::DVec3::NEG_Y);
     }

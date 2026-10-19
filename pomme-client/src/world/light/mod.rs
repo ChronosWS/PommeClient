@@ -31,12 +31,12 @@ use storage::StorageCore;
 pub(crate) use storage::{LightPos, SectionKey};
 use world::StoreWorld;
 
-use crate::world::block::{BlockData, BlockStateTable};
+use crate::world::block::{BlockStateData, BlockStateTable};
 use crate::world::chunk::{ChunkLightData, ChunkStore};
 
 /// Vanilla `LightEngine.getOpacity`: light always attenuates by at least 1.
-pub(crate) fn opacity(block_data: &BlockData) -> u8 {
-    block_data.light_props().dampening.max(1)
+pub(crate) fn opacity(block_state_data: &BlockStateData) -> u8 {
+    block_state_data.light_props().dampening.max(1)
 }
 
 /// Vanilla `LightEngine.hasDifferentLightProperties`: whether a block change
@@ -50,8 +50,8 @@ pub(crate) fn has_different_light_properties(
         return false;
     }
     let (o, n) = (
-        block_state_table.block_data(old).light_props(),
-        block_state_table.block_data(new).light_props(),
+        block_state_table.block_state_data(old).light_props(),
+        block_state_table.block_state_data(new).light_props(),
     );
     n.dampening != o.dampening
         || n.emission != o.emission

@@ -425,7 +425,7 @@ pub fn hud(game: &GameState) -> HudInfo {
 pub fn block(game: &GameState, [x, y, z]: [i32; 3]) -> String {
     bare(
         game.block_registry
-            .block_data(game.chunk_store.get_block_state(x, y, z))
+            .block_state_data(game.chunk_store.get_block_state(x, y, z))
             .id(),
     )
 }

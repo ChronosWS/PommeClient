@@ -32,8 +32,8 @@ impl CollisionWorld<'_> {
     /// `ShulkerBoxBlockEntity.getBoundingBox` moved to `pos`; `None` while
     /// closed, where the static full cube applies.
     fn shulker_lid(&self, state: BlockState, pos: BlockPos) -> Option<Aabb> {
-        let block_data = self.block_state_table.block_data(state);
-        if block_data.special_collision() != SpecialCollision::ShulkerBox {
+        let block_state_data = self.block_state_table.block_state_data(state);
+        if block_state_data.special_collision() != SpecialCollision::ShulkerBox {
             return None;
         }
         let extension = f64::from(0.5 * self.block_entity_anim?.container(&pos)?.openness(1.0));
@@ -41,7 +41,7 @@ impl CollisionWorld<'_> {
             return None;
         }
         let mut local = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-        match block_data.properties().get("facing").unwrap_or("up") {
+        match block_state_data.properties().get("facing").unwrap_or("up") {
             "down" => local[1] -= extension,
             "up" => local[4] += extension,
             "north" => local[2] -= extension,
@@ -52,7 +52,7 @@ impl CollisionWorld<'_> {
         }
         Some(Aabb::from_local(
             local,
-            block_data.collision_shape_position(pos.x, pos.y, pos.z),
+            block_state_data.collision_shape_position(pos.x, pos.y, pos.z),
         ))
     }
 
@@ -102,10 +102,10 @@ fn for_each_block_collision(
                     continue;
                 }
                 let state = state_at(bx, by, bz);
-                let block_data = block_state_table.block_data(state);
-                if shell_axes == 1 && !block_data.has_large_collision_shape()
+                let block_state_data = block_state_table.block_state_data(state);
+                if shell_axes == 1 && !block_state_data.has_large_collision_shape()
                     || shell_axes == 2
-                        && block_data.special_collision() != SpecialCollision::MovingPiston
+                        && block_state_data.special_collision() != SpecialCollision::MovingPiston
                 {
                     continue;
                 }
@@ -114,9 +114,9 @@ fn for_each_block_collision(
                 if let Some(lid) = shulker_lid(state, pos) {
                     boxes.push(lid);
                 } else {
-                    match block_shape::collision_shape(block_data, by, ctx) {
+                    match block_shape::collision_shape(block_state_data, by, ctx) {
                         Some(local) => {
-                            let offset = block_data.collision_shape_position(bx, by, bz);
+                            let offset = block_state_data.collision_shape_position(bx, by, bz);
                             boxes.extend(local.iter().map(|&b| Aabb::from_local(b, offset)));
                         }
                         None => boxes.push(Aabb::block(bx, by, bz)),
@@ -373,7 +373,8 @@ mod tests {
         let scaffolding =
             test_blocks().find_state("scaffolding", &[("bottom", "true"), ("distance", "3")]);
         let ctx = CollisionContext::entity(0.5, false, false);
-        let boxes = block_shape::collision_shape(test_blocks().block_data(scaffolding), 0, &ctx);
+        let boxes =
+            block_shape::collision_shape(test_blocks().block_state_data(scaffolding), 0, &ctx);
         assert_eq!(boxes, Some(&[[0.0, 0.0, 0.0, 1.0, 2.0 / 16.0, 1.0]][..]));
     }
 
@@ -392,14 +393,14 @@ mod tests {
     fn powder_snow_catches_a_long_fall() {
         let snow = test_blocks().find_state("powder_snow", &[]);
         let falling = CollisionContext::entity(0.5, true, false).with_fall_distance(2.500_001);
-        let boxes = block_shape::collision_shape(test_blocks().block_data(snow), 0, &falling);
+        let boxes = block_shape::collision_shape(test_blocks().block_state_data(snow), 0, &falling);
         assert_eq!(
             boxes,
             Some(&[[0.0, 0.0, 0.0, 1.0, 0.9_f32 as f64, 1.0]][..])
         );
         let short = CollisionContext::entity(0.5, true, false).with_fall_distance(2.5);
         assert_eq!(
-            block_shape::collision_shape(test_blocks().block_data(snow), 0, &short),
+            block_shape::collision_shape(test_blocks().block_state_data(snow), 0, &short),
             Some(&[][..])
         );
     }
@@ -409,18 +410,18 @@ mod tests {
         let ctx = CollisionContext::entity(0.0, false, false);
 
         let pitcher = test_blocks().find_state("pitcher_crop", &[("age", "0"), ("half", "lower")]);
-        assert!(!test_blocks().block_data(pitcher).has_collision());
+        assert!(!test_blocks().block_state_data(pitcher).has_collision());
         let pitcher_shape =
-            block_shape::collision_shape(test_blocks().block_data(pitcher), 0, &ctx).unwrap();
+            block_shape::collision_shape(test_blocks().block_state_data(pitcher), 0, &ctx).unwrap();
         assert!(!pitcher_shape.is_empty());
 
         let wall_sign = test_blocks().find_state(
             "oak_wall_hanging_sign",
             &[("facing", "north"), ("waterlogged", "false")],
         );
-        assert!(!test_blocks().block_data(wall_sign).has_collision());
+        assert!(!test_blocks().block_state_data(wall_sign).has_collision());
         assert_eq!(
-            block_shape::collision_shape(test_blocks().block_data(wall_sign), 0, &ctx),
+            block_shape::collision_shape(test_blocks().block_state_data(wall_sign), 0, &ctx),
             Some(&[[0.0, 0.875, 0.375, 1.0, 1.0, 0.625]][..])
         );
     }
