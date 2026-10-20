@@ -2485,6 +2485,82 @@ mod tests {
         assert!(matches!(menu.screen, Screen::OptionsControls));
     }
 
+    fn reset_keys_click(menu: &mut MainMenu) -> MainMenuResult {
+        let result = render_keybinds(menu, &MenuInput::default());
+        let cursor = result
+            .elements
+            .iter()
+            .find_map(|element| match element {
+                MenuElement::Text { text, x, y, .. } if text == "Reset Keys" => Some((*x, *y)),
+                _ => None,
+            })
+            .expect("Reset Keys button label");
+        render_keybinds(
+            menu,
+            &MenuInput {
+                cursor,
+                clicked: true,
+                ..MenuInput::default()
+            },
+        )
+    }
+
+    #[test]
+    fn reset_keys_restores_and_persists_customized_bindings() {
+        let dir = std::env::temp_dir().join(format!("pomme-reset-keys-{}", uuid::Uuid::new_v4()));
+        let mut menu = test_menu(dir.to_str().unwrap());
+        std::fs::create_dir(&dir).unwrap();
+        let _cleanup = scopeguard::guard((), |_| {
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+        menu.set_screen(Screen::OptionsKeybinds);
+        menu.key_bindings
+            .set(Action::Jump, vec![InputKey::Keyboard(KeyCode::KeyJ)]);
+        menu.key_bindings.set(Action::DropItem, Vec::new());
+        menu.key_bindings.set(Action::Close, Vec::new());
+        menu.fov = 90;
+        menu.invert_mouse_y = true;
+        menu.save_settings();
+        assert!(!load_settings(&dir).key_bindings.all_default());
+
+        assert!(reset_keys_click(&mut menu).clicked_button);
+
+        assert!(menu.key_bindings.all_default());
+        assert_eq!(menu.fov, 90);
+        assert!(menu.invert_mouse_y);
+        assert!(matches!(menu.screen, Screen::OptionsKeybinds));
+        let saved: Settings =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("options.json")).unwrap())
+                .unwrap();
+        assert!(saved.key_bindings.all_default());
+        assert_eq!(saved.fov, 90);
+        assert!(saved.invert_mouse_y);
+        let escape_actions: Vec<_> = saved
+            .key_bindings
+            .actions_for_input(&InputKey::Keyboard(KeyCode::Escape))
+            .copied()
+            .collect();
+        assert!(escape_actions.contains(&Action::Close));
+        assert!(escape_actions.contains(&Action::OpenMenu));
+    }
+
+    #[test]
+    fn reset_keys_at_defaults_is_non_actionable() {
+        let mut menu = test_menu("pomme-reset-keys-defaults-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        menu.fov = 90;
+
+        let result = reset_keys_click(&mut menu);
+
+        assert!(!result.clicked_button);
+        assert!(!result.cursor_pointer);
+        assert!(menu.key_bindings.all_default());
+        // This fixture cannot save: an attempted save would leave settings dirty.
+        assert!(!menu.settings_dirty);
+        assert_eq!(menu.fov, 90);
+        assert!(matches!(menu.screen, Screen::OptionsKeybinds));
+    }
+
     #[test]
     fn reset_buttons_restore_defaults() {
         let mut menu = test_menu("pomme-keybind-reset-test");
