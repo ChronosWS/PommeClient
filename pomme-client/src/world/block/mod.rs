@@ -19,7 +19,6 @@ pub mod sound;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-#[cfg(test)]
 use azalea_block::BlockState;
 use azalea_core::position::BlockPos;
 pub use block_registry::{Block, BlockData};

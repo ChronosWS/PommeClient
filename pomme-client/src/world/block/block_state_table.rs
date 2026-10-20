@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use azalea_block::BlockState;
 
 use super::{
-    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockStateData, NATIVE_SLOT, NO_FLUID, PLACEABLE_BLOCKS,
-    PropMap, SpecialCollision, block_data_slot, build_table,
+    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockStateData, NATIVE_SLOT, NO_FLUID,
+    PLACEABLE_BLOCKS, PropMap, SpecialCollision, block_data_slot, build_table,
 };
 
 /// A cheap, immutable handle to one cached version-selected state-ID table.
