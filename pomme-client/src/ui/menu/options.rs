@@ -2397,6 +2397,95 @@ mod tests {
     }
 
     #[test]
+    fn editing_secondary_binding_preserves_primary() {
+        let mut menu = test_menu("pomme-keybind-secondary-edit-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        let result = render_keybinds(&mut menu, &MenuInput::default());
+        let (_, cursor) = jump_button_at(&result, 1, 0);
+        click_keybinds(&mut menu, 600.0, cursor);
+
+        let replacement = InputKey::Keyboard(KeyCode::KeyJ);
+        render_keybinds(
+            &mut menu,
+            &MenuInput {
+                binding_capture: true,
+                binding_presses: vec![replacement],
+                ..MenuInput::default()
+            },
+        );
+        assert_eq!(
+            jump_inputs(&menu),
+            &[Action::Jump.defaults()[0], replacement]
+        );
+    }
+
+    #[test]
+    fn added_binding_survives_removing_secondary_and_can_be_reset() {
+        let mut menu = test_menu("pomme-keybind-add-remove-reset-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        let result = render_keybinds(&mut menu, &MenuInput::default());
+        let (_, add) = jump_button_at(&result, 0, 2);
+        click_keybinds(&mut menu, 600.0, add);
+
+        let added = InputKey::Keyboard(KeyCode::KeyJ);
+        render_keybinds(
+            &mut menu,
+            &MenuInput {
+                binding_capture: true,
+                binding_presses: vec![added],
+                ..MenuInput::default()
+            },
+        );
+        let mut expected = Action::Jump.defaults().to_vec();
+        expected.push(added);
+        assert_eq!(jump_inputs(&menu), expected);
+
+        let result = render_keybinds(&mut menu, &MenuInput::default());
+        let (_, remove) = jump_button_at(&result, 1, 2);
+        click_keybinds(&mut menu, 600.0, remove);
+        assert_eq!(jump_inputs(&menu), &[Action::Jump.defaults()[0], added]);
+
+        let result = render_keybinds(&mut menu, &MenuInput::default());
+        let (_, reset) = jump_reset_button_at(&result, 1);
+        click_keybinds(&mut menu, 600.0, reset);
+        assert_eq!(jump_inputs(&menu), Action::Jump.defaults());
+    }
+
+    #[test]
+    fn capturing_mouse_binding_over_done_does_not_navigate() {
+        let mut menu = test_menu("pomme-keybind-capture-done-test");
+        menu.set_screen(Screen::OptionsKeybinds);
+        let result = render_keybinds(&mut menu, &MenuInput::default());
+        let (_, binding) = jump_button_at(&result, 1, 0);
+        let done = result
+            .elements
+            .iter()
+            .find_map(|element| match element {
+                MenuElement::Text { text, x, y, .. } if text == "Done" => Some((*x, *y)),
+                _ => None,
+            })
+            .expect("Done button label");
+        click_keybinds(&mut menu, 600.0, binding);
+
+        let mouse = InputKey::Mouse(winit::event::MouseButton::Left);
+        render_keybinds(
+            &mut menu,
+            &MenuInput {
+                binding_capture: true,
+                binding_presses: vec![mouse],
+                cursor: done,
+                clicked: true,
+                ..MenuInput::default()
+            },
+        );
+        assert_eq!(jump_inputs(&menu), &[Action::Jump.defaults()[0], mouse]);
+        assert!(matches!(menu.screen, Screen::OptionsKeybinds));
+
+        click_keybinds(&mut menu, 600.0, done);
+        assert!(matches!(menu.screen, Screen::OptionsControls));
+    }
+
+    #[test]
     fn reset_buttons_restore_defaults() {
         let mut menu = test_menu("pomme-keybind-reset-test");
         menu.set_screen(Screen::OptionsKeybinds);
