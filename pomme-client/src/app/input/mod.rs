@@ -814,10 +814,10 @@ impl InputState {
     /// pressing now would be cleared before anything read it.
     #[cfg(feature = "test-harness")]
     pub fn press_action(&mut self, action: Action, ctrl: bool) -> Result<(), String> {
-        let Some(InputKey::Keyboard(code)) = action.defaults().first() else {
+        let Some(code) = action.default_key() else {
             return Err(format!("{action:?} has no default key"));
         };
-        self.harness_press = Some((*code, ctrl));
+        self.harness_press = Some((code, ctrl));
         Ok(())
     }
 
