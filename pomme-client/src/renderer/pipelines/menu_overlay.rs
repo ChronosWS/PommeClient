@@ -28,7 +28,6 @@ pub const ICON_CHECK: char = '\u{f00c}';
 pub const ICON_USERS: char = '\u{f0c0}';
 pub const ICON_LANGUAGE: char = '\u{f1ab}';
 pub const ICON_UNIVERSAL_ACCESS: char = '\u{f29a}';
-pub const ICON_RECYCLE: char = '\u{267a}';
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -71,13 +70,17 @@ impl VertexSlot {
         }
     }
 
-    fn destroy(self, device: &vk::Device, allocator: &mut Allocator) {
-        for (buffer, allocation) in
-            std::iter::once((self.buffer, self.allocation)).chain(self.retired)
-        {
+    fn free_retired(&mut self, device: &vk::Device, allocator: &mut Allocator) {
+        for (buffer, allocation) in self.retired.drain(..) {
             device.destroy_buffer(buffer, None);
             allocator.free(allocation).ok();
         }
+    }
+
+    fn destroy(mut self, device: &vk::Device, allocator: &mut Allocator) {
+        self.free_retired(device, allocator);
+        device.destroy_buffer(self.buffer, None);
+        allocator.free(self.allocation).ok();
     }
 }
 
@@ -155,7 +158,6 @@ fn build_font_atlas() -> FontAtlas {
         ICON_USERS,
         ICON_LANGUAGE,
         ICON_UNIVERSAL_ACCESS,
-        ICON_RECYCLE,
     ]
     .iter()
     .map(|&ch| (ch, &icon_font))
@@ -1315,11 +1317,7 @@ impl MenuOverlayPipeline {
         // The first draw of a frame runs after the slot's fence, so buffers
         // replaced last time round are no longer in use.
         if vertex_base == 0 && !slot.retired.is_empty() {
-            let mut alloc = allocator.lock().unwrap();
-            for (buffer, allocation) in slot.retired.drain(..) {
-                device.destroy_buffer(buffer, None);
-                alloc.free(allocation).ok();
-            }
+            slot.free_retired(device, &mut allocator.lock().unwrap());
         }
         let end = vertex_base as usize + vertices.len();
         if end > slot.capacity {
@@ -2586,7 +2584,6 @@ pub enum SpriteId {
     IconFriends,
     IconLanguage,
     IconAccessibility,
-    IconReset,
     FriendsBackground,
     FriendsTab,
     FriendsTabDisabled,
@@ -4035,18 +4032,6 @@ fn build_sprite_atlas(
             ));
         }
         Err(e) => tracing::warn!("Failed to load pomme logo: {e}"),
-    }
-
-    match image::load_from_memory(crate::assets::RESET_ICON_PNG) {
-        Ok(img) => {
-            let rgba = img.to_rgba8();
-            let (w, h) = rgba.dimensions();
-            images.push((SpriteId::IconReset, rgba.into_raw(), w, h, 0.0));
-        }
-        Err(e) => {
-            tracing::warn!("Failed to load reset icon: {e}");
-            images.push((SpriteId::IconReset, vec![255, 0, 255, 255], 1, 1, 0.0));
-        }
     }
 
     let sizes: Vec<(u32, u32)> = images.iter().map(|sprite| (sprite.2, sprite.3)).collect();

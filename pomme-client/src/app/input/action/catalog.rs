@@ -228,7 +228,7 @@ actions! {
         translation_id: None,
         fallback: "Open Pause Menu",
         category: Miscellaneous,
-        listed: true,
+        listed: false,
         fixed_inputs: [Keyboard(KeyCode::Escape)],
         defaults: [Controller(Button::Start)],
     },
@@ -282,8 +282,6 @@ actions! {
         ui_order: -1,
         defaults: [Keyboard(KeyCode::F3)],
     },
-    // Debug shortcuts have ordinary editable bindings; modifier qualification
-    // is separate from their catalog metadata.
     DebugReloadChunks => {
         id: "key.debug.reloadChunk",
         translation_id: Some(StringId::new("key.debug.reloadChunk")),
@@ -393,7 +391,7 @@ actions! {
         translation_id: None,
         fallback: "Cancel/Close",
         category: Miscellaneous,
-        listed: true,
+        listed: false,
         fixed_inputs: [Keyboard(KeyCode::Escape)],
         defaults: [Controller(Button::East)],
     },
@@ -418,7 +416,8 @@ actions! {
         translation_id: None,
         fallback: "Next Hotbar Slot",
         category: Inventory,
-        listed: true,
+        // TODO: List once live input reads the binding instead of RightTrigger.
+        listed: false,
         defaults: [Controller(Button::RightTrigger)],
     },
     PreviousHotbarSlot => {
@@ -426,7 +425,8 @@ actions! {
         translation_id: None,
         fallback: "Previous Hotbar Slot",
         category: Inventory,
-        listed: true,
+        // TODO: List once live input reads the binding instead of LeftTrigger.
+        listed: false,
         defaults: [Controller(Button::LeftTrigger)],
     },
     Hotbar1 => {

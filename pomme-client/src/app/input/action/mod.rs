@@ -24,7 +24,8 @@ pub struct ActionMetadata {
     pub id: ActionId,
     pub display: DisplayText<'static>,
     pub category: ActionCategory,
-    /// Shown on the Key Binds screen.
+    /// Shown on the Key Binds screen. Pomme-only actions vanilla handles
+    /// outside its key mappings (Escape) stay off it.
     pub listed: bool,
     /// Priority within the category; equal priorities sort by localized name.
     pub ui_order: i32,
@@ -62,13 +63,16 @@ impl Action {
         self.metadata().fixed_inputs
     }
 
-    /// The first default keyboard key, for the live input paths that still
-    /// read keys directly.
+    /// The first default or fixed keyboard key, for the live input paths
+    /// that still read keys directly.
     pub fn default_key(self) -> Option<KeyCode> {
-        self.defaults().iter().find_map(|input| match input {
-            Keyboard(code) => Some(*code),
-            _ => None,
-        })
+        self.defaults()
+            .iter()
+            .chain(self.fixed_inputs())
+            .find_map(|input| match input {
+                Keyboard(code) => Some(*code),
+                _ => None,
+            })
     }
 
     /// `KeyMapping.compareTo`: category, action priority, then localized name.
