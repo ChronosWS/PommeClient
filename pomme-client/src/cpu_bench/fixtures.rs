@@ -5,16 +5,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use azalea_block::BlockState;
-use azalea_core::position::ChunkPos;
-use azalea_world::Chunk;
 use glam::DVec3;
 
 use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
+use crate::position::ChunkPos;
 use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_names};
 use crate::world::block::BlockStateTable;
 use crate::world::block::render_assets::BlockRenderAssets;
-use crate::world::chunk::{ChunkLightData, ChunkStore};
+use crate::world::chunk::{Chunk, ChunkLightData, ChunkStore};
 
 pub struct Assets {
     pub jar_assets_dir: PathBuf,
@@ -155,21 +154,20 @@ pub fn build_world(scene: Scene, block_state_table: BlockStateTable) -> ChunkSto
     let s = States::lookup(block_state_table);
     let mut store = ChunkStore::new(8);
     for pos in columns_within(1) {
-        store
-            .partial_storage
-            .set(&pos, Some(Chunk::default()), &mut store.chunk_storage);
+        let sections = store.section_count() as usize;
+        store.insert_chunk(pos, Chunk::empty(sections));
     }
     let min_y = store.min_y();
     let mut rng = fastrand::Rng::with_seed(0x0050_4F4D_4D45);
 
     for (x, z) in columns() {
         for y in min_y..SURFACE_Y - 3 {
-            store.set_block_state(x, y, z, s.stone);
+            store.set_block_state(x, y, z, s.stone, block_state_table);
         }
         for y in SURFACE_Y - 3..SURFACE_Y {
-            store.set_block_state(x, y, z, s.dirt);
+            store.set_block_state(x, y, z, s.dirt, block_state_table);
         }
-        store.set_block_state(x, SURFACE_Y, z, s.grass_block);
+        store.set_block_state(x, SURFACE_Y, z, s.grass_block, block_state_table);
     }
 
     match scene {
@@ -181,14 +179,14 @@ pub fn build_world(scene: Scene, block_state_table: BlockStateTable) -> ChunkSto
                     16 => s.dandelion,
                     _ => continue,
                 };
-                store.set_block_state(x, SURFACE_Y + 1, z, plant);
+                store.set_block_state(x, SURFACE_Y + 1, z, plant, block_state_table);
             }
             // Straddles the centre column's east edge.
             for x in 10..22 {
                 for z in 4..12 {
-                    store.set_block_state(x, SURFACE_Y + 1, z, s.air);
-                    store.set_block_state(x, SURFACE_Y, z, s.water);
-                    store.set_block_state(x, SURFACE_Y - 1, z, s.water);
+                    store.set_block_state(x, SURFACE_Y + 1, z, s.air, block_state_table);
+                    store.set_block_state(x, SURFACE_Y, z, s.water, block_state_table);
+                    store.set_block_state(x, SURFACE_Y - 1, z, s.water, block_state_table);
                 }
             }
         }
@@ -196,8 +194,8 @@ pub fn build_world(scene: Scene, block_state_table: BlockStateTable) -> ChunkSto
             for (x, z) in columns() {
                 for y in min_y + 1..SURFACE_Y - 3 {
                     match rng.u32(0..200) {
-                        0 | 1 => store.set_block_state(x, y, z, s.coal_ore),
-                        2 => store.set_block_state(x, y, z, s.iron_ore),
+                        0 | 1 => store.set_block_state(x, y, z, s.coal_ore, block_state_table),
+                        2 => store.set_block_state(x, y, z, s.iron_ore, block_state_table),
                         _ => {}
                     }
                 }
@@ -208,7 +206,7 @@ pub fn build_world(scene: Scene, block_state_table: BlockStateTable) -> ChunkSto
                 for (x, z) in columns() {
                     for y in cy - r..=cy + r {
                         if (x - cx).pow(2) + (y - cy).pow(2) + (z - cz).pow(2) <= r * r {
-                            store.set_block_state(x, y, z, s.air);
+                            store.set_block_state(x, y, z, s.air, block_state_table);
                         }
                     }
                 }
@@ -222,12 +220,12 @@ pub fn build_world(scene: Scene, block_state_table: BlockStateTable) -> ChunkSto
                         let r = if y > top { 1 } else { 2 };
                         for x in tx - r..=tx + r {
                             for z in tz - r..=tz + r {
-                                store.set_block_state(x, y, z, s.oak_leaves);
+                                store.set_block_state(x, y, z, s.oak_leaves, block_state_table);
                             }
                         }
                     }
                     for y in SURFACE_Y + 1..=top {
-                        store.set_block_state(tx, y, tz, s.oak_log);
+                        store.set_block_state(tx, y, tz, s.oak_log, block_state_table);
                     }
                 }
             }

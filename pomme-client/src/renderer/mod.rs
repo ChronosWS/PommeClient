@@ -21,12 +21,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use azalea_block::BlockState;
-use azalea_core::position::{BlockPos, ChunkPos};
 pub use camera::CloudMode;
 use camera::{Camera, CameraUniform};
 use chunk::atlas::TextureAtlas;
 use chunk::buffer::ChunkBufferStore;
 use chunk::mesher::{ChunkMeshData, MeshDispatcher};
+use chunk::moving_blocks::{MovingBlockBuffers, MovingBlockRender};
 use context::VulkanContext;
 use glam::dvec3;
 use pipelines::block_entity::BlockEntityPipeline;
@@ -37,6 +37,7 @@ use pipelines::book_preview::BookPreviewPipeline;
 use pipelines::chunk::ChunkPipeline;
 use pipelines::clouds::CloudPipeline;
 use pipelines::entity_renderer::{ArmorRenderInfo, EntityRenderInfo, EntityRenderer};
+use pipelines::entity_shadow::{EntityShadowPipeline, ShadowScene};
 use pipelines::hand::HandPipeline;
 use pipelines::menu_overlay::{MenuElement, MenuOverlayPipeline};
 use pipelines::panorama::PanoramaPipeline;
@@ -56,6 +57,7 @@ use winit::window::Window;
 use crate::app::input::InputState;
 use crate::assets::AssetIndex;
 use crate::entity::components::{LookDirection, Position};
+use crate::position::{BlockPos, ChunkPos};
 use crate::renderer::pipelines::chunk_borders::ChunkBorderPipeline;
 use crate::renderer::pipelines::item_entity::ItemEntityPipeline;
 use crate::ui::font::{FontOptions, FontSources};
@@ -126,6 +128,8 @@ enum RenderMode<'a> {
         destroy_info: Option<(BlockPos, u32, BlockState)>,
         show_chunk_borders: bool,
         sky: SkyState,
+        shadows: ShadowScene<'a>,
+        moving_blocks: &'a [MovingBlockRender],
         entities: &'a [EntityRenderInfo],
         item_entities: &'a [pipelines::item_entity::ItemRenderInfo],
         block_entities: &'a [BlockEntityRenderInfo],
@@ -189,6 +193,8 @@ pub struct Renderer {
 
     atlas: TextureAtlas,
     entity_renderer: EntityRenderer,
+    entity_shadow_pipeline: EntityShadowPipeline,
+    moving_block_buffers: MovingBlockBuffers,
     block_entity_pipeline: BlockEntityPipeline,
     chunk_buffers: ChunkBufferStore,
     render_finished_per_image: Vec<vk::Semaphore>,
@@ -396,6 +402,18 @@ impl Renderer {
             packs,
         );
 
+        let moving_block_buffers = MovingBlockBuffers::new(&ctx.device, &ctx.allocator);
+
+        let entity_shadow_pipeline = EntityShadowPipeline::new(
+            &ctx.device,
+            ctx.graphics_queue,
+            ctx.command_pool,
+            swapchain_state.render_pass,
+            &ctx.allocator,
+            jar_assets_dir,
+            asset_index,
+        );
+
         let block_entity_pipeline = BlockEntityPipeline::new(
             &ctx.device,
             ctx.graphics_queue,
@@ -482,6 +500,8 @@ impl Renderer {
             skin_preview,
             book_preview,
             entity_renderer,
+            entity_shadow_pipeline,
+            moving_block_buffers,
             block_entity_pipeline,
             chunk_border_pipeline,
             item_entity_pipeline,
@@ -628,7 +648,16 @@ impl Renderer {
         cmd.set_scissor(0, &[scissor]);
 
         let empty_uvs: HashMap<String, [f32; 4]> = HashMap::new();
-        menu.draw(cmd, sw, sh, &elements, &empty_uvs);
+        menu.draw(
+            &ctx.device,
+            &ctx.allocator,
+            cmd,
+            0,
+            sw,
+            sh,
+            &elements,
+            &empty_uvs,
+        );
 
         cmd.end_render_pass();
         cmd.end()?;
@@ -810,6 +839,8 @@ impl Renderer {
             .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.entity_renderer
             .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
+        self.entity_shadow_pipeline
+            .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.block_entity_pipeline
             .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.item_entity_pipeline
@@ -821,6 +852,8 @@ impl Renderer {
         self.particle_pipeline
             .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.cloud_pipeline
+            .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
+        self.chunk_border_pipeline
             .recreate_pipeline(&self.ctx.device, self.swapchain.render_pass);
         self.blur_pipeline.resize(
             &self.ctx.device,
@@ -1179,6 +1212,8 @@ impl Renderer {
         destroy_info: Option<(BlockPos, u32, BlockState)>,
         show_chunk_borders: bool,
         sky: SkyState,
+        shadows: ShadowScene<'_>,
+        moving_blocks: &[MovingBlockRender],
         entities: &[EntityRenderInfo],
         item_entities: &[pipelines::item_entity::ItemRenderInfo],
         block_entities: &[BlockEntityRenderInfo],
@@ -1228,6 +1263,8 @@ impl Renderer {
                 destroy_info,
                 show_chunk_borders,
                 sky,
+                shadows,
+                moving_blocks,
                 entities,
                 item_entities,
                 block_entities,
@@ -1583,6 +1620,7 @@ impl Renderer {
             self.chunk_pipeline.update_camera(frame, &uniform);
             self.block_overlay_pipeline.update_camera(frame, &uniform);
             self.entity_renderer.update_camera(frame, &uniform);
+            self.entity_shadow_pipeline.update_camera(frame, &uniform);
             self.block_entity_pipeline.update_camera(frame, &uniform);
             self.chunk_border_pipeline.update_camera(frame, &uniform);
             self.item_entity_pipeline.update_camera(frame, &uniform);
@@ -1846,6 +1884,8 @@ impl Renderer {
                 destroy_info,
                 show_chunk_borders,
                 sky,
+                shadows,
+                moving_blocks,
                 entities,
                 item_entities,
                 block_entities,
@@ -1873,10 +1913,18 @@ impl Renderer {
                 let t_cull = std::time::Instant::now();
                 // Solid (no discard) first so it lays down depth and early-Z lets
                 // the front-to-back order reject occluded fragments; cutout after.
+                self.moving_block_buffers.upload(
+                    &self.ctx.device,
+                    &self.ctx.allocator,
+                    frame,
+                    moving_blocks,
+                );
                 self.chunk_pipeline.bind(cmd, frame, false);
                 self.chunk_buffers.draw_indirect(cmd, frame, false);
+                self.moving_block_buffers.draw(cmd, frame, false);
                 self.chunk_pipeline.bind(cmd, frame, true);
                 self.chunk_buffers.draw_indirect(cmd, frame, true);
+                self.moving_block_buffers.draw(cmd, frame, true);
                 let cull_ms = t_cull.elapsed().as_secs_f32() * 1000.0;
 
                 let anchor = self.camera.anchor();
@@ -1898,6 +1946,10 @@ impl Renderer {
                 // Entities aren't sent beyond the server's tracking range; a
                 // generous render-distance cap just trims anything stray.
                 let ent_cull_dist = (*render_distance * 16) as f32 + 16.0;
+
+                self.entity_shadow_pipeline
+                    .draw(cmd, frame, shadows, anchor, eye);
+
                 self.entity_renderer.draw(
                     cmd,
                     frame,
@@ -2009,8 +2061,16 @@ impl Renderer {
                     }
                 }
 
-                self.menu_pipeline
-                    .draw(cmd, sw, sh, overlay, &item_atlas_uvs);
+                self.menu_pipeline.draw(
+                    &self.ctx.device,
+                    &self.ctx.allocator,
+                    cmd,
+                    frame,
+                    sw,
+                    sh,
+                    overlay,
+                    &item_atlas_uvs,
+                );
 
                 // Each preview box gets its depth cleared and its own scissor
                 // while the 3D content draws.
@@ -2055,7 +2115,7 @@ impl Renderer {
             } => {
                 let aspect = sw / sh.max(1.0);
                 self.panorama_pipeline
-                    .draw(&self.ctx.device, cmd, *scroll, aspect, 0.0);
+                    .draw(&self.ctx.device, cmd, frame, *scroll, aspect, 0.0);
 
                 // A BlurBackdrop marker splits the elements: those before it are
                 // drawn into the scene so the blur pass captures them (the title
@@ -2066,7 +2126,10 @@ impl Renderer {
                 let mut vbase = 0u32;
                 if let Some(i) = split {
                     vbase = self.menu_pipeline.draw_from(
+                        &self.ctx.device,
+                        &self.ctx.allocator,
                         cmd,
+                        frame,
                         sw,
                         sh,
                         &elements[..i],
@@ -2123,8 +2186,17 @@ impl Renderer {
                     Some(i) => &elements[i + 1..],
                     None => &elements[..],
                 };
-                self.menu_pipeline
-                    .draw_from(cmd, sw, sh, fg, &item_atlas_uvs, vbase);
+                self.menu_pipeline.draw_from(
+                    &self.ctx.device,
+                    &self.ctx.allocator,
+                    cmd,
+                    frame,
+                    sw,
+                    sh,
+                    fg,
+                    &item_atlas_uvs,
+                    vbase,
+                );
             }
         }
 
@@ -2565,6 +2637,10 @@ impl Drop for Renderer {
         self.book_preview
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.entity_renderer
+            .destroy(&self.ctx.device, &self.ctx.allocator);
+        self.entity_shadow_pipeline
+            .destroy(&self.ctx.device, &self.ctx.allocator);
+        self.moving_block_buffers
             .destroy(&self.ctx.device, &self.ctx.allocator);
         self.block_entity_pipeline
             .destroy(&self.ctx.device, &self.ctx.allocator);

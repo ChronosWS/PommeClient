@@ -24,13 +24,10 @@ openal:
 client-dev *args: openal
     @cargo run -p pomme-client {{ args }}
 
-# Optimized release client for accurate benchmarking (supplies the launch token the guard needs).
-# Plays offline as Steve unless given account flags, so it never asks to sign in.
+# Optimized release client for accurate benchmarking. Like any release build,
+# it plays as your signed-in account (it asks the first time).
 client-release *args: openal
-    #!/usr/bin/env bash
-    account=(--username Steve)
-    case " {{ args }} " in *" --username"* | *" --uuid"* | *" --access-token"*) account=() ;; esac
-    cargo run --release -p pomme-client -- --launch-token "$(mktemp)" "${account[@]}" {{ args }}
+    @cargo run --release -p pomme-client -- {{ args }}
 
 # Headless CPU benchmarks (mesher, fade rebuild, occlusion), no window or GPU.
 # An optional filter runs only matching benches, e.g. `just bench mesh`.
@@ -41,7 +38,8 @@ client-build *args: openal
     @cargo build -p pomme-client {{ args }}
 
 # In-game test scripts (tests/ingame/README.md) against a local vanilla
-# 26.2 server, e.g. `just ingame-test inventory_armor_equip`; no name runs them all.
+# 26.2 server, e.g. `just ingame-test player/armor_equip` or a whole folder like
+# `just ingame-test entities`; no name runs them all.
 ingame-test *scripts: openal
     @cargo run -p ingame-test -- {{ scripts }}
 
@@ -111,18 +109,35 @@ ios-archive team:
 ios-upload team:
     @python3 tools/ios.py upload {{ team }}
 
-# TODO: CI also runs the client's clippy and tests with --no-default-features; mirror it here.
+# Everything CI checks for the Rust crates; CI runs the same recipes below,
+# so the two can't drift.
+client-pre-pr: ci-fmt ci-lint ci-test ci-singleplayer
 
-client-pre-pr:
-    @cargo fmt -p pomme-client -- --check
-    @cargo fmt -p pomme-protocol -- --check
-    @cargo fmt -p pomme-singleplayer -- --check
-    @cargo clippy -p pomme-client --release --all-targets --all-features -- -D warnings
-    @cargo clippy -p pomme-protocol --release --all-targets --all-features -- -D warnings
+# The client's optional features clippy covers; `ttf-fonts` needs the system
+# FreeType.
+lint_features := "test-harness,cpu-bench"
+
+# Formatting, for every crate.
+ci-fmt:
+    @cargo fmt --all --check
+
+# Lints that run on every OS. SteelMC is left to `ci-singleplayer`, so it isn't
+# built three times over.
+ci-lint:
+    @cargo clippy -p pomme-client --release --all-targets --no-default-features --features {{ lint_features }} -- -D warnings
+    @cargo clippy -p pomme-protocol -p pomme-auth --release --all-targets --all-features -- -D warnings
+    @cargo clippy -p pomme-dirs -p pomme-install -p azalea-block -p ingame-test -p protogen -p blockgen --release --all-targets -- -D warnings
+
+# Tests, in the dev profile (dependencies are optimised there).
+ci-test:
+    @cargo nextest run -p pomme-protocol -p pomme-dirs -p pomme-auth -p pomme-install -p ingame-test
+    @cargo nextest run -p pomme-client --no-default-features
+
+# SteelMC's crate, the client with it, and the test that boots a real world.
+ci-singleplayer:
     @cargo clippy -p pomme-singleplayer --release --all-targets -- -D warnings
-    @cargo test -p pomme-protocol
-    @cargo test -p pomme-client
-    @cargo test -p pomme-singleplayer -- --include-ignored
+    @cargo clippy -p pomme-client --release --all-targets --features {{ lint_features }} -- -D warnings
+    @cargo nextest run -p pomme-singleplayer --run-ignored all
 
 # Regenerate a version's packet-id table from the decompiled reference.
 protogen version="26.2":
@@ -166,7 +181,8 @@ jdk := "C:/Program Files/Amazon Corretto/jdk25.0.2_10/bin"
 # Regenerate a version's per-state property table by running vanilla's own code
 # (tools/stategen/StateDump.java) against the reference server jar, then
 # compacting the dump with `blockgen state`. Uses the deobf server jar when
-# one exists (pre-26.x); needs the Corretto JDK for 26.x class files.
+# one exists (pre-26.x); needs the Corretto JDK for 26.x class files. Also
+# writes the version's per-block piston table (piston-<version>.json).
 stategen version="26.2":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -183,5 +199,5 @@ stategen version="26.2":
     libs=$(find "$ref/bundler" -name '*.jar' | tr '\n' ';')
     mkdir -p tools/stategen/out
     "$jdk/javac.exe" --release 21 -d tools/stategen/out tools/stategen/StateDump.java
-    "$jdk/java.exe" -cp "$classes;${libs}tools/stategen/out" StateDump "$v" "$ref/generated/state.json"
+    "$jdk/java.exe" -cp "$classes;${libs}tools/stategen/out" StateDump "$v" "$ref/generated/state.json" pomme-client/src/world/block/data/piston-"$v".json
     cargo run -p blockgen -- state "$ref/generated/state.json" pomme-client/src/world/block/data/blocks-"$v".json pomme-client/src/world/block/data/state-"$v".json

@@ -1,12 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use azalea_core::position::ChunkPos;
 use glam::DVec3;
 use pomme_gpu_allocator::vulkan::{Allocation, Allocator};
 use pyronyx::vk;
 
 use super::mesher::{ChunkAABB, ChunkMeshData, PackedVertex, SectionMesh};
+use crate::position::ChunkPos;
 use crate::renderer::context::IndirectDrawFeatures;
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, shader, util};
 
@@ -142,6 +142,18 @@ pub(crate) struct ChunkMeta {
     /// Read by the cull shader to split the solid/cutout draws; fills the
     /// fourth lane of `origin`'s 16-byte slot, keeping the struct at 64 bytes.
     solid_index_count: u32,
+}
+
+impl ChunkMeta {
+    /// An instance entry for a draw outside the section pool: just the
+    /// origin, fully faded in.
+    pub(crate) fn instance(origin: [i32; 3]) -> Self {
+        Self {
+            origin,
+            visibility: 1.0f32.to_bits(),
+            ..bytemuck::Zeroable::zeroed()
+        }
+    }
 }
 
 /// Copy already-packed `verts` into `dst` starting at byte `off`.

@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use azalea_block::BlockState;
 
 use super::{
-    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockStateData, NATIVE_SLOT, NO_FLUID,
-    PLACEABLE_BLOCKS, PropMap, SpecialCollision, block_data_slot, build_table,
+    BEDROCK_LIGHT, BLOCK_DATA, BLOCK_TABLES, BlockStateData, FIRST_STATES, Fluid, FluidKind,
+    NATIVE_SLOT, NO_FLUID, PLACEABLE_BLOCKS, PropMap, PushReaction, SpecialCollision,
+    block_data_slot, build_table,
 };
 
 /// A cheap, immutable handle to one cached version-selected state-ID table.
@@ -46,25 +47,92 @@ impl BlockStateTable {
     }
 
     pub(crate) fn first_state_of(self, name: &str) -> Option<BlockState> {
-        self.table
-            .iter()
-            .position(|block_state_data| block_state_data.id() == name)
-            .map(|id| BlockState::try_from(id as u32).expect("table indices fit the id repr"))
+        let map = FIRST_STATES[self.slot].get_or_init(|| {
+            let mut first = HashMap::new();
+            for (id, data) in self.table.iter().enumerate() {
+                first.entry(data.id).or_insert_with(|| state_at(id));
+            }
+            first
+        });
+        map.get(name).copied()
     }
 
+    /// How many block states the table holds (vanilla
+    /// `Block.BLOCK_STATE_REGISTRY.size()`).
+    pub(crate) fn state_count(self) -> usize {
+        self.table.len()
+    }
+
+    /// Vanilla `setValue`: `state` with property `key` set to `value`, searched
+    /// within the block's own states. `None` when the block has no such
+    /// property or value.
+    pub(crate) fn with_property(
+        self,
+        state: BlockState,
+        key: &str,
+        value: &str,
+    ) -> Option<BlockState> {
+        let table = self.table;
+        let id = u32::from(state) as usize;
+        let data = table.get(id)?;
+        let current = data.properties.get(key)?;
+        if current == value {
+            return Some(state);
+        }
+        // A block's states are contiguous and share one interned id.
+        let same_block = |d: &BlockStateData| std::ptr::eq(d.id, data.id);
+        let start = table[..id]
+            .iter()
+            .rposition(|d| !same_block(d))
+            .map_or(0, |i| i + 1);
+        let end = table[id..]
+            .iter()
+            .position(|d| !same_block(d))
+            .map_or(table.len(), |i| id + i);
+        let wanted = |k: &str, v: &str| {
+            if k == key {
+                v == value
+            } else {
+                data.properties.get(k) == Some(v)
+            }
+        };
+        (start..end)
+            .find(|&i| table[i].properties.entries().all(|(k, v)| wanted(k, v)))
+            .map(state_at)
+    }
+
+    /// The first state of block `name` with the given property values set.
+    pub(crate) fn state_with(self, name: &str, props: &[(&str, &str)]) -> Option<BlockState> {
+        props
+            .iter()
+            .try_fold(self.first_state_of(name)?, |s, &(k, v)| {
+                self.with_property(s, k, v)
+            })
+    }
+
+    /// The block's state matching the given property values (unlisted
+    /// properties take the block's first state's values).
     #[cfg(any(test, feature = "cpu-bench"))]
     pub(crate) fn find_state(self, name: &str, props: &[(&str, &str)]) -> BlockState {
-        let id = self
-            .table
-            .iter()
-            .position(|block_state_data| {
-                block_state_data.id() == name
-                    && props
-                        .iter()
-                        .all(|&(k, v)| block_state_data.properties().get(k) == Some(v))
-            })
-            .unwrap_or_else(|| panic!("no state {name} {props:?}"));
-        BlockState::try_from(id as u32).expect("table indices fit the id repr")
+        self.state_with(name, props)
+            .unwrap_or_else(|| panic!("no state {name} {props:?}"))
+    }
+
+    /// Vanilla `FluidState.createLegacyBlock`: the block a lone fluid is.
+    pub(crate) fn fluid_block(self, fluid: Fluid) -> BlockState {
+        let name = match fluid.kind {
+            FluidKind::Empty => return BlockState::AIR,
+            FluidKind::Water => "water",
+            FluidKind::Lava => "lava",
+        };
+        // `FlowingFluid.getLegacyLevel`.
+        let level = if fluid.amount == 8 && !fluid.falling {
+            0
+        } else {
+            8 - fluid.amount.min(8) + if fluid.falling { 8 } else { 0 }
+        };
+        self.state_with(name, &[("level", &level.to_string())])
+            .unwrap_or(BlockState::AIR)
     }
 
     /// State metadata in wire-id order for binding the selected definitions.
@@ -78,10 +146,9 @@ impl BlockStateTable {
         let map = PLACEABLE_BLOCKS[self.slot].get_or_init(|| {
             let mut seen: HashMap<&'static str, Option<BlockState>> = HashMap::new();
             for (id, data) in self.table.iter().enumerate() {
-                let state = BlockState::try_from(id as u32).expect("table indices fit the id repr");
                 seen.entry(data.id)
                     .and_modify(|v| *v = None)
-                    .or_insert(Some(state));
+                    .or_insert(Some(state_at(id)));
             }
             seen.into_iter()
                 .filter_map(|(name, state)| state.map(|s| (name, s)))
@@ -111,9 +178,15 @@ impl BlockStateTable {
                 position_offset: None,
                 fluid: NO_FLUID,
                 light: BEDROCK_LIGHT,
+                push_reaction: PushReaction::Normal,
+                has_block_entity: false,
             });
         self.table
             .get(u32::from(state) as usize)
             .unwrap_or(&UNKNOWN)
     }
+}
+
+fn state_at(id: usize) -> BlockState {
+    BlockState::try_from(id as u32).expect("table indices fit the id repr")
 }

@@ -14,10 +14,15 @@ A full run takes about half a minute, server start included, and needs no one
 at the keyboard, so it's cheap to rerun on every change.
 
 ```sh
-just ingame-test                          # every script in this directory
-just ingame-test inventory_armor_equip    # one script
+just ingame-test                          # every script
+just ingame-test entities                 # every script in a folder
+just ingame-test player/armor_equip       # one script
 just ingame-test --jobs 2                 # two at once (default 6)
 ```
+
+Scripts live in a folder per area (`blocks`, `entities`, `items`, `player`,
+`ui`, `world`); a new one goes in the folder it tests. A script's name is its
+path without `.toml`.
 
 The runner (`tools/ingame-test`):
 
@@ -32,7 +37,8 @@ With `--jobs N`, N workers each start their own server and world under
 clients use a game dir there too, so a run never touches your own options.
 
 Each script writes `report.json`, its screenshots and the client's output
-(`client.log`) to `target/ingame/<script>/`. The run fails if any script does.
+(`client.log`) to `target/ingame/<script>/`, e.g. `target/ingame/entities/data/`.
+The run fails if any script does.
 
 ## The harness
 
@@ -100,7 +106,7 @@ An `expect` is retried every frame until it holds or times out. It can check:
 | A chat line | `chat` (text it contains) |
 | A block | `block` (state name, e.g. `air`), `at`, optional `block_entity` (type) |
 | The local player | `player = { ... }` with any of `health`, `food`, `level`, `game_mode`, `effect`, `no_effect`, `max_health`, `raining`, `hand`, `dimension`, `day_time`, `position` (within 0.01) and `y_rot` (within 0.01) |
-| The open menu | `menu` (a container's menu type, e.g. `generic_9x3`, or `inventory`, `creative`, `none`), optional `title` |
+| The open menu | `menu` (a container's menu type, e.g. `generic_9x3`, or `inventory`, `creative`, `pause`, `none`), optional `title` |
 | The HUD text | `hud = { ... }` with any of `title`, `subtitle` and `sidebar_title` (`""` when none is shown), `boss_bars` (every name, top to bottom), `sidebar` (every row as `"name number"`, top to bottom) and `tab_list` (every listed player as `{ name, game_mode? }`, in tab order) |
 | A played sound | `sound` (event name, e.g. `block.note_block.harp`), among the last 64 played |
 

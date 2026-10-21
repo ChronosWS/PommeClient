@@ -34,6 +34,14 @@ use world::StoreWorld;
 use crate::world::block::{BlockStateData, BlockStateTable};
 use crate::world::chunk::{ChunkLightData, ChunkStore};
 
+/// Vanilla `Lightmap.getBrightness`: a 0..15 light level on the lightmap
+/// curve, lifted by the dimension's ambient light.
+pub fn lightmap_brightness(level: u8, ambient_light: f32) -> f32 {
+    let v = f32::from(level) / 15.0;
+    let curved = v / (4.0 - 3.0 * v);
+    curved + (1.0 - curved) * ambient_light
+}
+
 /// Vanilla `LightEngine.getOpacity`: light always attenuates by at least 1.
 pub(crate) fn opacity(block_state_data: &BlockStateData) -> u8 {
     block_state_data.light_props().dampening.max(1)
@@ -79,19 +87,39 @@ impl SectionEntry {
     }
 }
 
+/// A light packet's section mask, as the `java.util.BitSet` vanilla reads
+/// it into: bit `i` is bit `i % 64` of long `i / 64`, and bits past the last
+/// long are clear.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BitSet(Box<[u64]>);
+
+impl BitSet {
+    pub fn get(&self, i: usize) -> bool {
+        self.0
+            .get(i / 64)
+            .is_some_and(|long| long >> (i % 64) & 1 != 0)
+    }
+}
+
+impl From<Vec<u64>> for BitSet {
+    fn from(longs: Vec<u64>) -> Self {
+        Self(longs.into())
+    }
+}
+
 /// Vanilla `readSectionList`: expands a packet's y-mask pair into one entry
 /// per light section. Malformed (non-2048-byte) payloads are skipped rather
 /// than disconnecting.
 pub(crate) fn section_entries(
     light_section_count: usize,
-    y_mask: &azalea_core::bitset::BitSet,
-    empty_y_mask: &azalea_core::bitset::BitSet,
+    y_mask: &BitSet,
+    empty_y_mask: &BitSet,
     updates: &[Box<[u8]>],
 ) -> Vec<SectionEntry> {
     let mut next = 0usize;
     (0..light_section_count)
         .map(|i| {
-            if i < y_mask.len() && y_mask.index(i) {
+            if y_mask.get(i) {
                 let entry = match updates.get(next) {
                     Some(bytes) if bytes.len() == LAYER_BYTES => {
                         let mut data = Box::new([0u8; LAYER_BYTES]);
@@ -102,7 +130,7 @@ pub(crate) fn section_entries(
                 };
                 next += 1;
                 entry
-            } else if i < empty_y_mask.len() && empty_y_mask.index(i) {
+            } else if empty_y_mask.get(i) {
                 SectionEntry::Empty
             } else {
                 SectionEntry::Skip
@@ -122,7 +150,7 @@ pub(crate) fn set_block_and_light(
     z: i32,
     state: BlockState,
 ) -> BlockState {
-    let (old, empty_flip) = store.set_block_state_tracked(x, y, z, state);
+    let (old, empty_flip) = store.set_block_state_tracked(x, y, z, state, block_state_table);
     engine.on_block_changed(
         block_state_table,
         LightPos::new(x, y, z),
@@ -317,9 +345,7 @@ impl LevelLightEngine {
                 .sky
                 .column_top(pos)
                 .map(|top| top - (self.min_section_y - 1));
-            if let Some(chunk) =
-                store.get_chunk(&azalea_core::position::ChunkPos::new(pos.0, pos.1))
-            {
+            if let Some(chunk) = store.get_chunk(&crate::position::ChunkPos::new(pos.0, pos.1)) {
                 sky.sources.insert(
                     pos,
                     ChunkSkyLightSources::fill_from(
@@ -879,5 +905,14 @@ mod tests {
             air,
             _world.block_state_table()
         ));
+    }
+
+    #[test]
+    fn lightmap_brightness_follows_vanilla() {
+        assert_eq!(super::lightmap_brightness(15, 0.0), 1.0);
+        assert_eq!(super::lightmap_brightness(0, 0.0), 0.0);
+        assert!((super::lightmap_brightness(0, 0.25) - 0.25).abs() < 1e-6);
+        let v = 7.0 / 15.0;
+        assert!((super::lightmap_brightness(7, 0.0) - v / (4.0 - 3.0 * v)).abs() < 1e-6);
     }
 }

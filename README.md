@@ -20,17 +20,19 @@ Pomme contains no Mojang code, and joins vanilla servers from 1.20 through 26.3.
   <img width="100%" alt="Pomme flying over a jungle" src="https://github.com/user-attachments/assets/c35e717e-3535-4f4f-9539-9e62dd482e04" />
 </p>
 
-<p align="center">
-  <img width="1920" height="1080" alt="The Pomme launcher" src="https://github.com/user-attachments/assets/b8353f51-a23b-45c5-9f3d-457e498a5253" />
-</p>
-
 ## Download
 
-Get the **Pomme launcher** from the
-[latest launcher release](https://github.com/PommeMC/Client/releases?q=launcher&expanded=true),
-for Windows x64, macOS (Apple Silicon) or Linux x64 (`.AppImage`, `.deb` or
-`.rpm`). It signs you in with your Microsoft account, installs and updates the
-client, and launches it. You need to own Minecraft: Java Edition.
+Get Pomme from the [latest release](https://github.com/PommeMC/Client/releases/latest):
+
+- **Windows x64**: `pomme-client-windows-x64-setup.exe`
+- **macOS (Apple Silicon)**: `pomme-client-macos-arm64.dmg`, then drag Pomme to Applications
+- **Linux x64**: `pomme-client-linux-x64-gnu.AppImage`
+
+It signs you in with your Microsoft account and keeps itself up to date. You
+need to own Minecraft: Java Edition. The builds aren't signed yet, so the first
+launch needs one extra step, described in the release notes.
+
+Early Android and iOS builds build from source: see [BUILDING.md](./BUILDING.md).
 
 ## Why Pomme?
 
@@ -38,9 +40,9 @@ client, and launches it. You need to own Minecraft: Java Edition.
 - **Vanilla behaviour**: physics, rendering, menus and networking are ported line
   by line from the decompiled game, and checked against it.
 - **Tested against real servers**: scripted [in-game tests](./tests/ingame/README.md)
-  run the client against a vanilla 26.3 server and screenshot the results.
+  run the client against a vanilla 26.2 server and screenshot the results.
 - **Many versions, one client**: per-version protocol tables are generated from
-  each version's decompiled source, and older versions are translated to 26.3.
+  each version's decompiled source, and other versions are translated to 26.2.
 
 > [!WARNING]
 > Pomme is in active development. Expect missing features and bugs, and please
@@ -52,16 +54,20 @@ client, and launches it. You need to own Minecraft: Java Edition.
 - **Singleplayer**: worlds run on [SteelMC](https://github.com/Steel-Foundation/SteelMC), a Rust server embedded in the client
 - **Audio**: vanilla sound events, music and subtitles through OpenAL Soft
 - **Resource packs**: local and server-sent packs, applied live
-- **Launcher**: multiple accounts, patch notes and installation management
+- **Inventories**: survival and creative inventories, crafting, furnaces, anvils, enchanting, chests, bundles and the recipe book
+- **Controls**: rebindable keys and controllers on desktop, touch controls on phones
+- **Friends**: the Minecraft friends list, requests and who's online
+- **Updates**: installs per platform and keeps itself up to date
 
 <details>
 <summary>Everything else</summary>
 
 - Vanilla-exact movement, collision, swimming and drowning
 - Block entities, dropped items, block overlays and hand animation
-- HUD and menus: health, hunger, air, status effects, hotbar, boss bars, titles, waypoints, F3 debug, chat, pause menu, options, server list, world list
+- HUD and menus: health, hunger, air, status effects, hotbar, boss bars, titles, waypoints, advancement toasts, player list, F3 debug, chat, pause menu, options, server list, world list
 - Create, edit and delete singleplayer worlds from the menu
-- Microsoft account tokens stored in the OS keyring
+- Microsoft sign-in from the menu, with tokens stored in the OS keyring
+- Secure chat: signed messages, as vanilla sends them
 - Discord presence for the menu, servers and worlds
 
 </details>

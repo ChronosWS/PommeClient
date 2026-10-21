@@ -213,6 +213,16 @@ pub enum Direction {
 }
 
 impl Direction {
+    /// Vanilla `Direction.values()`, indexed by the 3D data value.
+    pub const VALUES: [Direction; 6] = [
+        Direction::Down,
+        Direction::Up,
+        Direction::North,
+        Direction::South,
+        Direction::West,
+        Direction::East,
+    ];
+
     pub fn opposite(self) -> Self {
         match self {
             Direction::Down => Direction::Up,
@@ -235,7 +245,34 @@ impl Direction {
         }
     }
 
-    fn from_str(s: &str) -> Option<Self> {
+    /// The index of the direction's axis: 0 for X, 1 for Y, 2 for Z.
+    pub fn axis(self) -> usize {
+        match self {
+            Direction::West | Direction::East => 0,
+            Direction::Down | Direction::Up => 1,
+            Direction::North | Direction::South => 2,
+        }
+    }
+
+    /// The unit step along the direction.
+    pub fn step(self) -> glam::DVec3 {
+        let [x, y, z] = self.offset();
+        glam::dvec3(x.into(), y.into(), z.into())
+    }
+
+    /// The block-state property value, vanilla `getSerializedName`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Direction::Down => "down",
+            Direction::Up => "up",
+            Direction::North => "north",
+            Direction::South => "south",
+            Direction::West => "west",
+            Direction::East => "east",
+        }
+    }
+
+    pub(crate) fn from_str(s: &str) -> Option<Self> {
         match s {
             "down" => Some(Direction::Down),
             "up" => Some(Direction::Up),
@@ -281,6 +318,47 @@ impl Direction {
     /// looks its dimension's table up at mesh time instead.
     pub(crate) fn shade_light(&self) -> f32 {
         CardinalLighting::DEFAULT.by_face(*self)
+    }
+
+    /// Vanilla `Direction.getApproximateNearest`: the direction whose normal
+    /// has the largest positive dot with `v`, in float precision; `North`
+    /// when none is positive.
+    pub fn approximate_nearest(v: glam::DVec3) -> Self {
+        let (x, y, z) = (v.x as f32, v.y as f32, v.z as f32);
+        let mut result = Direction::North;
+        // Java's `Float.MIN_VALUE`: the smallest subnormal.
+        let mut highest = f32::from_bits(1);
+        for direction in [
+            Direction::Down,
+            Direction::Up,
+            Direction::North,
+            Direction::South,
+            Direction::West,
+            Direction::East,
+        ] {
+            let [nx, ny, nz] = direction.offset();
+            let dot = x * nx as f32 + y * ny as f32 + z * nz as f32;
+            if dot > highest {
+                highest = dot;
+                result = direction;
+            }
+        }
+        result
+    }
+}
+
+// TODO: drop this once the serverbound packets carrying a face are
+// pomme-encoded.
+impl From<Direction> for azalea_core::direction::Direction {
+    fn from(direction: Direction) -> Self {
+        match direction {
+            Direction::Down => Self::Down,
+            Direction::Up => Self::Up,
+            Direction::North => Self::North,
+            Direction::South => Self::South,
+            Direction::West => Self::West,
+            Direction::East => Self::East,
+        }
     }
 }
 

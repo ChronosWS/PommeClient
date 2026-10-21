@@ -4,12 +4,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use azalea_block::BlockState;
-use azalea_core::position::BlockPos;
 
 use super::render_assets::{BlockRenderAssets, BlockRenderView, OwnedBlockRenderView};
 use super::{
     BlockStateData, BlockStateTable, BlockTags, load_behaviors, registry_names, resolve_block_tags,
 };
+use crate::position::BlockPos;
 use crate::world::level::LevelContext;
 
 /// Shared, immutable block rules, independent of the compact wire state ID.

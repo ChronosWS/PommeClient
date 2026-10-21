@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use azalea_block::BlockState;
-use azalea_core::direction::Direction;
-use azalea_core::position::BlockPos;
 use azalea_inventory::ItemStackData;
 use azalea_inventory::components::{
     Consumable, Food, ItemUseAnimation, MinimumAttackCharge, UseEffects,
@@ -29,10 +27,12 @@ use crate::particle::ParticleStore;
 use crate::physics::aabb::{self, Aabb, Axis, Face};
 use crate::physics::block_shape::{self, LocalBox};
 use crate::player::inventory::item_resource_name;
+use crate::position::BlockPos;
 use crate::renderer::pipelines::held_item::UseAnim;
 use crate::tool::{LegacyMiningEnchantments, stack_tool, sword_instantly_mines_legacy};
 use crate::world::block::BlockStateTable;
 use crate::world::block::block_registry::BlockRegistry;
+use crate::world::block::model::Direction;
 use crate::world::block::render_assets::BlockRenderView;
 use crate::world::block::sound::block_sounds_for_id;
 use crate::world::chunk::ChunkStore;
@@ -208,7 +208,13 @@ impl InteractionState {
         dirty_chunks: &mut Vec<BlockPos>,
     ) {
         self.retain_known_server_state(pos, state, player_pos);
-        chunks.set_block_state(pos.x, pos.y, pos.z, BlockState::AIR);
+        chunks.set_block_state(
+            pos.x,
+            pos.y,
+            pos.z,
+            BlockState::AIR,
+            block_registry.block_state_table(),
+        );
         mark_dirty(&pos, dirty_chunks);
         play_break_sound_for_id(audio, block_registry.block_state_data(state).id(), pos);
         effects.particles.add_destroy_block_effect(
@@ -247,7 +253,7 @@ impl InteractionState {
                     "Server did not confirm block change at {pos:?}, reverting to {:?}",
                     verified.state
                 );
-                chunks.set_block_state(pos.x, pos.y, pos.z, verified.state);
+                chunks.set_block_state(pos.x, pos.y, pos.z, verified.state, block_state_table);
                 mark_dirty(pos, dirty_chunks);
                 // Full-cube collision, as the engine has no per-shape voxels.
                 if snap_allowed
@@ -758,9 +764,15 @@ impl InteractionState {
             sender.send(ServerboundGamePacket::UseItemOn(ServerboundUseItemOn {
                 hand: InteractionHand::MainHand,
                 block_hit: BlockHit {
-                    block_pos: hit.block_pos,
-                    direction: hit.face,
-                    location: azalea_vec3(hit.hit_point),
+                    block_pos: hit.block_pos.into(),
+                    direction: hit.face.into(),
+                    location: azalea_core::position::Vec3::new(
+                        hit.hit_point.x,
+                        hit.hit_point.y,
+                        hit.hit_point.z,
+                    ),
+                    // TODO: true when the ray started inside the shape, which
+                    // scaffolding placement reads.
                     inside: false,
                     world_border: false,
                 },
@@ -1116,7 +1128,7 @@ impl InteractionState {
         let Some(state) = place_block else {
             return;
         };
-        let pos = hit.block_pos.offset_with_direction(hit.face);
+        let pos = hit.block_pos.relative(hit.face);
 
         // Only predict into an empty cell; replacing grass/water isn't handled yet.
         if !block_state_table
@@ -1134,7 +1146,7 @@ impl InteractionState {
         }
 
         self.retain_known_server_state(pos, BlockState::AIR, player_pos);
-        chunks.set_block_state(pos.x, pos.y, pos.z, state);
+        chunks.set_block_state(pos.x, pos.y, pos.z, state, block_state_table);
         mark_dirty(&pos, dirty_chunks);
     }
 
@@ -1758,19 +1770,15 @@ pub fn raycast(
 /// each entity's bounding box and keeps the nearest hit. A box containing the
 /// ray origin counts as distance zero.
 fn nearest_entity_hit(from: DVec3, to: DVec3, entities: &EntityStore) -> Option<EntityHitResult> {
-    let from_v = azalea_vec3(from);
-    let to_v = azalea_vec3(to);
-
     let mut nearest_dist_sq = f64::MAX;
     let mut nearest = None;
     for (&entity_id, entity) in &entities.living {
         let dims = living_entity_dimensions(entity);
         let aabb = dims.make_bounding_box(entity.position.into());
 
-        let (location, dist_sq) = if aabb.contains(from_v) {
+        let (location, dist_sq) = if aabb.contains(from) {
             (from, 0.0)
-        } else if let Some(clip) = aabb.clip(from_v, to_v) {
-            let clip = DVec3::new(clip.x, clip.y, clip.z);
+        } else if let Some(clip) = aabb.clip(from, to) {
             (clip, clip.distance_squared(from))
         } else {
             continue;
@@ -1786,10 +1794,6 @@ fn nearest_entity_hit(from: DVec3, to: DVec3, entities: &EntityStore) -> Option<
         }
     }
     nearest
-}
-
-fn azalea_vec3(v: DVec3) -> azalea_core::position::Vec3 {
-    azalea_core::position::Vec3::new(v.x, v.y, v.z)
 }
 
 /// How far along the ray vanilla `VoxelShape.clip` probes to decide whether it
@@ -1817,7 +1821,7 @@ fn clip_shape(
         .iter()
         .any(|&b| Aabb::from_local(b, offset).contains(probe));
     if starts_inside {
-        return Some((probe, Direction::nearest(azalea_vec3(ray)).opposite()));
+        return Some((probe, Direction::approximate_nearest(ray).opposite()));
     }
 
     let (t, face) = aabb::clip_boxes(boxes, offset, from, to)?;
@@ -1847,8 +1851,8 @@ fn send_action(
     sender.send(ServerboundGamePacket::PlayerAction(
         ServerboundPlayerAction {
             action,
-            pos,
-            direction,
+            pos: pos.into(),
+            direction: direction.into(),
             seq,
         },
     ));

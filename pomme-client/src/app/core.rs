@@ -151,18 +151,53 @@ const GLYPH_CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs
 /// was just predicted still gets its entry.
 fn apply_server_block(
     game: &mut GameState,
-    priority_remesh: &mut Vec<(azalea_core::position::ChunkPos, i32)>,
-    pos: azalea_core::position::BlockPos,
+    priority_remesh: &mut Vec<(crate::position::ChunkPos, i32)>,
+    pos: crate::position::BlockPos,
     state: azalea_block::BlockState,
 ) {
-    crate::world::block_entity::sync_block_entity(
-        &mut game.chunk_store.block_entities,
-        pos,
-        game.block_registry.block_state_data(state),
-    );
+    sync_block_entities(game, pos, state);
     if game.interaction.update_known_server_state(&pos, state) {
         return;
     }
+    write_block(game, priority_remesh, pos, state);
+}
+
+/// Vanilla `Level.setBlock` from the client's own code, which no pending
+/// prediction absorbs.
+fn set_client_block(
+    game: &mut GameState,
+    priority_remesh: &mut Vec<(crate::position::ChunkPos, i32)>,
+    pos: crate::position::BlockPos,
+    state: azalea_block::BlockState,
+) {
+    sync_block_entities(game, pos, state);
+    write_block(game, priority_remesh, pos, state);
+}
+
+fn sync_block_entities(
+    game: &mut GameState,
+    pos: crate::position::BlockPos,
+    state: azalea_block::BlockState,
+) {
+    let block_state_data = game.block_registry.block_state_data(state);
+    // Vanilla drops a moving block's entity once its cell holds anything else.
+    if block_state_data.id() != "moving_piston" {
+        game.block_entity_anim.pistons.remove(&pos);
+    }
+    crate::world::block_entity::sync_block_entity(
+        &mut game.chunk_store.block_entities,
+        pos,
+        block_state_data,
+    );
+}
+
+/// The block + light write and the remesh cascade.
+fn write_block(
+    game: &mut GameState,
+    priority_remesh: &mut Vec<(crate::position::ChunkPos, i32)>,
+    pos: crate::position::BlockPos,
+    state: azalea_block::BlockState,
+) {
     crate::world::light::set_block_and_light(
         &game.chunk_store,
         &mut game.light_engine,
@@ -179,6 +214,125 @@ fn apply_server_block(
         pos.z,
         game.chunk_store.min_y(),
         game.chunk_store.section_count(),
+    );
+}
+
+/// The client world as the piston code sees it. Destroyed blocks' effects
+/// wait for the caller, which owns the audio and the particle registry.
+struct ClientPistonLevel<'a> {
+    game: &'a mut GameState,
+    remesh: &'a mut Vec<(crate::position::ChunkPos, i32)>,
+    destroyed: Vec<(crate::position::BlockPos, azalea_block::BlockState)>,
+}
+
+impl<'a> ClientPistonLevel<'a> {
+    fn new(game: &'a mut GameState, remesh: &'a mut Vec<(crate::position::ChunkPos, i32)>) -> Self {
+        Self {
+            game,
+            remesh,
+            destroyed: Vec::new(),
+        }
+    }
+}
+
+impl crate::world::piston::PistonLevel for ClientPistonLevel<'_> {
+    fn block_registry(&self) -> &crate::world::block::block_registry::BlockRegistry {
+        &self.game.block_registry
+    }
+
+    fn block(&self, pos: crate::position::BlockPos) -> azalea_block::BlockState {
+        self.game.chunk_store.get_block_state(pos.x, pos.y, pos.z)
+    }
+
+    fn set_block(&mut self, pos: crate::position::BlockPos, state: azalea_block::BlockState) {
+        set_client_block(self.game, self.remesh, pos, state);
+    }
+
+    fn is_loaded(&self, pos: crate::position::BlockPos) -> bool {
+        let chunk = crate::position::ChunkPos::new(pos.x.div_euclid(16), pos.z.div_euclid(16));
+        self.game.chunk_store.get_chunk(&chunk).is_some()
+    }
+
+    fn min_y(&self) -> i32 {
+        self.game.chunk_store.min_y()
+    }
+
+    fn max_y(&self) -> i32 {
+        self.game.chunk_store.min_y() + self.game.chunk_store.height() as i32 - 1
+    }
+
+    fn pistons(&mut self) -> &mut crate::world::piston::MovingPistons {
+        &mut self.game.block_entity_anim.pistons
+    }
+
+    fn destroy_effect(&mut self, pos: crate::position::BlockPos, state: azalea_block::BlockState) {
+        self.destroyed.push((pos, state));
+    }
+}
+
+/// Vanilla `PistonMovingBlockEntity.tick` for the client's moving blocks, at
+/// the block-entity point of the game tick; their landings remesh at once.
+pub(crate) fn tick_moving_pistons(core: &AppCore, game: &mut GameState) {
+    let mut remesh = Vec::new();
+    let mut level = ClientPistonLevel::new(game, &mut remesh);
+    let tick = level.game.tick_count;
+    crate::world::piston::tick(&mut level, |level, pos, piston, new_progress| {
+        let game = &mut *level.game;
+        // A passenger moves with its vehicle, which the server moves.
+        if game.position_set && game.riding_vehicle_id.is_none() {
+            // TODO: vanilla's client also moves other entities in the way;
+            // the server's position updates do it here.
+            let world = crate::physics::collision::CollisionWorld {
+                block_entity_anim: Some(&game.block_entity_anim),
+                ..crate::physics::collision::CollisionWorld::new(
+                    &game.chunk_store,
+                    game.block_registry.block_state_table(),
+                )
+            };
+            movement::push_by_moving_piston(
+                &mut game.player,
+                world,
+                pos,
+                piston,
+                new_progress,
+                tick,
+            );
+        }
+    });
+    enqueue_edits(game, &remesh, core.menu.chunk_detail);
+}
+
+/// Meshes edited sections at once on the priority lane, ungated by
+/// visibility.
+fn enqueue_edits(
+    game: &mut GameState,
+    sections: &[(crate::position::ChunkPos, i32)],
+    chunk_detail: u32,
+) {
+    let player_chunk = game.player_chunk();
+    for &(col, si) in sections {
+        game.enqueue_section_edit(col, si, chunk_lod(col, player_chunk, chunk_detail));
+    }
+}
+
+/// Vanilla `LevelEventHandler` case 2001: a broken block's sound and
+/// particles.
+fn block_break_effect(
+    audio: &crate::audio::AudioEngine,
+    game: &mut GameState,
+    pos: crate::position::BlockPos,
+    state: azalea_block::BlockState,
+) {
+    let block_state_data = game.block_registry.block_state_data(state);
+    if !block_state_data.is_air() {
+        crate::player::interaction::play_break_sound_for_id(audio, block_state_data.id(), pos);
+    }
+    game.particle_store.add_destroy_block_effect(
+        pos,
+        state,
+        game.block_registry.render_view(),
+        &game.chunk_store,
+        &game.biome_climate,
     );
 }
 
@@ -212,7 +366,7 @@ fn hurt_entity(game: &mut GameState, id: i32, dir: Option<f32>) {
 /// the column, standalone light updates are corrections.
 fn queue_light_apply(
     game: &mut GameState,
-    pos: azalea_core::position::ChunkPos,
+    pos: crate::position::ChunkPos,
     light: &crate::net::PacketLightData,
     enable: bool,
 ) {
@@ -241,7 +395,7 @@ fn queue_light_apply(
 /// (the 3×3×3-block cascade → up to a few sections). Pushes deduped
 /// `(column, section_index)` keys.
 fn dirty_sections_for_block(
-    out: &mut Vec<(azalea_core::position::ChunkPos, i32)>,
+    out: &mut Vec<(crate::position::ChunkPos, i32)>,
     x: i32,
     y: i32,
     z: i32,
@@ -255,8 +409,7 @@ fn dirty_sections_for_block(
                 if si < 0 || si >= section_count {
                     continue;
                 }
-                let col =
-                    azalea_core::position::ChunkPos::new(bx.div_euclid(16), bz.div_euclid(16));
+                let col = crate::position::ChunkPos::new(bx.div_euclid(16), bz.div_euclid(16));
                 let key = (col, si);
                 if !out.contains(&key) {
                     out.push(key);
@@ -1306,7 +1459,7 @@ impl AppCore {
 
         // Block edits go on the priority lane so they apply instantly even while
         // chunks stream in, instead of starving behind the load backlog.
-        let mut priority_remesh: Vec<(azalea_core::position::ChunkPos, i32)> = Vec::new();
+        let mut priority_remesh: Vec<(crate::position::ChunkPos, i32)> = Vec::new();
         let mut disconnect_reason: Option<String> = None;
         self.drain_player_skin_results(renderer);
 
@@ -1350,17 +1503,23 @@ impl AppCore {
                     min_y,
                     has_skylight,
                     cardinal_light,
+                    ambient_light,
+                    overworld_day,
                     default_clock,
                 } => {
                     tracing::info!(
                         "Dimension: height={height}, min_y={min_y}, skylight={has_skylight}, cardinal_light={cardinal_light:?}"
                     );
                     game.cardinal_light = cardinal_light;
+                    game.ambient_light = ambient_light;
+                    game.overworld_day = overworld_day;
                     game.default_clock = default_clock;
                     game.chunk_store =
                         ChunkStore::new_with_dimension(self.menu.render_distance, height, min_y);
                     game.light_engine =
                         crate::world::light::LevelLightEngine::new(height, min_y, has_skylight);
+                    // The old level's block entities, moving blocks among them.
+                    game.block_entity_anim = Default::default();
                     game.position_set = false;
                     // Login/respawn recreate vanilla's LocalPlayer, resetting
                     // the XP display sentinel; waypoints persist.
@@ -1395,7 +1554,14 @@ impl AppCore {
                     heightmaps,
                     light,
                 } => {
-                    if let Err(e) = game.chunk_store.load_chunk(pos, &data, &heightmaps) {
+                    let biomes = crate::net::connection::biome_count(&game.registries);
+                    if let Err(e) = game.chunk_store.load_chunk(
+                        pos,
+                        &data,
+                        &heightmaps,
+                        biomes,
+                        game.block_registry.block_state_table(),
+                    ) {
                         tracing::error!("Failed to load chunk [{}, {}]: {e}", pos.x, pos.z);
                         continue;
                     }
@@ -1413,12 +1579,12 @@ impl AppCore {
                 }
                 NetworkEvent::ChunkUnloaded { pos } => {
                     game.chunk_store.unload_chunk(&pos);
+                    game.block_entity_anim.drop_chunk(pos.x, pos.z);
                     game.light_engine.on_chunk_unloaded((pos.x, pos.z));
                     game.light_engine
                         .queue_task(crate::world::light::LightTask::Remove {
                             pos: (pos.x, pos.z),
                         });
-                    game.block_entity_anim.drop_chunk(pos.x, pos.z);
                     game.content_gen.remove(&pos);
                     game.meshed.remove(&pos);
                     game.compiled.remove(&pos);
@@ -1433,7 +1599,7 @@ impl AppCore {
                 NetworkEvent::ChunkCacheCenter { x, z } => {
                     tracing::debug!("Chunk cache center: [{x}, {z}]");
                     game.chunk_store
-                        .set_center(azalea_core::position::ChunkPos::new(x, z));
+                        .set_center(crate::position::ChunkPos::new(x, z));
                 }
                 NetworkEvent::Ping { id } => {
                     connection.packet_tx.send(ServerboundGamePacket::Pong(
@@ -1459,11 +1625,10 @@ impl AppCore {
                         game.player.prev_look_dir = correction.prev_look_dir;
 
                         let to_chunk_coord = |v: f64| (v.floor() as i32).div_euclid(16);
-                        game.chunk_store
-                            .set_center(azalea_core::position::ChunkPos::new(
-                                to_chunk_coord(correction.position.x),
-                                to_chunk_coord(correction.position.z),
-                            ));
+                        game.chunk_store.set_center(crate::position::ChunkPos::new(
+                            to_chunk_coord(correction.position.x),
+                            to_chunk_coord(correction.position.z),
+                        ));
                         // The camera is the eye, as `sync_camera_pos` keeps it
                         // every frame; the feet would seed it a block and a half
                         // low until the first in-game frame.
@@ -2023,6 +2188,13 @@ impl AppCore {
                     });
                     game.block_entity_anim.drop_chunk(chunk_pos.x, chunk_pos.z);
                     for (pos, kind, nbt) in entries {
+                        if kind == azalea_registry::builtin::BlockEntityKind::Piston {
+                            let piston = crate::world::piston::MovingPiston::from_nbt(
+                                &nbt,
+                                game.block_registry.block_state_table(),
+                            );
+                            game.block_entity_anim.pistons.insert(pos, piston);
+                        }
                         game.chunk_store.block_entities.insert(
                             pos,
                             crate::world::block_entity::StoredBlockEntity { kind, nbt },
@@ -2030,10 +2202,8 @@ impl AppCore {
                     }
                 }
                 NetworkEvent::BlockEntityUpdate { pos, kind, nbt } => {
-                    let chunk_pos = azalea_core::position::ChunkPos::new(
-                        pos.x.div_euclid(16),
-                        pos.z.div_euclid(16),
-                    );
+                    let chunk_pos =
+                        crate::position::ChunkPos::new(pos.x.div_euclid(16), pos.z.div_euclid(16));
                     if game.chunk_store.get_chunk(&chunk_pos).is_some() {
                         game.chunk_store.block_entities.insert(
                             pos,
@@ -2046,8 +2216,25 @@ impl AppCore {
                     action_id,
                     action_parameter,
                 } => {
-                    // Action 1 for chest/shulker = open-viewer count.
-                    if action_id == 1 {
+                    // Vanilla `Level.blockEvent` hands the event to the block
+                    // the client has there.
+                    let state = game.chunk_store.get_block_state(pos.x, pos.y, pos.z);
+                    if crate::world::piston::is_piston_base(
+                        game.block_registry.block_state_table(),
+                        state,
+                    ) {
+                        let mut level = ClientPistonLevel::new(game, &mut priority_remesh);
+                        crate::world::piston::trigger_event(
+                            &mut level,
+                            pos,
+                            action_id,
+                            action_parameter,
+                        );
+                        for (pos, state) in std::mem::take(&mut level.destroyed) {
+                            block_break_effect(&self.audio, game, pos, state);
+                        }
+                    } else if action_id == 1 {
+                        // Chest/shulker: the open-viewer count.
                         game.block_entity_anim.set_open_count(pos, action_parameter);
                     }
                 }
@@ -2171,7 +2358,7 @@ impl AppCore {
                     game.server_simulation_distance = distance;
                 }
                 NetworkEvent::BlockChangedAck { seq } => {
-                    let mut ack_dirty: Vec<azalea_core::position::BlockPos> = Vec::new();
+                    let mut ack_dirty: Vec<crate::position::BlockPos> = Vec::new();
                     let player_aabb = game.player.bounding_box();
                     let snap = game.interaction.acknowledge(
                         game.block_registry.block_state_table(),
@@ -2336,21 +2523,7 @@ impl AppCore {
                     if event_type == 2001
                         && let Some(state) = game.block_registry.block_state_table().try_state(data)
                     {
-                        let block_state_data = game.block_registry.block_state_data(state);
-                        if !block_state_data.is_air() {
-                            crate::player::interaction::play_break_sound_for_id(
-                                &self.audio,
-                                block_state_data.id(),
-                                pos,
-                            );
-                        }
-                        game.particle_store.add_destroy_block_effect(
-                            pos,
-                            state,
-                            game.block_registry.render_view(),
-                            &game.chunk_store,
-                            &game.biome_climate,
-                        );
+                        block_break_effect(&self.audio, game, pos, state);
                     }
                 }
                 NetworkEvent::LevelParticles {
@@ -2762,15 +2935,7 @@ impl AppCore {
         }
 
         let player_chunk = game.player_chunk();
-        // Edits mesh the affected section(s) immediately on the priority lane,
-        // ungated by visibility.
-        for &(col, si) in &priority_remesh {
-            game.enqueue_section_edit(
-                col,
-                si,
-                chunk_lod(col, player_chunk, self.menu.chunk_detail),
-            );
-        }
+        enqueue_edits(game, &priority_remesh, self.menu.chunk_detail);
 
         // Refresh the frustum tiers (throttled to camera movement / new loads),
         // then enqueue everything that needs meshing — visible-first, with hidden
@@ -2985,6 +3150,7 @@ impl AppCore {
                         chunks: &game.chunk_store,
                         block_state_table: game.block_registry.block_state_table(),
                         block_entity_anim: Some(&game.block_entity_anim),
+                        piston_noclip: None,
                     },
                     game.block_registry.tags(),
                     game.riding_vehicle_id.is_some(),
@@ -3205,6 +3371,7 @@ impl AppCore {
                 chunks: &game.chunk_store,
                 block_state_table: game.block_registry.block_state_table(),
                 block_entity_anim: Some(&game.block_entity_anim),
+                piston_noclip: None,
             },
             game.block_registry.tags(),
             game.interaction.use_speed_multiplier(),
@@ -3233,7 +3400,7 @@ impl AppCore {
         if !dirty.is_empty() {
             let min_y = game.chunk_store.min_y();
             let n = game.chunk_store.section_count();
-            let mut sections: Vec<(azalea_core::position::ChunkPos, i32)> = Vec::new();
+            let mut sections: Vec<(crate::position::ChunkPos, i32)> = Vec::new();
             for b in dirty {
                 // Light lands in this frame's update_light, matching vanilla's
                 // prediction timing (setBlockState queues; the per-frame
@@ -3249,7 +3416,7 @@ impl AppCore {
             }
             // One span per column so each column builds its mesh snapshot
             // once (the sections of an edit are contiguous per column).
-            let mut spans: Vec<(azalea_core::position::ChunkPos, i32, i32)> = Vec::new();
+            let mut spans: Vec<(crate::position::ChunkPos, i32, i32)> = Vec::new();
             for (col, si) in sections {
                 match spans.iter_mut().find(|(c, ..)| *c == col) {
                     Some((_, lo, hi)) => {
@@ -3527,8 +3694,8 @@ fn server_view_distance_update(announced: u32, last_request: u32) -> Option<u32>
 /// LOD level for a column: full detail within `detail` chunks (the Chunk
 /// Detail setting), half resolution to twice that, quarter beyond.
 pub(crate) fn chunk_lod(
-    pos: azalea_core::position::ChunkPos,
-    player: azalea_core::position::ChunkPos,
+    pos: crate::position::ChunkPos,
+    player: crate::position::ChunkPos,
     detail: u32,
 ) -> u32 {
     let dx = (pos.x - player.x).unsigned_abs();

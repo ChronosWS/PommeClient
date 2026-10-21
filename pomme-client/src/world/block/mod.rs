@@ -20,12 +20,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use azalea_block::BlockState;
-use azalea_core::position::BlockPos;
 pub use block_registry::{Block, BlockData};
 pub(crate) use block_state_table::BlockStateTable;
 use glam::{DVec3, dvec3};
 
 use crate::physics::block_shape::{LocalBox, compute_outline, compute_shape};
+use crate::position::BlockPos;
 
 /// Compact per-state property map: `(key, value)` pairs sorted by key. States
 /// have at most ~10 properties, so binary search on a boxed slice beats a
@@ -48,6 +48,23 @@ impl PropMap {
     pub fn entries(&self) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
         self.0.iter().copied()
     }
+}
+
+/// Vanilla `PushReaction`: what a piston does to the block.
+/// 26.3 renamed its values; the aliases read those dumps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PushReaction {
+    #[serde(alias = "push_pull")]
+    Normal,
+    #[serde(alias = "popped")]
+    Destroy,
+    #[serde(alias = "immoveable")]
+    Block,
+    #[serde(alias = "ignore_entity")]
+    Ignore,
+    #[serde(alias = "push")]
+    PushOnly,
 }
 
 /// A face-occlusion shape projected onto the face plane as a 16x16 bit grid;
@@ -207,6 +224,10 @@ pub(crate) struct BlockStateData {
     position_offset: Option<PositionOffset>,
     fluid: Fluid,
     light: LightProps,
+    /// Vanilla `getPistonPushReaction`, from the per-version piston table.
+    push_reaction: PushReaction,
+    /// Vanilla `hasBlockEntity`: the block is an `EntityBlock`.
+    has_block_entity: bool,
 }
 
 impl BlockStateData {
@@ -320,6 +341,14 @@ impl BlockStateData {
         self.large_collision_shape
     }
 
+    pub(crate) fn push_reaction(&self) -> PushReaction {
+        self.push_reaction
+    }
+
+    pub(crate) fn has_block_entity(&self) -> bool {
+        self.has_block_entity
+    }
+
     pub(crate) fn collision_boxes(&self) -> Option<&'static [LocalBox]> {
         self.shape
     }
@@ -392,6 +421,14 @@ impl BehaviorEntry {
             requires_correct_tool_for_drops: self.requires_correct_tool,
         }
     }
+}
+
+/// A `piston-<v>.json` entry; blocks missing from it are plain NORMAL
+/// blocks without a block entity.
+#[derive(serde::Deserialize)]
+struct PistonEntry {
+    push_reaction: PushReaction,
+    has_block_entity: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -510,16 +547,19 @@ struct EmbeddedBlocks {
     protocol: i32,
     blocks: &'static str,
     state: &'static str,
+    piston: &'static str,
 }
 
-/// The `blocks-<v>.json` / `state-<v>.json` pair for version `v`, keyed by
-/// its protocol (checked against the file in [`build_table`]).
+/// The `blocks-<v>.json`, `state-<v>.json` and `piston-<v>.json` tables for
+/// version `v`, keyed by its protocol (checked against the file in
+/// [`build_table`]).
 macro_rules! embedded_blocks {
     ($protocol:expr, $version:literal) => {
         EmbeddedBlocks {
             protocol: $protocol,
             blocks: include_str!(concat!("data/blocks-", $version, ".json")),
             state: include_str!(concat!("data/state-", $version, ".json")),
+            piston: include_str!(concat!("data/piston-", $version, ".json")),
         }
     };
 }
@@ -544,8 +584,8 @@ const BLOCK_DATA: &[EmbeddedBlocks] = &[
 /// Protocols whose block set is identical to a newer embedded version's (no
 /// blocks added between them); they share that version's slot instead of
 /// building a second copy of the same table. The slot also serves the state
-/// table, so an alias requires the two versions' `generated/state.json`
-/// dumps to be identical as well, not just the block list.
+/// and piston tables, so an alias requires the two versions' stategen dumps
+/// to be identical as well, not just the block list.
 const SHARED_BLOCK_DATA: &[(i32, i32)] = &[
     // 1.21.7 added no blocks.
     (771, 772),
@@ -561,6 +601,10 @@ static BLOCK_TABLES: [OnceLock<Vec<BlockStateData>>; BLOCK_DATA.len()] =
 /// Per table slot, each single-state block's one state, for placement
 /// prediction.
 static PLACEABLE_BLOCKS: [OnceLock<HashMap<&'static str, BlockState>>; BLOCK_DATA.len()] =
+    [const { OnceLock::new() }; BLOCK_DATA.len()];
+
+/// Per table slot, each block's first state.
+static FIRST_STATES: [OnceLock<HashMap<&'static str, BlockState>>; BLOCK_DATA.len()] =
     [const { OnceLock::new() }; BLOCK_DATA.len()];
 
 /// Server-provided block tags, resolved into Pomme's native block resource
@@ -602,6 +646,11 @@ fn load_behaviors() -> &'static HashMap<String, BehaviorEntry> {
     })
 }
 
+/// A version's per-block piston data, dumped by `just stategen`.
+fn load_piston_data(data: &EmbeddedBlocks) -> HashMap<String, PistonEntry> {
+    serde_json::from_str(data.piston).expect("invalid piston data")
+}
+
 fn build_table(data: &EmbeddedBlocks) -> Vec<BlockStateData> {
     let file: BlockFile = serde_json::from_str(data.blocks).expect("invalid block-state data");
     assert_eq!(
@@ -611,6 +660,7 @@ fn build_table(data: &EmbeddedBlocks) -> Vec<BlockStateData> {
         file.version,
         data.protocol
     );
+    let piston_data = load_piston_data(data);
     let state_file: StateFile = serde_json::from_str(data.state).expect("invalid state data");
     assert_eq!(
         state_file.version, file.version,
@@ -678,6 +728,11 @@ fn build_table(data: &EmbeddedBlocks) -> Vec<BlockStateData> {
             block.name
         );
         let name = intern(&block.name);
+        let (push_reaction, has_block_entity) = piston_data
+            .get(&block.name)
+            .map_or((PushReaction::Normal, false), |p| {
+                (p.push_reaction, p.has_block_entity)
+            });
         let props: Vec<(&'static str, Vec<&'static str>)> = block
             .props
             .iter()
@@ -785,6 +840,8 @@ fn build_table(data: &EmbeddedBlocks) -> Vec<BlockStateData> {
                 position_offset,
                 fluid,
                 light,
+                push_reaction,
+                has_block_entity,
             });
         }
     }
@@ -1120,6 +1177,46 @@ mod tests {
     }
 
     #[test]
+    fn with_property_stays_within_the_block() {
+        let table = setup();
+        let props = |state| table.block_state_data(state).properties();
+        let piston = table
+            .state_with("piston", &[("facing", "up"), ("extended", "false")])
+            .unwrap();
+        let extended = table.with_property(piston, "extended", "true").unwrap();
+        assert_eq!(table.block_state_data(extended).id(), "piston");
+        assert_eq!(props(extended).get("facing"), Some("up"));
+        assert_eq!(props(extended).get("extended"), Some("true"));
+        assert_eq!(
+            table.with_property(extended, "extended", "false"),
+            Some(piston)
+        );
+        assert_eq!(table.with_property(piston, "extended", "maybe"), None);
+        assert_eq!(table.with_property(piston, "short", "true"), None);
+        // The last block in the table has no successor to stop the scan.
+        let last = table.try_state(table.state_count() as u32 - 1).unwrap();
+        if let Some((key, value)) = props(last).entries().next() {
+            assert_eq!(table.with_property(last, key, value), Some(last));
+        }
+    }
+
+    #[test]
+    fn push_reactions_match_vanilla() {
+        let table = setup();
+        let data = |name| table.block_state_data(table.first_state_of(name).unwrap());
+        assert_eq!(data("stone").push_reaction(), PushReaction::Normal);
+        assert_eq!(data("obsidian").push_reaction(), PushReaction::Normal);
+        assert_eq!(data("poppy").push_reaction(), PushReaction::Destroy);
+        assert_eq!(data("barrier").push_reaction(), PushReaction::Block);
+        assert_eq!(
+            data("white_glazed_terracotta").push_reaction(),
+            PushReaction::PushOnly
+        );
+        assert!(data("chest").has_block_entity());
+        assert!(!data("stone").has_block_entity());
+    }
+
+    #[test]
     fn new_26_2_blocks_resolve() {
         let block_state_table = setup();
         assert!(
@@ -1225,6 +1322,19 @@ mod tests {
                 .kind,
             FluidKind::Empty
         );
+
+        let round_trip =
+            |s| block_state_table.fluid_block(block_state_table.block_state_data(s).fluid());
+        assert_eq!(round_trip(still), still);
+        assert_eq!(round_trip(logged), still);
+        let level = |s| {
+            block_state_table
+                .block_state_data(round_trip(s))
+                .properties()
+                .get("level")
+        };
+        assert_eq!(level(falling), Some("8"));
+        assert_eq!(round_trip(BlockState::AIR), BlockState::AIR);
     }
 
     #[test]
@@ -1854,6 +1964,30 @@ mod tests {
     fn all_tables_build() {
         for data in BLOCK_DATA {
             build_table(data);
+        }
+    }
+
+    /// Each version's piston table parses and names only that version's
+    /// blocks, so a dump from the wrong version fails here.
+    #[test]
+    fn piston_tables_match_their_versions() {
+        for data in BLOCK_DATA {
+            let file: BlockFile = serde_json::from_str(data.blocks).unwrap();
+            let names: HashSet<&str> = file.blocks.iter().map(|b| b.name.as_str()).collect();
+            let piston = load_piston_data(data);
+            for key in piston.keys() {
+                assert!(
+                    names.contains(key.as_str()),
+                    "piston entry '{key}' isn't a {} block",
+                    file.version
+                );
+            }
+            assert_eq!(
+                piston.get("barrier").map(|p| p.push_reaction),
+                Some(PushReaction::Block),
+                "{}",
+                file.version
+            );
         }
     }
 

@@ -3,7 +3,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use azalea_core::position::{BlockPos, ChunkPos};
 use azalea_inventory::components::EquipmentSlot;
 use azalea_protocol::packets::game::{
     ServerboundClientInformation, ServerboundCommandSuggestion, ServerboundGamePacket,
@@ -27,6 +26,7 @@ use crate::player::LocalPlayer;
 use crate::player::interaction::{HitResult, InteractionState};
 use crate::player::menu_click::ContainerKind;
 use crate::player::tab_list::TabList;
+use crate::position::{BlockPos, ChunkPos};
 use crate::renderer::chunk::buffer::column_is_near;
 use crate::renderer::chunk::mesher::{BiomeClimate, ChunkMeshData, MeshDispatcher};
 use crate::renderer::chunk::occlusion_graph::{self, VisibilitySet};
@@ -36,6 +36,7 @@ use crate::renderer::pipelines::entity_renderer::{
     EntityRenderInfo, MAX_OVERLAYS, WHITE_TINT, armor_render_infos, dye_color_tint, jeb_sheep_tint,
     standing_eye_height, wool_color_tint,
 };
+use crate::renderer::pipelines::entity_shadow::{ShadowCaster, ShadowScene};
 use crate::renderer::pipelines::menu_overlay::MenuElement;
 use crate::renderer::{Renderer, SkyState};
 use crate::resource_pack::ResourcePackManager;
@@ -245,6 +246,11 @@ pub struct GameState {
     /// Dimension-type `cardinal_light`, which picks the terrain shade table
     /// and the item entity light directions.
     pub cardinal_light: CardinalLightType,
+    /// Dimension-type `ambient_light`: 0 in the overworld, 0.1 in the
+    /// nether, 0.25 in the end.
+    pub ambient_light: f32,
+    /// The dimension follows the overworld's day (see `SkyState::sky_darken`).
+    pub overworld_day: bool,
     /// The current dimension's `default_clock`, whose ticks are its day time.
     pub default_clock: Option<String>,
     /// F3+F4 game-mode switcher overlay, while open.
@@ -347,6 +353,11 @@ pub struct MeshedCol {
 }
 
 impl GameState {
+    /// This dimension's `skyDarken` right now.
+    pub fn sky_darken(&self) -> u8 {
+        self.sky_state.sky_darken(self.overworld_day)
+    }
+
     /// Notes a played sound for the harness, keeping the last 64.
     #[cfg(feature = "test-harness")]
     pub fn record_sound(&mut self, sound: &crate::audio::SoundRef) {
@@ -486,6 +497,8 @@ impl GameState {
             previous_game_mode: None,
             dimension: String::new(),
             cardinal_light: Default::default(),
+            ambient_light: 0.0,
+            overworld_day: true,
             default_clock: None,
             game_mode_switcher: None,
             spectator: Default::default(),
@@ -2050,27 +2063,6 @@ pub(crate) fn send_container_clicks(
     }
 }
 
-/// Vanilla `Lightmap.getBrightness` at a block position, with
-/// `getMaxLocalRawBrightness` = max(skyLight - skyDarken, blockLight).
-/// TODO: skyDarken (26.2: 15 - the SKY_LIGHT_LEVEL environment attribute) is
-/// untracked; 0 assumed, so the outdoor night-time vignette stays weak.
-fn lightmap_brightness(chunks: &ChunkStore, dimension: &str, x: i32, y: i32, z: i32) -> f32 {
-    let level = chunks
-        .get_sky_light(x, y, z)
-        .max(chunks.get_block_light(x, y, z)) as f32;
-    // Dimension-type ambient light, matched by id since the dimension-type
-    // registry isn't tracked; custom dimensions fall back to 0.
-    let ambient = if dimension == "minecraft:the_nether" {
-        0.1
-    } else {
-        0.0
-    };
-    let v = level / 15.0;
-    let curved = v / (4.0 - 3.0 * v);
-    // Mth.lerp(ambientLight, curved, 1.0)
-    curved + (1.0 - curved) * ambient
-}
-
 fn sleeping_head_pitch_deg(is_sleeping: bool, head_x_rot_deg: f32) -> f32 {
     if is_sleeping { 0.0 } else { head_x_rot_deg }
 }
@@ -2100,13 +2092,13 @@ fn should_render_local_player(
 
 fn eye_lightmap_brightness(game: &GameState) -> f32 {
     let eye = game.player.eye_pos();
-    lightmap_brightness(
-        &game.chunk_store,
-        &game.dimension,
+    let level = game.chunk_store.max_local_raw_brightness(
         eye.x.floor() as i32,
         eye.y.floor() as i32,
         eye.z.floor() as i32,
-    )
+        game.sky_darken(),
+    );
+    crate::world::light::lightmap_brightness(level, game.ambient_light)
 }
 
 /// Approximates vanilla's data-driven `equippable.camera_overlay` component
@@ -2129,7 +2121,7 @@ fn detached_distance(own: f32, mount: Option<f32>) -> f32 {
 /// Vanilla `LivingEntity.getBedOrientation` for a sleeper's bed.
 fn bed_orientation(
     game: &GameState,
-    sleeping_pos: Option<azalea_core::position::BlockPos>,
+    sleeping_pos: Option<crate::position::BlockPos>,
 ) -> Option<BedDirection> {
     let pos = sleeping_pos?;
     game.block_registry
@@ -2302,6 +2294,7 @@ pub fn update_game(
         game.particle_store
             .tick(&game.chunk_store, game.block_registry.block_state_table());
         game.block_entity_anim.tick();
+        crate::app::core::tick_moving_pistons(core, game);
         game.title.tick();
         tick_tool_highlight(core, game);
         // LocalPlayer.handlePortalTransitionEffect belongs to aiStep, which is
@@ -3802,6 +3795,7 @@ pub fn update_game(
                 let extras =
                     entity_extras(entity_id, e, partial_tick, game.sky_state.game_time as i64);
                 let is_sleeping = e.sleeping_pos.is_some();
+                let (radius, strength) = crate::entity::shadow::of_living(e);
 
                 EntityRenderInfo {
                     position: interp_pos + extras.render_offset,
@@ -3871,6 +3865,12 @@ pub fn update_game(
                     age_in_ticks: e.age_in_ticks as f32 + partial_tick,
                     attack_time: e.swing_progress(partial_tick),
                     skip_cull: false,
+                    shadow: ShadowCaster {
+                        position: *interp_pos,
+                        offset: extras.render_offset,
+                        radius,
+                        strength,
+                    },
                 }
             })
             .collect()
@@ -3893,6 +3893,7 @@ pub fn update_game(
             partial_tick,
         );
 
+        let (radius, strength) = crate::entity::shadow::of_player(&game.player.attributes);
         entity_renders.push(EntityRenderInfo {
             position: interp_pos,
             head_y_rot_deg: interp_y_rot_deg,
@@ -3915,6 +3916,13 @@ pub fn update_game(
             has_red_overlay: has_red_overlay(game.player.hurt_time, game.player.death_time),
             death_time: render_death_time(game.player.death_time, partial_tick),
             skip_cull: true,
+            // Players drop their render offset before the shadow.
+            shadow: ShadowCaster {
+                position: *interp_pos,
+                radius,
+                strength,
+                ..Default::default()
+            },
             ..Default::default()
         });
     }
@@ -3946,6 +3954,20 @@ pub fn update_game(
             gfx.renderer.camera_anchor(),
             partial_tick,
         )
+    };
+
+    let moving_block_renders =
+        moving_block_renders(game, gfx.renderer.camera_render_position(), partial_tick);
+
+    let shadow_casters = if core.menu.entity_shadows && !benchmark_running {
+        shadow_casters(
+            &entity_renders,
+            &game.item_entity_store,
+            *gfx.renderer.camera_pivot_position(),
+            partial_tick,
+        )
+    } else {
+        Vec::new()
     };
 
     let block_entity_renders: Vec<crate::renderer::BlockEntityRenderInfo> = if benchmark_running {
@@ -4065,6 +4087,14 @@ pub fn update_game(
         destroy_info,
         game.show_chunk_borders,
         sky,
+        ShadowScene {
+            casters: &shadow_casters,
+            chunks: &game.chunk_store,
+            block_state_table: game.block_registry.block_state_table(),
+            sky_darken: game.sky_darken(),
+            ambient_light: game.ambient_light,
+        },
+        &moving_block_renders,
         &entity_renders,
         &item_renders,
         &block_entity_renders,
@@ -4480,6 +4510,85 @@ fn emit_item_copies(
             push(glam::Mat4::from_translation(off));
         }
     }
+}
+
+/// Vanilla `PistonHeadRenderer.extractRenderState`: each moving block, meshed
+/// as terrain at its offset from the moving piston's cell and lit from the
+/// cell it left. A retracting piston also draws its base, extended, in place.
+fn moving_block_renders(
+    game: &GameState,
+    camera_pos: glam::DVec3,
+    partial_tick: f32,
+) -> Vec<crate::renderer::chunk::moving_blocks::MovingBlockRender> {
+    use crate::world::piston;
+    /// Vanilla `PistonHeadRenderer.getViewDistance`.
+    const VIEW_DISTANCE: f64 = 68.0;
+    let blocks = game.block_registry.block_state_table();
+    let mut renders = Vec::new();
+    for (pos, moving) in game.block_entity_anim.pistons.iter() {
+        let state = moving.moved_state;
+        let data = blocks.block_state_data(state);
+        let center = glam::DVec3::new(pos.x as f64, pos.y as f64, pos.z as f64) + 0.5;
+        if data.is_air() || center.distance_squared(camera_pos) >= VIEW_DISTANCE * VIEW_DISTANCE {
+            continue;
+        }
+        let origin = [pos.x, pos.y, pos.z];
+        let cell = piston::relative(*pos, moving.movement_direction().opposite(), 1);
+        let cell = [cell.x, cell.y, cell.z];
+        let mut mesh = |state, cell, base| {
+            renders.push(crate::renderer::chunk::moving_blocks::MovingBlockRender {
+                origin,
+                mesh: game
+                    .mesh_dispatcher
+                    .mesh_moving_block(&game.chunk_store, state, cell, base),
+            });
+        };
+        let progress = moving.progress(partial_tick);
+        let offset = moving.offset(partial_tick);
+        if data.id() == "piston_head" && progress <= 4.0 {
+            mesh(
+                piston::with_short(blocks, state, progress <= 0.5),
+                cell,
+                offset,
+            );
+        } else if moving.source && !moving.extending {
+            let Some(head) = piston::head_of(blocks, state, progress >= 0.5) else {
+                continue;
+            };
+            mesh(head, cell, offset);
+            let base = blocks
+                .with_property(state, "extended", "true")
+                .unwrap_or(state);
+            mesh(base, origin, [0.0; 3]);
+        } else {
+            mesh(state, cell, offset);
+        }
+    }
+    renders
+}
+
+/// Vanilla `extractShadow`'s casters: every rendered entity, and each resting
+/// item entity once, at its own position rather than its bobbing copies'.
+/// Items being picked up are gone in vanilla, so they cast none.
+fn shadow_casters(
+    entities: &[EntityRenderInfo],
+    items: &crate::entity::ItemEntityStore,
+    camera_pos: glam::DVec3,
+    partial_tick: f32,
+) -> Vec<ShadowCaster> {
+    let (item_radius, item_strength) = crate::entity::shadow::ITEM;
+    let entities = entities.iter().map(|e| e.shadow);
+    // A full-strength shadow fades out 16 blocks from the camera.
+    let items = items
+        .visible_items(camera_pos, 16.0)
+        .into_iter()
+        .map(|item| ShadowCaster {
+            position: *item.prev_position.lerp(item.position, partial_tick as f64),
+            radius: item_radius,
+            strength: item_strength,
+            ..Default::default()
+        });
+    entities.chain(items).collect()
 }
 
 fn build_item_render_infos(

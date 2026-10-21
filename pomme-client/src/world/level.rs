@@ -2,11 +2,11 @@
 //! resources other game systems need, without exposing internals of GameState
 //! generally.
 use azalea_block::BlockState;
-use azalea_core::position::BlockPos;
 use glam::DVec3;
 
 use super::block::block_registry::BlockRegistry;
 use super::chunk::ChunkStore;
+use crate::position::BlockPos;
 
 /// World services for a block callback; never retains a chunk snapshot.
 pub struct LevelContext<'a> {

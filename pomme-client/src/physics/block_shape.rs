@@ -39,7 +39,6 @@ pub struct CollisionContext {
 }
 
 impl CollisionContext {
-    #[cfg(test)]
     pub const EMPTY: Self = Self {
         entity_bottom: None,
         descending: false,
@@ -120,6 +119,12 @@ pub fn collision_shape(
             shape => shape,
         },
     }
+}
+
+/// Vanilla `isCollisionShapeFullBlock`: the empty-context collision shape
+/// fills the cell.
+pub fn is_collision_shape_full_block(block_state_data: &BlockStateData) -> bool {
+    collision_shape(block_state_data, 0, &CollisionContext::EMPTY).is_none()
 }
 
 /// Boxes the interaction raycast clips against (vanilla `getShape`). Unlike

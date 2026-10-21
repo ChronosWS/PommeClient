@@ -1,21 +1,27 @@
 use azalea_block::BlockState;
-use azalea_core::position::BlockPos;
 use glam::{DVec3, dvec3};
 
 use super::aabb::Aabb;
 use super::block_shape::{self, CollisionContext};
 use crate::entity::components::Velocity;
+use crate::position::BlockPos;
+use crate::world::block::model::Direction;
 use crate::world::block::{BlockStateTable, SpecialCollision};
 use crate::world::block_entity_anim::BlockEntityAnimStore;
 use crate::world::chunk::ChunkStore;
+use crate::world::piston;
 
 /// What the block collision scan reads.
 #[derive(Clone, Copy)]
 pub struct CollisionWorld<'a> {
     pub chunks: &'a ChunkStore,
     pub block_state_table: BlockStateTable,
-    /// Shulker lids follow their open animation; `None` keeps them closed.
+    /// Shulker lids follow their open animation and moving pistons their
+    /// blocks; `None` keeps lids closed and moving pistons empty.
     pub block_entity_anim: Option<&'a BlockEntityAnimStore>,
+    /// Vanilla `PistonMovingBlockEntity.NOCLIP`: while a piston moves an
+    /// entity, its own moving blocks heading that way don't collide.
+    pub piston_noclip: Option<Direction>,
 }
 
 impl<'a> CollisionWorld<'a> {
@@ -24,6 +30,7 @@ impl<'a> CollisionWorld<'a> {
             chunks,
             block_state_table,
             block_entity_anim: None,
+            piston_noclip: None,
         }
     }
 }
@@ -56,6 +63,57 @@ impl CollisionWorld<'_> {
         ))
     }
 
+    /// Vanilla `MovingPistonBlock.getCollisionShape`, through
+    /// `PistonMovingBlockEntity.getCollisionShape`: nothing without a moving
+    /// block, else the block where it has got to plus, for a retracting
+    /// piston, its extended base.
+    fn moving_piston(&self, pos: BlockPos, boxes: &mut Vec<Aabb>) {
+        let Some(piston) = self
+            .block_entity_anim
+            .and_then(|anim| anim.pistons.get(&pos))
+        else {
+            return;
+        };
+        let blocks = self.block_state_table;
+        let empty = &CollisionContext::EMPTY;
+        let moved = piston.moved_state;
+        if !piston.extending && piston.source && piston::is_piston_base(blocks, moved) {
+            let base = blocks
+                .with_property(moved, "extended", "true")
+                .unwrap_or(moved);
+            state_boxes(blocks, base, pos, empty, DVec3::ZERO, boxes);
+        }
+        if piston.progress < 1.0 && self.piston_noclip == Some(piston.movement_direction()) {
+            return;
+        }
+        let state = if piston.source {
+            let short = piston.extending != (1.0 - piston.progress < 0.25);
+            piston::piston_head(blocks, piston.direction, false, short)
+        } else {
+            moved
+        };
+        state_boxes(blocks, state, pos, empty, piston.extension(), boxes);
+    }
+
+    /// Shapes that come from block entity state rather than the block table;
+    /// `false` where the table applies.
+    fn special_boxes(&self, state: BlockState, pos: BlockPos, boxes: &mut Vec<Aabb>) -> bool {
+        if let Some(lid) = self.shulker_lid(state, pos) {
+            boxes.push(lid);
+            return true;
+        }
+        if self
+            .block_state_table
+            .block_state_data(state)
+            .special_collision()
+            == SpecialCollision::MovingPiston
+        {
+            self.moving_piston(pos, boxes);
+            return true;
+        }
+        false
+    }
+
     fn for_each_block_collision(
         &self,
         region: &Aabb,
@@ -67,9 +125,28 @@ impl CollisionWorld<'_> {
             region,
             ctx,
             |x, y, z| self.chunks.get_block_state(x, y, z),
-            |state, pos| self.shulker_lid(state, pos),
+            |state, pos, boxes| self.special_boxes(state, pos, boxes),
             visit,
         );
+    }
+}
+
+/// `state`'s collision boxes at `pos`, moved by `offset`.
+pub(crate) fn state_boxes(
+    block_state_table: BlockStateTable,
+    state: BlockState,
+    pos: BlockPos,
+    ctx: &CollisionContext,
+    offset: DVec3,
+    boxes: &mut Vec<Aabb>,
+) {
+    let block_state_data = block_state_table.block_state_data(state);
+    match block_shape::collision_shape(block_state_data, pos.y, ctx) {
+        Some(local) => {
+            let base = block_state_data.collision_shape_position(pos.x, pos.y, pos.z) + offset;
+            boxes.extend(local.iter().map(|&b| Aabb::from_local(b, base)));
+        }
+        None => boxes.push(Aabb::block(pos.x, pos.y, pos.z).offset(offset)),
     }
 }
 
@@ -82,7 +159,7 @@ fn for_each_block_collision(
     region: &Aabb,
     ctx: &CollisionContext,
     state_at: impl Fn(i32, i32, i32) -> BlockState,
-    shulker_lid: impl Fn(BlockState, BlockPos) -> Option<Aabb>,
+    special_boxes: impl Fn(BlockState, BlockPos, &mut Vec<Aabb>) -> bool,
     mut visit: impl FnMut(BlockPos, &[Aabb]),
 ) {
     let lo = |v: f64| (v - 1.0e-7).floor() as i32 - 1;
@@ -111,16 +188,8 @@ fn for_each_block_collision(
                 }
                 let pos = BlockPos::new(bx, by, bz);
                 boxes.clear();
-                if let Some(lid) = shulker_lid(state, pos) {
-                    boxes.push(lid);
-                } else {
-                    match block_shape::collision_shape(block_state_data, by, ctx) {
-                        Some(local) => {
-                            let offset = block_state_data.collision_shape_position(bx, by, bz);
-                            boxes.extend(local.iter().map(|&b| Aabb::from_local(b, offset)));
-                        }
-                        None => boxes.push(Aabb::block(bx, by, bz)),
-                    }
+                if !special_boxes(state, pos, &mut boxes) {
+                    state_boxes(block_state_table, state, pos, ctx, DVec3::ZERO, &mut boxes);
                 }
                 if boxes.iter().any(|b| b.intersects(region)) {
                     visit(pos, &boxes);
@@ -335,7 +404,7 @@ mod tests {
                     BlockState::AIR
                 }
             },
-            |_, _| None,
+            |_, _, _| false,
             |_, boxes| aabbs.extend_from_slice(boxes),
         );
         aabbs
@@ -438,6 +507,7 @@ mod tests {
             chunks: &chunks,
             block_state_table: test_blocks(),
             block_entity_anim: Some(&anim),
+            piston_noclip: None,
         };
 
         let aabb = world.shulker_lid(state, pos).unwrap();
@@ -478,5 +548,57 @@ mod tests {
             collect_candidate_step_up_heights(grounded, &colliders, 0.6, 0.5),
             vec![0.25]
         );
+    }
+
+    #[test]
+    fn moving_pistons_collide_where_their_block_has_got_to() {
+        use crate::world::block::model::Direction;
+        use crate::world::piston::MovingPiston;
+        let pos = BlockPos::new(4, 64, 4);
+        let moving =
+            test_blocks().find_state("moving_piston", &[("facing", "east"), ("type", "normal")]);
+        let stone = test_blocks().find_state("stone", &[]);
+        let mut anim = BlockEntityAnimStore::default();
+        let mut piston = MovingPiston::new(stone, Direction::East, true, false);
+        piston.progress = 0.5;
+        anim.pistons.insert(pos, piston);
+        let chunks = ChunkStore::new(2);
+        let mut world = CollisionWorld {
+            chunks: &chunks,
+            block_state_table: test_blocks(),
+            block_entity_anim: Some(&anim),
+            piston_noclip: None,
+        };
+        let boxes = |world: &CollisionWorld| {
+            let mut boxes = Vec::new();
+            assert!(world.special_boxes(moving, pos, &mut boxes));
+            boxes
+        };
+        // Halfway out of the cell to the west, heading east.
+        let halfway = boxes(&world);
+        assert_eq!(halfway.len(), 1);
+        assert_eq!(halfway[0].min, dvec3(3.5, 64.0, 4.0));
+        assert_eq!(halfway[0].max, dvec3(4.5, 65.0, 5.0));
+        world.piston_noclip = Some(Direction::East);
+        assert!(boxes(&world).is_empty());
+        world.piston_noclip = None;
+
+        // A retracting piston: its extended base, and the head on its way in.
+        let base = test_blocks().find_state("piston", &[("facing", "east"), ("extended", "false")]);
+        let mut retracting = MovingPiston::new(base, Direction::East, false, true);
+        retracting.progress = 0.5;
+        let mut retract_anim = BlockEntityAnimStore::default();
+        retract_anim.pistons.insert(pos, retracting);
+        world.block_entity_anim = Some(&retract_anim);
+        let boxes = boxes(&world);
+        assert!(
+            boxes.iter().any(|b| b.min.x == 4.0 && b.max.x < 5.0),
+            "{boxes:?}"
+        );
+        assert!(boxes.iter().any(|b| b.max.x > 5.0), "{boxes:?}");
+
+        let mut empty = Vec::new();
+        assert!(world.special_boxes(moving, BlockPos::new(0, 64, 0), &mut empty));
+        assert!(empty.is_empty());
     }
 }

@@ -1,13 +1,14 @@
 pub mod components;
+pub mod dimensions;
+pub mod shadow;
 pub mod villager;
 
 use std::collections::HashMap;
 
-use azalea_core::position::{BlockPos, ChunkPos};
-use azalea_entity::dimensions::EntityDimensions;
 use azalea_inventory::ItemStack;
 use azalea_inventory::components::EquipmentSlot;
 use azalea_registry::builtin::EntityKind;
+use dimensions::EntityDimensions;
 use glam::DVec3;
 
 use crate::attribute::AttributeMap;
@@ -16,6 +17,7 @@ use crate::entity::villager::{VillagerKind, VillagerProfession};
 use crate::physics::aabb::Aabb;
 use crate::physics::block_shape::CollisionContext;
 use crate::physics::collision::resolve_collision;
+use crate::position::{BlockPos, ChunkPos};
 use crate::renderer::pipelines::entity_renderer::{
     ARMOR_SLOTS, ArmorRenderInfo, armor_render_info,
 };
@@ -174,6 +176,7 @@ pub struct LivingEntity {
     pub is_sitting: bool,
     pub is_tame: bool,
     pub is_sprinting: bool,
+    pub is_invisible: bool,
     /// Dye id, wolf/cat collars (vanilla default red).
     pub collar_color: u8,
     pub is_interested: bool,
@@ -279,7 +282,7 @@ pub struct LivingEntity {
 }
 
 pub(crate) fn living_entity_dimensions(entity: &LivingEntity) -> EntityDimensions {
-    let mut dims = EntityDimensions::from(entity.entity_type);
+    let mut dims = EntityDimensions::of(entity.entity_type);
     if entity.is_baby {
         // `Squid.BABY_DIMENSIONS` is an explicit 0.5x0.5, not the generic
         // half scale.
@@ -396,6 +399,7 @@ impl LivingEntity {
             is_sitting: false,
             is_tame: false,
             is_sprinting: false,
+            is_invisible: false,
             collar_color: 14,
             is_interested: false,
             anger_end_time: -1,
@@ -1226,8 +1230,11 @@ impl EntityStore {
         let kind = entity.entity_type;
         let index = normalize_player_index(kind, normalize_ageable_index(kind, index));
         match (kind, index, value) {
-            // Shared entity flags byte: bit 0x08 = sprinting.
-            (_, 0, Byte(f)) => entity.is_sprinting = f & 0x08 != 0,
+            // Shared entity flags byte: bit 0x08 = sprinting, 0x20 = invisible.
+            (_, 0, Byte(f)) => {
+                entity.is_sprinting = f & 0x08 != 0;
+                entity.is_invisible = f & 0x20 != 0;
+            }
             (_, 9, Float(h)) => entity.health = h,
             // Mob flags byte: bit 0x04 = aggressive. Players aren't mobs;
             // their 15 is Avatar's main hand (a byte on 1.21.9-1.21.10).
