@@ -427,7 +427,7 @@ mod tests {
 
     fn test_tags() -> BlockTags {
         crate::world::block::block_tags_for_test(
-            BlockStateTable::for_protocol(NATIVE.protocol),
+            BlockStateTable::native(),
             &[
                 ("mineable/pickaxe", &["stone", "obsidian"]),
                 ("incorrect_for_iron_tool", &["obsidian"]),

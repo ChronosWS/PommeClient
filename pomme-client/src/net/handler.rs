@@ -459,12 +459,7 @@ mod tests {
     use super::*;
 
     fn handle_raw(raw: &[u8], event_tx: &Sender<NetworkEvent>) -> bool {
-        handle_raw_for_test(
-            raw,
-            BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol),
-            event_tx,
-        )
-        .0
+        handle_raw_for_test(raw, BlockStateTable::native(), event_tx).0
     }
 
     /// A frame holding just the native id of clientbound packet `name`.
@@ -613,11 +608,7 @@ mod tests {
         let (event_tx, event_rx) = crossbeam_channel::bounded(1);
         let mut raw = native_frame("ping");
         raw.extend(0x1234_5678i32.to_be_bytes());
-        let (took, mut out_rx) = handle_raw_for_test(
-            &raw,
-            BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol),
-            &event_tx,
-        );
+        let (took, mut out_rx) = handle_raw_for_test(&raw, BlockStateTable::native(), &event_tx);
         assert!(took);
 
         assert!(matches!(
@@ -635,11 +626,7 @@ mod tests {
         let (event_tx, _event_rx) = crossbeam_channel::bounded(1);
         let mut raw = native_frame("chunk_batch_finished");
         wire::write_varint(&mut raw, 16);
-        let (took, mut out_rx) = handle_raw_for_test(
-            &raw,
-            BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol),
-            &event_tx,
-        );
+        let (took, mut out_rx) = handle_raw_for_test(&raw, BlockStateTable::native(), &event_tx);
         assert!(took);
         assert!(matches!(
             out_rx.try_recv(),

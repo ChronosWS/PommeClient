@@ -145,7 +145,7 @@ pub(crate) fn outline_shape_holding_data(
     if matches!(id, "light" | "scaffolding") && held_item == Some(id) {
         FULL_CUBE_SHAPE
     } else {
-        block_state_data.outline_boxes().unwrap_or(FULL_CUBE_SHAPE)
+        outline_shape(block_state_data)
     }
 }
 
@@ -290,11 +290,7 @@ mod tests {
 
     #[test]
     fn held_item_fills_light_and_scaffolding_outlines() {
-        let block_state_table = crate::world::block::BlockStateTable::for_protocol(
-            pomme_protocol::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        );
+        let block_state_table = crate::world::block::BlockStateTable::native();
         let outline_shape_holding = |state, held_item| {
             outline_shape_holding_data(block_state_table.block_state_data(state), held_item)
         };

@@ -1681,7 +1681,7 @@ mod tests {
     fn tick(store: &mut EntityStore) {
         store.tick_living(
             &ChunkStore::new(2),
-            BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol),
+            BlockStateTable::native(),
             Position::default(),
             None,
             |_, _| true,
@@ -1759,7 +1759,7 @@ mod tests {
         // Id 5 stands in for a pusher the caller's pushableBy filter rejects.
         let impulse = store.tick_living(
             &ChunkStore::new(2),
-            BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol),
+            BlockStateTable::native(),
             local,
             Some(local_box),
             |id, _| id != 5,

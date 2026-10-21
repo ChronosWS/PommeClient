@@ -24,7 +24,11 @@ pub struct Assets {
 }
 
 impl Assets {
-    pub fn load(version: &str, dirs: &DataDirs) -> Result<Self, String> {
+    pub fn load(
+        version: &str,
+        dirs: &DataDirs,
+        block_state_table: BlockStateTable,
+    ) -> Result<Self, String> {
         if !dirs.jar_assets_dir.is_dir() {
             return Err(format!(
                 "no {version} assets at {} (launch {version} once through the launcher to download them)",
@@ -42,10 +46,6 @@ impl Assets {
             None,
             None,
         ));
-        let protocol = pomme_protocol::ProtocolVersion::from_name(version)
-            .unwrap_or(pomme_protocol::version::NATIVE)
-            .protocol;
-        let block_state_table = BlockStateTable::for_protocol(protocol);
 
         eprintln!("cpu-bench: packing texture atlas...");
         let (texture_names, generated_item_textures) = atlas_texture_names(&render_assets);

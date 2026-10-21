@@ -17,14 +17,15 @@ use criterion::Criterion;
 use super::fixtures::{Scene, build_world};
 use crate::net::PacketLightData;
 use crate::position::ChunkPos;
+use crate::world::block::BlockStateTable;
 use crate::world::chunk::HeightmapKind;
 use crate::world::light::BitSet;
 
 /// Light sections in an overworld column: 24 block sections plus padding.
 const LIGHT_SECTIONS: usize = 26;
 
-pub fn bench(c: &mut Criterion) {
-    let frame = plains_frame();
+pub fn bench(c: &mut Criterion, block_state_table: BlockStateTable) {
+    let frame = plains_frame(block_state_table);
     // Both decoders must hand the chunk store the same thing.
     let (a, p) = (azalea(&frame), pomme(&frame));
     assert_eq!((&a.0, &a.1), (&p.0, &p.1));
@@ -115,10 +116,7 @@ fn light_bytes(light: &PacketLightData) -> ([&BitSet; 4], Vec<u8>) {
 
 /// The bench plains column at the origin as a native frame, with every
 /// light section present.
-fn plains_frame() -> Box<[u8]> {
-    let block_state_table = crate::world::block::BlockStateTable::for_protocol(
-        pomme_protocol::version::NATIVE.protocol,
-    );
+fn plains_frame(block_state_table: BlockStateTable) -> Box<[u8]> {
     let store = build_world(Scene::Plains, block_state_table);
     let chunk = store.get_chunk(&ChunkPos::new(0, 0)).expect("bench column");
     let mut data = Vec::new();

@@ -728,6 +728,9 @@ fn build_table(data: &EmbeddedBlocks) -> Vec<BlockStateData> {
             block.name
         );
         let name = intern(&block.name);
+        if !load_behaviors().contains_key(&block.name) {
+            tracing::warn!("no behavior entry for block '{}', using defaults", name);
+        }
         let (push_reaction, has_block_entity) = piston_data
             .get(&block.name)
             .map_or((PushReaction::Normal, false), |p| {
@@ -1153,17 +1156,9 @@ pub(crate) fn shape_occludes_data(
 mod tests {
     use super::*;
 
-    fn setup() -> BlockStateTable {
-        BlockStateTable::for_protocol(
-            pomme_protocol::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        )
-    }
-
     #[test]
     fn chest_states_decode() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         // Oracle from reference/26.2/generated/reports/blocks.json:
         // chest[type=single,facing=south,waterlogged=false] is id 3994 — the
         // state that previously decoded as facing=east under azalea's stale
@@ -1178,7 +1173,7 @@ mod tests {
 
     #[test]
     fn with_property_stays_within_the_block() {
-        let table = setup();
+        let table = BlockStateTable::native();
         let props = |state| table.block_state_data(state).properties();
         let piston = table
             .state_with("piston", &[("facing", "up"), ("extended", "false")])
@@ -1202,7 +1197,7 @@ mod tests {
 
     #[test]
     fn push_reactions_match_vanilla() {
-        let table = setup();
+        let table = BlockStateTable::native();
         let data = |name| table.block_state_data(table.first_state_of(name).unwrap());
         assert_eq!(data("stone").push_reaction(), PushReaction::Normal);
         assert_eq!(data("obsidian").push_reaction(), PushReaction::Normal);
@@ -1218,7 +1213,7 @@ mod tests {
 
     #[test]
     fn new_26_2_blocks_resolve() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         assert!(
             block_state_table
                 .table()
@@ -1233,7 +1228,7 @@ mod tests {
 
     #[test]
     fn bed_direction_and_sleep_position_match_vanilla() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         let cases = [
             ("north", BedDirection::North, 0.0, 270.0, (0.0, -1.0)),
             ("south", BedDirection::South, -180.0, 90.0, (0.0, 1.0)),
@@ -1264,7 +1259,7 @@ mod tests {
 
     #[test]
     fn block_tag_registry_ids_resolve_to_native_block_names() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         let names: Vec<_> = registry_names(block_state_table.table()).collect();
         let tags = resolve_block_tags(
             vec![(
@@ -1280,7 +1275,7 @@ mod tests {
 
     #[test]
     fn redstone_wire_colors() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         let unpowered = block_state_table.find_state("redstone_wire", &[("power", "0")]);
         assert_eq!(
             block_state_table
@@ -1298,7 +1293,7 @@ mod tests {
 
     #[test]
     fn fluid_states() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         let still = block_state_table.find_state("water", &[("level", "0")]);
         let f = block_state_table.block_state_data(still).fluid();
         assert_eq!(f.kind, FluidKind::Water);
@@ -1339,7 +1334,7 @@ mod tests {
 
     #[test]
     fn movement_block_properties_match_vanilla_26_2_overrides() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         assert_eq!(
             block_state_table
                 .block_state_data(block_state_table.find_state("stone", &[]))
@@ -1392,7 +1387,7 @@ mod tests {
 
     #[test]
     fn legacy_solid_is_distinct_from_blocks_motion_for_vanilla_exceptions() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         for name in ["cobweb", "bamboo_sapling"] {
             let state = block_state_table.find_state(name, &[]);
             assert_eq!(
@@ -1409,7 +1404,7 @@ mod tests {
 
     #[test]
     fn calculate_solid_matches_the_dumped_legacy_solid() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         for (name, props) in [
             ("stone", &[][..]),
             ("air", &[]),
@@ -1431,7 +1426,7 @@ mod tests {
 
     #[test]
     fn vanilla_position_offsets_respect_generated_shape_usage() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
 
         let bamboo = block_state_table.find_state("bamboo", &[]);
         let bamboo_delta =
@@ -1516,7 +1511,7 @@ mod tests {
 
     #[test]
     fn collision_flags() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         // Oracles from reference/26.2/decompiled Blocks.java noCollision sites.
         assert!(
             !block_state_table
@@ -1552,7 +1547,7 @@ mod tests {
 
     #[test]
     fn generated_26_2_collision_shapes_cover_state_derived_families() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
 
         // Fence collision is 1.5 tall; its outline stays one block.
         let fence = block_state_table.find_state(
@@ -1662,7 +1657,7 @@ mod tests {
 
     #[test]
     fn light_emission_values() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         // Oracles from reference/26.2/decompiled Blocks.java lightLevel sites.
         assert_eq!(
             block_state_table
@@ -1743,7 +1738,7 @@ mod tests {
 
     #[test]
     fn light_dampening_values() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         let stone = block_state_table
             .block_state_data(block_state_table.find_state("stone", &[]))
             .light_props();
@@ -1786,7 +1781,7 @@ mod tests {
 
     #[test]
     fn can_occlude_follows_no_occlusion() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         for (name, occludes) in [
             ("copper_grate", false),
             ("waxed_oxidized_copper_grate", false),
@@ -1812,7 +1807,7 @@ mod tests {
 
     #[test]
     fn slab_face_occlusion() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         let top =
             block_state_table.find_state("oak_slab", &[("type", "top"), ("waterlogged", "false")]);
         let bottom = block_state_table
@@ -1871,7 +1866,7 @@ mod tests {
     /// differ (snow, fences/walls, lecterns, etc.).
     #[test]
     fn outline_shapes() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
 
         // One snow layer is 2/16 tall to look at but has no collision at all.
         let thin = block_state_table.find_state("snow", &[("layers", "1")]);
@@ -1941,7 +1936,7 @@ mod tests {
 
     #[test]
     fn large_collision_shapes() {
-        let block_state_table = setup();
+        let block_state_table = BlockStateTable::native();
         for (name, large) in [
             ("oak_fence", true),
             ("cobblestone_wall", true),
@@ -2045,7 +2040,7 @@ mod tests {
     /// Placement prediction reads the explicitly selected version's table.
     #[test]
     fn placeable_block_follows_the_table_slot() {
-        let native = BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol);
+        let native = BlockStateTable::native();
         let newer = BlockStateTable::for_protocol(777);
         for name in ["obsidian", "blackstone", "redstone_block"] {
             let [native_state, newer_state] = [native, newer].map(|table| {

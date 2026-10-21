@@ -580,16 +580,9 @@ mod tests {
 
     use super::world::LightBlockGetter;
     use super::*;
-    fn block_state_table() -> BlockStateTable {
-        BlockStateTable::for_protocol(
-            pomme_protocol::version::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        )
-    }
 
     fn find_state(name: &str, props: &[(&str, &str)]) -> BlockState {
-        block_state_table().find_state(name, props)
+        BlockStateTable::native().find_state(name, props)
     }
 
     struct TestWorld {
@@ -600,7 +593,7 @@ mod tests {
     impl TestWorld {
         fn new() -> Self {
             Self {
-                block_state_table: block_state_table(),
+                block_state_table: BlockStateTable::native(),
                 blocks: HashMap::new(),
             }
         }

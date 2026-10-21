@@ -769,7 +769,7 @@ impl MeshDispatcher {
     ) -> Self {
         Self::with_colormaps(
             render_view,
-            uv_map,
+            Arc::new(uv_map),
             Arc::new(grass_colormap),
             Arc::new(foliage_colormap),
             Arc::new(dry_foliage_colormap),
@@ -781,7 +781,7 @@ impl MeshDispatcher {
     #[allow(clippy::too_many_arguments)]
     fn with_colormaps(
         render_view: OwnedBlockRenderView,
-        uv_map: AtlasUVMap,
+        uv_map: Arc<AtlasUVMap>,
         grass_colormap: Arc<Colormap>,
         foliage_colormap: Arc<Colormap>,
         dry_foliage_colormap: Arc<Colormap>,
@@ -823,7 +823,7 @@ impl MeshDispatcher {
             workers,
             next_epoch: AtomicU64::new(1),
             render_view,
-            uv_map: Arc::new(uv_map),
+            uv_map,
             grass_colormap,
             foliage_colormap,
             dry_foliage_colormap,
@@ -847,7 +847,7 @@ impl MeshDispatcher {
     pub(crate) fn recreate_for_version(&self, render_view: OwnedBlockRenderView) -> Self {
         Self::with_colormaps(
             render_view,
-            (*self.uv_map).clone(),
+            Arc::clone(&self.uv_map),
             Arc::clone(&self.grass_colormap),
             Arc::clone(&self.foliage_colormap),
             Arc::clone(&self.dry_foliage_colormap),
@@ -2708,11 +2708,7 @@ mod fluid_height_tests {
 
     #[test]
     fn fluid_face_occlusion_matches_vanilla_height_aware_slab_rules() {
-        let block_state_table = BlockStateTable::for_protocol(
-            pomme_protocol::version::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        );
+        let block_state_table = BlockStateTable::native();
         let stone = block_state_table.find_state("stone", &[]);
         let bottom = block_state_table
             .find_state("oak_slab", &[("type", "bottom"), ("waterlogged", "false")]);
@@ -2744,11 +2740,7 @@ mod fluid_height_tests {
 
     #[test]
     fn partial_occluders_without_face_masks_keep_fluid_faces() {
-        let block_state_table = BlockStateTable::for_protocol(
-            pomme_protocol::version::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        );
+        let block_state_table = BlockStateTable::native();
         for name in ["oak_fence", "cobblestone_wall", "chest"] {
             let state = block_state_table.find_state(name, &[("waterlogged", "true")]);
             for dir in [Direction::North, Direction::South, Direction::Down] {
@@ -2818,11 +2810,7 @@ mod tint_tests {
 
     #[test]
     fn double_grass_upper_half_samples_the_lower_block_y() {
-        let block_state_table = BlockStateTable::for_protocol(
-            pomme_protocol::version::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        );
+        let block_state_table = BlockStateTable::native();
         let lower = block_state_table.find_state("tall_grass", &[("half", "lower")]);
         let upper = block_state_table.find_state("tall_grass", &[("half", "upper")]);
         assert_eq!(

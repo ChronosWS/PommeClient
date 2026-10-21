@@ -39,6 +39,8 @@ impl LevelRuntime {
     }
 
     /// Vanilla `ClientLevel.animateTick`, called once per simulation tick.
+    // TODO: vanilla gates this on `!pause && isLevelRunningNormally()`, as it
+    // does the particle tick.
     pub(crate) fn animate_tick(
         &mut self,
         block_registry: &BlockRegistry,
@@ -56,6 +58,10 @@ impl LevelRuntime {
 }
 
 /// Own the effect stream for this pass; all sampled callbacks borrow it.
+// TODO: the rest of `doAnimateTick`: the fluid's `animateTick` and drip
+// particles, the creative marker particle and the ambient particles. The drip
+// and ambient steps draw from the level random between samples, which
+// `sample_animation_blocks` holds for the whole pass.
 fn animate_tick_with_draw(
     block_registry: &BlockRegistry,
     player_pos: DVec3,
@@ -87,5 +93,38 @@ fn sample_animation_blocks(
             let z = center.z + next(radius) - next(radius);
             sample(BlockPos::new(x, y, z));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn samples_follow_vanilla_draw_order() {
+        let mut radii = Vec::new();
+        let mut samples = Vec::new();
+        sample_animation_blocks(
+            DVec3::new(10.5, 64.0, -3.5),
+            |radius| {
+                radii.push(radius);
+                radii.len() as i32 % radius
+            },
+            |pos| samples.push(pos),
+        );
+        assert_eq!(samples.len(), 667 * 2);
+        // Each sample draws x, y, then z, two draws apiece, at radius 16 then 32.
+        assert_eq!(radii.len(), samples.len() * 6);
+        for (i, sample) in radii.chunks(6).enumerate() {
+            let radius = if i % 2 == 0 { 16 } else { 32 };
+            assert!(
+                sample.iter().all(|&r| r == radius),
+                "sample {i}: {sample:?}"
+            );
+        }
+        assert_eq!(
+            samples[0],
+            BlockPos::new(10 + 1 - 2, 64 + 3 - 4, -4 + 5 - 6)
+        );
     }
 }

@@ -648,11 +648,7 @@ mod tests {
 
     #[test]
     fn randomized_model_offset_moves_destroy_overlay_with_bamboo() {
-        let block_state_table = crate::world::block::BlockStateTable::for_protocol(
-            pomme_protocol::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        );
+        let block_state_table = crate::world::block::BlockStateTable::native();
         let bamboo = block_state_table.find_state("bamboo", &[]);
         let block_state_data = block_state_table.block_state_data(bamboo);
         let pos = BlockPos::new(5, 64, -7);

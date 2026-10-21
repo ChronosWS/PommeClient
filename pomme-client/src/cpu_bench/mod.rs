@@ -16,7 +16,6 @@ use crate::dirs::DataDirs;
 /// Runs every bench whose id contains `filter` (all when `None`); returns the
 /// process exit code.
 pub fn run(version: &str, dirs: &DataDirs, filter: Option<&str>) -> i32 {
-    // Bench startup precedes main's protocol selection; warm the passed version.
     let protocol = pomme_protocol::ProtocolVersion::from_name(version)
         .map(|v| v.protocol)
         .unwrap_or_else(|| {
@@ -26,7 +25,7 @@ pub fn run(version: &str, dirs: &DataDirs, filter: Option<&str>) -> i32 {
             );
             pomme_protocol::version::NATIVE.protocol
         });
-    let _ = crate::world::block::BlockStateTable::for_protocol(protocol);
+    let block_state_table = crate::world::block::BlockStateTable::for_protocol(protocol);
 
     let mut c = Criterion::default();
     if let Some(filter) = filter {
@@ -41,7 +40,7 @@ pub fn run(version: &str, dirs: &DataDirs, filter: Option<&str>) -> i32 {
             .any(|group| group.contains(f) || f.contains(group))
     });
     if needs_assets {
-        let assets = match fixtures::Assets::load(version, dirs) {
+        let assets = match fixtures::Assets::load(version, dirs, block_state_table) {
             Ok(assets) => assets,
             Err(e) => {
                 eprintln!("cpu-bench: {e}");
@@ -51,7 +50,7 @@ pub fn run(version: &str, dirs: &DataDirs, filter: Option<&str>) -> i32 {
         mesh::bench(&mut c, &assets);
         occlusion::bench_sections(&mut c, &assets);
     }
-    chunk_decode::bench(&mut c);
+    chunk_decode::bench(&mut c, block_state_table);
     fade::bench(&mut c);
     occlusion::bench_walk(&mut c);
 

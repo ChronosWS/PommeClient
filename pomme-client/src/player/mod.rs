@@ -800,14 +800,6 @@ impl LocalPlayer {
 mod tests {
     use super::*;
 
-    fn test_blocks() -> BlockStateTable {
-        BlockStateTable::for_protocol(
-            pomme_protocol::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        )
-    }
-
     #[test]
     fn local_player_is_removed_at_vanilla_death_tick() {
         let mut player = LocalPlayer::new();
@@ -1091,19 +1083,19 @@ mod tests {
     #[test]
     fn shallow_water_contact_uses_actual_fluid_surface_height() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let shallow = test_blocks().find_state("water", &[("level", "7")]);
-        chunks.set_block_state(8, 64, 8, shallow, test_blocks());
+        let shallow = BlockStateTable::native().find_state("water", &[("level", "7")]);
+        chunks.set_block_state(8, 64, 8, shallow, BlockStateTable::native());
 
         let mut player = LocalPlayer::new();
         player.position = Position::new(8.5, 64.2, 8.5);
-        player.update_water_state(&chunks, test_blocks(), false);
+        player.update_water_state(&chunks, BlockStateTable::native(), false);
         assert!(
             !player.in_water,
             "level-7 water is only 1/9 block high; feet above its surface are not in water"
         );
 
         player.position = Position::new(8.5, 64.05, 8.5);
-        player.update_water_state(&chunks, test_blocks(), false);
+        player.update_water_state(&chunks, BlockStateTable::native(), false);
         assert!(
             player.in_water,
             "feet below the level-7 surface must still register water contact"
@@ -1113,23 +1105,23 @@ mod tests {
     #[test]
     fn passenger_state_clears_shared_swimming_flag() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let source = test_blocks().find_state("water", &[("level", "0")]);
+        let source = BlockStateTable::native().find_state("water", &[("level", "0")]);
         for y in 64..=66 {
-            chunks.set_block_state(8, y, 8, source, test_blocks());
+            chunks.set_block_state(8, y, 8, source, BlockStateTable::native());
         }
 
         let mut unmounted = LocalPlayer::new();
         unmounted.position = Position::new(8.5, 64.0, 8.5);
         unmounted.sprinting = true;
         unmounted.swimming = true;
-        unmounted.update_water_state(&chunks, test_blocks(), false);
+        unmounted.update_water_state(&chunks, BlockStateTable::native(), false);
         assert!(unmounted.swimming);
 
         let mut mounted = LocalPlayer::new();
         mounted.position = Position::new(8.5, 64.0, 8.5);
         mounted.sprinting = true;
         mounted.swimming = true;
-        mounted.update_water_state(&chunks, test_blocks(), true);
+        mounted.update_water_state(&chunks, BlockStateTable::native(), true);
         assert!(
             !mounted.swimming,
             "Entity.updateSwimming clears the shared swimming flag while passenger"
@@ -1139,18 +1131,18 @@ mod tests {
     #[test]
     fn water_flow_is_zero_across_equal_source_levels() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let source = test_blocks().find_state("water", &[("level", "0")]);
+        let source = BlockStateTable::native().find_state("water", &[("level", "0")]);
         for (x, z) in [(8, 8), (8, 7), (9, 8), (8, 9), (7, 8)] {
-            chunks.set_block_state(x, 64, z, source, test_blocks());
+            chunks.set_block_state(x, 64, z, source, BlockStateTable::native());
         }
 
         let flow = water_flow_at(
             &chunks,
-            test_blocks(),
+            BlockStateTable::native(),
             8,
             64,
             8,
-            test_blocks().block_state_data(source).fluid(),
+            BlockStateTable::native().block_state_data(source).fluid(),
         );
         assert_eq!(flow, glam::DVec3::ZERO);
     }
@@ -1158,21 +1150,21 @@ mod tests {
     #[test]
     fn water_flow_points_toward_lower_neighbor() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let source = test_blocks().find_state("water", &[("level", "0")]);
-        let lower = test_blocks().find_state("water", &[("level", "1")]);
-        chunks.set_block_state(8, 64, 8, source, test_blocks());
-        chunks.set_block_state(8, 64, 7, source, test_blocks());
-        chunks.set_block_state(9, 64, 8, lower, test_blocks());
-        chunks.set_block_state(8, 64, 9, source, test_blocks());
-        chunks.set_block_state(7, 64, 8, source, test_blocks());
+        let source = BlockStateTable::native().find_state("water", &[("level", "0")]);
+        let lower = BlockStateTable::native().find_state("water", &[("level", "1")]);
+        chunks.set_block_state(8, 64, 8, source, BlockStateTable::native());
+        chunks.set_block_state(8, 64, 7, source, BlockStateTable::native());
+        chunks.set_block_state(9, 64, 8, lower, BlockStateTable::native());
+        chunks.set_block_state(8, 64, 9, source, BlockStateTable::native());
+        chunks.set_block_state(7, 64, 8, source, BlockStateTable::native());
 
         let flow = water_flow_at(
             &chunks,
-            test_blocks(),
+            BlockStateTable::native(),
             8,
             64,
             8,
-            test_blocks().block_state_data(source).fluid(),
+            BlockStateTable::native().block_state_data(source).fluid(),
         );
         assert_eq!(flow, glam::DVec3::X);
     }
@@ -1180,18 +1172,18 @@ mod tests {
     #[test]
     fn falling_water_next_to_sturdy_wall_pulls_downward() {
         let chunks = crate::world::chunk::ChunkStore::with_origin_chunk();
-        let falling = test_blocks().find_state("water", &[("level", "8")]);
-        let stone = test_blocks().find_state("stone", &[]);
-        chunks.set_block_state(8, 64, 8, falling, test_blocks());
-        chunks.set_block_state(9, 64, 8, stone, test_blocks());
+        let falling = BlockStateTable::native().find_state("water", &[("level", "8")]);
+        let stone = BlockStateTable::native().find_state("stone", &[]);
+        chunks.set_block_state(8, 64, 8, falling, BlockStateTable::native());
+        chunks.set_block_state(9, 64, 8, stone, BlockStateTable::native());
 
         let flow = water_flow_at(
             &chunks,
-            test_blocks(),
+            BlockStateTable::native(),
             8,
             64,
             8,
-            test_blocks().block_state_data(falling).fluid(),
+            BlockStateTable::native().block_state_data(falling).fluid(),
         );
         assert_eq!(flow, glam::DVec3::NEG_Y);
     }

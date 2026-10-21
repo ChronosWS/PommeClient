@@ -108,6 +108,16 @@ impl BlockRegistry {
         }
     }
 
+    /// The native version's registry with no render assets.
+    #[cfg(test)]
+    pub(crate) fn native() -> Self {
+        Self::new(
+            Rc::new(BlockDefinitions::new()),
+            Arc::new(BlockRenderAssets::default()),
+            pomme_protocol::version::NATIVE.protocol,
+        )
+    }
+
     /// Keep wire identity even when two protocols share a canonical table.
     pub(crate) fn select_protocol(&mut self, protocol: i32) {
         if self.protocol != protocol {
@@ -191,17 +201,11 @@ impl BlockBindings {
         let table = block_state_table.table();
         let mut state_definitions = Vec::with_capacity(table.len());
         for states in table.chunk_by(|a, b| a.id == b.id) {
+            // Sorted by name in `BlockDefinitions::new`; a miss is the default.
             let index = definitions
                 .definitions
-                .iter()
-                .position(|(name, _)| *name == states[0].id)
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        "no behavior entry for block '{}', using defaults",
-                        states[0].id
-                    );
-                    0
-                });
+                .binary_search_by_key(&states[0].id, |(name, _)| *name)
+                .unwrap_or(0);
             state_definitions.extend(std::iter::repeat_n(index, states.len()));
         }
         Self { state_definitions }

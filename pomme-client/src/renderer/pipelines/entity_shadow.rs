@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn shadows_land_only_on_full_visible_blocks() {
-        let blocks = BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol);
+        let blocks = BlockStateTable::native();
         for (name, props, expected) in [
             ("stone", &[][..], true),
             ("grass_block", &[("snowy", "false")][..], true),

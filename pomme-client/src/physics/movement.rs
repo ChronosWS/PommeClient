@@ -1521,22 +1521,11 @@ mod tests {
     use crate::player::{CROUCH_EYE_HEIGHT, STANDING_EYE_HEIGHT};
     use crate::world::block_entity_anim::BlockEntityAnimStore;
 
-    fn test_blocks() -> BlockStateTable {
-        BlockStateTable::for_protocol(
-            pomme_protocol::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        )
-    }
-
     fn test_world<'a>(
         chunks: &'a ChunkStore,
         anim: &'a BlockEntityAnimStore,
     ) -> CollisionWorld<'a> {
-        CollisionWorld {
-            block_entity_anim: Some(anim),
-            ..CollisionWorld::new(chunks, test_blocks())
-        }
+        CollisionWorld::with_block_entities(chunks, BlockStateTable::native(), anim)
     }
 
     #[test]
@@ -1600,66 +1589,69 @@ mod tests {
             8,
             64,
             8,
-            test_blocks().find_state("oak_trapdoor", &trapdoor),
-            test_blocks(),
+            BlockStateTable::native().find_state("oak_trapdoor", &trapdoor),
+            BlockStateTable::native(),
         );
         chunks.set_block_state(
             8,
             63,
             8,
-            test_blocks().find_state("ladder", &[("facing", "north")]),
-            test_blocks(),
+            BlockStateTable::native().find_state("ladder", &[("facing", "north")]),
+            BlockStateTable::native(),
         );
         chunks
     }
 
     #[test]
     fn climbable_membership_comes_from_synchronized_tags() {
-        let tags =
-            crate::world::block::block_tags_for_test(test_blocks(), &[("climbable", &["stone"])]);
-        let stone = test_blocks().find_state("stone", &[]);
-        let ladder = test_blocks().find_state("ladder", &[("facing", "north")]);
+        let tags = crate::world::block::block_tags_for_test(
+            BlockStateTable::native(),
+            &[("climbable", &["stone"])],
+        );
+        let stone = BlockStateTable::native().find_state("stone", &[]);
+        let ladder = BlockStateTable::native().find_state("ladder", &[("facing", "north")]);
 
         assert!(is_climbable_state(
-            test_blocks().block_state_data(stone),
+            BlockStateTable::native().block_state_data(stone),
             &tags
         ));
         assert!(!is_climbable_state(
-            test_blocks().block_state_data(ladder),
+            BlockStateTable::native().block_state_data(ladder),
             &tags
         ));
     }
 
     #[test]
     fn open_matching_trapdoor_continues_ladder() {
-        let north_ladder = test_blocks().find_state("ladder", &[("facing", "north")]);
-        let south_ladder = test_blocks().find_state("ladder", &[("facing", "south")]);
-        let open_north =
-            test_blocks().find_state("oak_trapdoor", &[("open", "true"), ("facing", "north")]);
-        let open_south =
-            test_blocks().find_state("oak_trapdoor", &[("open", "true"), ("facing", "south")]);
-        let closed_north =
-            test_blocks().find_state("oak_trapdoor", &[("open", "false"), ("facing", "north")]);
+        let north_ladder = BlockStateTable::native().find_state("ladder", &[("facing", "north")]);
+        let south_ladder = BlockStateTable::native().find_state("ladder", &[("facing", "south")]);
+        let open_north = BlockStateTable::native()
+            .find_state("oak_trapdoor", &[("open", "true"), ("facing", "north")]);
+        let open_south = BlockStateTable::native()
+            .find_state("oak_trapdoor", &[("open", "true"), ("facing", "south")]);
+        let closed_north = BlockStateTable::native()
+            .find_state("oak_trapdoor", &[("open", "false"), ("facing", "north")]);
 
         assert!(trapdoor_usable_as_ladder(
-            test_blocks().block_state_data(open_north),
-            test_blocks().block_state_data(north_ladder)
+            BlockStateTable::native().block_state_data(open_north),
+            BlockStateTable::native().block_state_data(north_ladder)
         ));
         assert!(!trapdoor_usable_as_ladder(
-            test_blocks().block_state_data(open_north),
-            test_blocks().block_state_data(south_ladder)
+            BlockStateTable::native().block_state_data(open_north),
+            BlockStateTable::native().block_state_data(south_ladder)
         ));
         assert!(!trapdoor_usable_as_ladder(
-            test_blocks().block_state_data(open_south),
-            test_blocks().block_state_data(north_ladder)
+            BlockStateTable::native().block_state_data(open_south),
+            BlockStateTable::native().block_state_data(north_ladder)
         ));
         assert!(!trapdoor_usable_as_ladder(
-            test_blocks().block_state_data(closed_north),
-            test_blocks().block_state_data(north_ladder)
+            BlockStateTable::native().block_state_data(closed_north),
+            BlockStateTable::native().block_state_data(north_ladder)
         ));
         assert!(!trapdoor_usable_as_ladder(
-            test_blocks().block_state_data(open_north),
-            test_blocks().block_state_data(test_blocks().find_state("stone", &[]))
+            BlockStateTable::native().block_state_data(open_north),
+            BlockStateTable::native()
+                .block_state_data(BlockStateTable::native().find_state("stone", &[]))
         ));
     }
 
@@ -1674,7 +1666,7 @@ mod tests {
 
         handle_on_climbable(
             &mut player,
-            CollisionWorld::new(&chunks, test_blocks()),
+            CollisionWorld::new(&chunks, BlockStateTable::native()),
             &BlockTags::default(),
             false,
         );
@@ -1686,7 +1678,7 @@ mod tests {
         player.velocity.y = -0.1;
         handle_on_climbable(
             &mut player,
-            CollisionWorld::new(&chunks, test_blocks()),
+            CollisionWorld::new(&chunks, BlockStateTable::native()),
             &BlockTags::default(),
             true,
         );
@@ -1695,13 +1687,14 @@ mod tests {
 
     #[test]
     fn scaffolding_does_not_suppress_downward_climbable_motion() {
-        let scaffolding = test_blocks().find_state("scaffolding", &[("bottom", "false")]);
+        let scaffolding =
+            BlockStateTable::native().find_state("scaffolding", &[("bottom", "false")]);
         let mut player = LocalPlayer::new();
         player.velocity.y = -0.4;
 
         apply_climbable_velocity(
             &mut player,
-            test_blocks().block_state_data(scaffolding),
+            BlockStateTable::native().block_state_data(scaffolding),
             true,
         );
 
@@ -1716,18 +1709,36 @@ mod tests {
 
         player.flying = true;
         assert!(
-            on_climbable_state(&player, &chunks, test_blocks(), &BlockTags::default()).is_none()
+            on_climbable_state(
+                &player,
+                &chunks,
+                BlockStateTable::native(),
+                &BlockTags::default()
+            )
+            .is_none()
         );
 
         player.flying = false;
         player.game_mode = 3;
         assert!(
-            on_climbable_state(&player, &chunks, test_blocks(), &BlockTags::default()).is_none()
+            on_climbable_state(
+                &player,
+                &chunks,
+                BlockStateTable::native(),
+                &BlockTags::default()
+            )
+            .is_none()
         );
 
         player.game_mode = 0;
         assert!(
-            on_climbable_state(&player, &chunks, test_blocks(), &BlockTags::default()).is_some()
+            on_climbable_state(
+                &player,
+                &chunks,
+                BlockStateTable::native(),
+                &BlockTags::default()
+            )
+            .is_some()
         );
     }
 
@@ -1738,8 +1749,8 @@ mod tests {
             9,
             64,
             8,
-            test_blocks().find_state("stone", &[]),
-            test_blocks(),
+            BlockStateTable::native().find_state("stone", &[]),
+            BlockStateTable::native(),
         );
 
         let mut player = LocalPlayer::new();
@@ -1751,7 +1762,7 @@ mod tests {
         tick_land(
             &mut player,
             &neutral,
-            CollisionWorld::new(&chunks, test_blocks()),
+            CollisionWorld::new(&chunks, BlockStateTable::native()),
             &BlockTags::default(),
             0.0,
             0.0,
@@ -1772,8 +1783,8 @@ mod tests {
             9,
             64,
             8,
-            test_blocks().find_state("stone", &[]),
-            test_blocks(),
+            BlockStateTable::native().find_state("stone", &[]),
+            BlockStateTable::native(),
         );
 
         let mut player = LocalPlayer::new();
@@ -1784,7 +1795,7 @@ mod tests {
         tick_water(
             &mut player,
             &neutral,
-            CollisionWorld::new(&chunks, test_blocks()),
+            CollisionWorld::new(&chunks, BlockStateTable::native()),
             &BlockTags::default(),
             0.0,
             0.0,
@@ -1956,7 +1967,7 @@ mod tests {
 
         update_movement_crouching_state(
             &mut player,
-            CollisionWorld::new(&chunks, test_blocks()),
+            CollisionWorld::new(&chunks, BlockStateTable::native()),
             true,
         );
         assert!(
@@ -1965,14 +1976,14 @@ mod tests {
         );
 
         // One block of headroom: swimming fits, crouching doesn't.
-        let stone = test_blocks().find_state("stone", &[]);
-        chunks.set_block_state(8, 65, 8, stone, test_blocks());
+        let stone = BlockStateTable::native().find_state("stone", &[]);
+        chunks.set_block_state(8, 65, 8, stone, BlockStateTable::native());
         let mut input = InputState::released();
         input.set_key_pressed_for_test(KeyCode::ShiftLeft, true);
         update_player_pose(
             &mut player,
             &input,
-            CollisionWorld::new(&chunks, test_blocks()),
+            CollisionWorld::new(&chunks, BlockStateTable::native()),
             true,
         );
         assert!(player.crouching);
@@ -1983,7 +1994,7 @@ mod tests {
         update_player_pose(
             &mut player,
             &input,
-            CollisionWorld::new(&chunks, test_blocks()),
+            CollisionWorld::new(&chunks, BlockStateTable::native()),
             false,
         );
         assert!(
@@ -2018,11 +2029,11 @@ mod tests {
     #[test]
     fn crouch_swim_cancels_near_point_zero_four_vertical_speed_before_pitch_steering() {
         let chunks = ChunkStore::with_origin_chunk();
-        let source = test_blocks().find_state("water", &[("level", "0")]);
+        let source = BlockStateTable::native().find_state("water", &[("level", "0")]);
         for x in 7..=9 {
             for y in 64..=66 {
                 for z in 7..=9 {
-                    chunks.set_block_state(x, y, z, source, test_blocks());
+                    chunks.set_block_state(x, y, z, source, BlockStateTable::native());
                 }
             }
         }
@@ -2068,16 +2079,16 @@ mod tests {
     #[test]
     fn falling_water_subthreshold_horizontal_current_is_cleaned_before_travel() {
         let chunks = ChunkStore::with_origin_chunk();
-        let falling = test_blocks().find_state("water", &[("level", "8")]);
-        let low = test_blocks().find_state("water", &[("level", "7")]);
-        let stone = test_blocks().find_state("stone", &[]);
-        chunks.set_block_state(8, 64, 8, falling, test_blocks());
-        chunks.set_block_state(9, 64, 8, low, test_blocks());
-        chunks.set_block_state(8, 64, 7, stone, test_blocks());
+        let falling = BlockStateTable::native().find_state("water", &[("level", "8")]);
+        let low = BlockStateTable::native().find_state("water", &[("level", "7")]);
+        let stone = BlockStateTable::native().find_state("stone", &[]);
+        chunks.set_block_state(8, 64, 8, falling, BlockStateTable::native());
+        chunks.set_block_state(9, 64, 8, low, BlockStateTable::native());
+        chunks.set_block_state(8, 64, 7, stone, BlockStateTable::native());
 
         let mut player = LocalPlayer::new();
         player.position = dvec3(8.5, 64.0, 8.5).into();
-        player.refresh_water_interaction(&chunks, test_blocks());
+        player.refresh_water_interaction(&chunks, BlockStateTable::native());
 
         let expected_horizontal = 0.014_f64 / 37.0_f64.sqrt();
         assert!(
@@ -2132,19 +2143,19 @@ mod tests {
     fn dry_move_into_partial_flowing_water_applies_current_before_ground_friction() {
         let wet = ChunkStore::with_origin_chunk();
         let dry = ChunkStore::with_origin_chunk();
-        let stone = test_blocks().find_state("stone", &[]);
+        let stone = BlockStateTable::native().find_state("stone", &[]);
         for x in 6..=10 {
             for z in 7..=9 {
-                wet.set_block_state(x, 63, z, stone, test_blocks());
-                dry.set_block_state(x, 63, z, stone, test_blocks());
+                wet.set_block_state(x, 63, z, stone, BlockStateTable::native());
+                dry.set_block_state(x, 63, z, stone, BlockStateTable::native());
             }
         }
 
         // A source to the east makes this level-3 cell flow west.
-        let partial = test_blocks().find_state("water", &[("level", "3")]);
-        let source = test_blocks().find_state("water", &[("level", "0")]);
-        wet.set_block_state(8, 64, 8, partial, test_blocks());
-        wet.set_block_state(9, 64, 8, source, test_blocks());
+        let partial = BlockStateTable::native().find_state("water", &[("level", "3")]);
+        let source = BlockStateTable::native().find_state("water", &[("level", "0")]);
+        wet.set_block_state(8, 64, 8, partial, BlockStateTable::native());
+        wet.set_block_state(9, 64, 8, source, BlockStateTable::native());
 
         let mut wet_player = LocalPlayer::new();
         wet_player.position = dvec3(7.65, 64.0, 8.5).into();
@@ -2159,7 +2170,7 @@ mod tests {
         tick_land(
             &mut wet_player,
             &neutral,
-            CollisionWorld::new(&wet, test_blocks()),
+            CollisionWorld::new(&wet, BlockStateTable::native()),
             &BlockTags::default(),
             0.0,
             0.0,
@@ -2169,7 +2180,7 @@ mod tests {
         tick_land(
             &mut dry_player,
             &neutral,
-            CollisionWorld::new(&dry, test_blocks()),
+            CollisionWorld::new(&dry, BlockStateTable::native()),
             &BlockTags::default(),
             0.0,
             0.0,
@@ -2193,22 +2204,27 @@ mod tests {
     #[test]
     fn jump_out_of_fluid_rejects_collision_free_boxes_that_still_contain_liquid() {
         let chunks = ChunkStore::with_origin_chunk();
-        let water = test_blocks().find_state("water", &[("level", "0")]);
-        chunks.set_block_state(8, 64, 8, water, test_blocks());
+        let water = BlockStateTable::native().find_state("water", &[("level", "0")]);
+        chunks.set_block_state(8, 64, 8, water, BlockStateTable::native());
 
         let wet_box = Aabb::new(dvec3(8.2, 64.2, 8.2), dvec3(8.8, 65.8, 8.8));
         assert!(
-            !test_blocks().block_state_data(water).has_collision(),
+            !BlockStateTable::native()
+                .block_state_data(water)
+                .has_collision(),
             "water has no collision shape"
         );
         assert!(
-            contains_any_liquid(CollisionWorld::new(&chunks, test_blocks()), &wet_box),
+            contains_any_liquid(
+                CollisionWorld::new(&chunks, BlockStateTable::native()),
+                &wet_box
+            ),
             "vanilla Entity.isFree must still reject a collision-free box containing fluid"
         );
 
         let dry_box = wet_box.offset(dvec3(2.0, 0.0, 0.0));
         assert!(!contains_any_liquid(
-            CollisionWorld::new(&chunks, test_blocks()),
+            CollisionWorld::new(&chunks, BlockStateTable::native()),
             &dry_box
         ));
     }
@@ -2517,8 +2533,8 @@ mod tests {
             8,
             63,
             8,
-            test_blocks().find_state("stone", &[]),
-            test_blocks(),
+            BlockStateTable::native().find_state("stone", &[]),
+            BlockStateTable::native(),
         );
         let mut player = LocalPlayer::new();
         player.position = dvec3(8.5, 64.0, 8.5).into();
@@ -2551,8 +2567,8 @@ mod tests {
             8,
             64,
             8,
-            test_blocks().find_state("water", &[]),
-            test_blocks(),
+            BlockStateTable::native().find_state("water", &[]),
+            BlockStateTable::native(),
         );
         let mut player = LocalPlayer::new();
         player.position = dvec3(8.5, 64.1, 8.5).into();
@@ -2580,18 +2596,24 @@ mod tests {
             8,
             64,
             8,
-            test_blocks().find_state("soul_sand", &[]),
-            test_blocks(),
+            BlockStateTable::native().find_state("soul_sand", &[]),
+            BlockStateTable::native(),
         );
         let mut player = LocalPlayer::new();
         player.position = dvec3(8.5, 65.0, 8.5).into();
         assert_eq!(
-            block_speed_factor(&player, CollisionWorld::new(&chunks, test_blocks())),
+            block_speed_factor(
+                &player,
+                CollisionWorld::new(&chunks, BlockStateTable::native())
+            ),
             0.4
         );
         player.flying = true;
         assert_eq!(
-            block_speed_factor(&player, CollisionWorld::new(&chunks, test_blocks())),
+            block_speed_factor(
+                &player,
+                CollisionWorld::new(&chunks, BlockStateTable::native())
+            ),
             1.0
         );
     }
@@ -2635,7 +2657,7 @@ mod tests {
         let chunks = ChunkStore::new(2);
         let anim = BlockEntityAnimStore::default();
         let pos = BlockPos::new(8, 64, 8);
-        let stone = test_blocks().find_state("stone", &[]);
+        let stone = BlockStateTable::native().find_state("stone", &[]);
         let mut piston = MovingPiston::new(stone, Direction::Up, true, false);
         piston.progress = 0.5;
         let mut player = LocalPlayer::new();

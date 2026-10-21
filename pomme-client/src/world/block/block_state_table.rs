@@ -29,6 +29,11 @@ impl BlockStateTable {
         Self { slot, table }
     }
 
+    #[cfg(test)]
+    pub(crate) fn native() -> Self {
+        Self::for_protocol(pomme_protocol::version::NATIVE.protocol)
+    }
+
     pub(crate) fn table_slot(self) -> usize {
         self.slot
     }

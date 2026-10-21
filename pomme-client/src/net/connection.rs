@@ -334,6 +334,8 @@ async fn negotiate_wire_version(
 
 /// Publish the adopted wire identity before either transport starts login.
 fn select_block_protocol(event_tx: &Sender<NetworkEvent>, protocol: i32) {
+    // Builds the table here, so the game thread only switches to it.
+    let _ = crate::world::block::BlockStateTable::for_protocol(protocol);
     send_ordered(event_tx, NetworkEvent::ProtocolSelected { protocol });
 }
 
@@ -1018,7 +1020,7 @@ async fn game_loop(
                     // acknowledgement.
                     // TODO: chat events still in flight to the game thread
                     // miss this ack; the next login resets the tracker anyway.
-                    let _ = event_tx.try_send(NetworkEvent::Reconfiguring);
+                    send_ordered(event_tx, NetworkEvent::Reconfiguring);
                     while let Ok(out) = outbound_rx.try_recv() {
                         if let Some(frame) =
                             outbound_frame(out, translation, &mut chat, &shared_tree)?
@@ -1293,6 +1295,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A remote join selects the block protocol before it opens the
+    /// connection, so configuration-phase tags already use that table. The
+    /// port is closed, so a selection after connecting never happens.
+    #[tokio::test]
+    async fn remote_join_selects_the_protocol_before_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let (event_tx, event_rx) = crossbeam_channel::bounded(4096);
+        let (packet_tx, packet_rx) = mpsc::unbounded_channel();
+        let joined = connect_to_server(
+            ConnectArgs {
+                transport: Transport::Remote {
+                    server,
+                    protocol: Some(NATIVE.protocol),
+                },
+                username: "Steve".to_owned(),
+                uuid: uuid::Uuid::nil(),
+                access_token: None,
+                view_distance: 8,
+                chat_options: crate::ui::chat::ChatOptions::default(),
+            },
+            event_tx,
+            packet_tx,
+            packet_rx,
+        )
+        .await;
+
+        assert!(joined.is_err());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(NetworkEvent::ProtocolSelected { protocol }) if protocol == NATIVE.protocol
+        ));
     }
 
     /// The whole join over an in-memory pipe, against a peer that sends only

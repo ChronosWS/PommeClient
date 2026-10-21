@@ -33,6 +33,18 @@ impl<'a> CollisionWorld<'a> {
             piston_noclip: None,
         }
     }
+
+    /// With the block entities shulker lids and moving pistons collide by.
+    pub fn with_block_entities(
+        chunks: &'a ChunkStore,
+        block_state_table: BlockStateTable,
+        block_entity_anim: &'a BlockEntityAnimStore,
+    ) -> Self {
+        Self {
+            block_entity_anim: Some(block_entity_anim),
+            ..Self::new(chunks, block_state_table)
+        }
+    }
 }
 
 impl CollisionWorld<'_> {
@@ -377,14 +389,6 @@ mod tests {
     use super::*;
     use crate::player::PLAYER_HALF_WIDTH;
 
-    fn test_blocks() -> BlockStateTable {
-        BlockStateTable::for_protocol(
-            pomme_protocol::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        )
-    }
-
     /// Boxes near a player moving down from `feet`, with `state` at the
     /// origin and air elsewhere.
     fn boxes_near(state: BlockState, feet: DVec3, ctx: &CollisionContext) -> Vec<Aabb> {
@@ -394,7 +398,7 @@ mod tests {
         );
         let mut aabbs = Vec::new();
         for_each_block_collision(
-            test_blocks(),
+            BlockStateTable::native(),
             &region,
             ctx,
             |x, y, z| {
@@ -412,7 +416,7 @@ mod tests {
 
     #[test]
     fn fence_top_is_found_from_the_cell_above() {
-        let fence = test_blocks().find_state("oak_fence", &[]);
+        let fence = BlockStateTable::native().find_state("oak_fence", &[]);
         let feet = dvec3(0.5, 1.55, 0.5);
         let ctx = CollisionContext::entity(feet.y, false, false);
         let boxes = boxes_near(fence, feet, &ctx);
@@ -421,8 +425,8 @@ mod tests {
 
     #[test]
     fn scaffolding_is_solid_only_from_above() {
-        let scaffolding =
-            test_blocks().find_state("scaffolding", &[("bottom", "false"), ("distance", "0")]);
+        let scaffolding = BlockStateTable::native()
+            .find_state("scaffolding", &[("bottom", "false"), ("distance", "0")]);
         let top = dvec3(0.5, 1.0, 0.5);
         let inside = dvec3(0.5, 0.5, 0.5);
         let standing = CollisionContext::entity(top.y, false, false);
@@ -439,17 +443,20 @@ mod tests {
 
     #[test]
     fn unstable_scaffolding_keeps_its_bottom_plate() {
-        let scaffolding =
-            test_blocks().find_state("scaffolding", &[("bottom", "true"), ("distance", "3")]);
+        let scaffolding = BlockStateTable::native()
+            .find_state("scaffolding", &[("bottom", "true"), ("distance", "3")]);
         let ctx = CollisionContext::entity(0.5, false, false);
-        let boxes =
-            block_shape::collision_shape(test_blocks().block_state_data(scaffolding), 0, &ctx);
+        let boxes = block_shape::collision_shape(
+            BlockStateTable::native().block_state_data(scaffolding),
+            0,
+            &ctx,
+        );
         assert_eq!(boxes, Some(&[[0.0, 0.0, 0.0, 1.0, 2.0 / 16.0, 1.0]][..]));
     }
 
     #[test]
     fn powder_snow_holds_only_leather_boots() {
-        let snow = test_blocks().find_state("powder_snow", &[]);
+        let snow = BlockStateTable::native().find_state("powder_snow", &[]);
         let feet = dvec3(0.5, 1.0, 0.5);
         let boots = CollisionContext::entity(feet.y, false, true);
         assert!(!boxes_near(snow, feet, &boots).is_empty());
@@ -460,16 +467,24 @@ mod tests {
 
     #[test]
     fn powder_snow_catches_a_long_fall() {
-        let snow = test_blocks().find_state("powder_snow", &[]);
+        let snow = BlockStateTable::native().find_state("powder_snow", &[]);
         let falling = CollisionContext::entity(0.5, true, false).with_fall_distance(2.500_001);
-        let boxes = block_shape::collision_shape(test_blocks().block_state_data(snow), 0, &falling);
+        let boxes = block_shape::collision_shape(
+            BlockStateTable::native().block_state_data(snow),
+            0,
+            &falling,
+        );
         assert_eq!(
             boxes,
             Some(&[[0.0, 0.0, 0.0, 1.0, 0.9_f32 as f64, 1.0]][..])
         );
         let short = CollisionContext::entity(0.5, true, false).with_fall_distance(2.5);
         assert_eq!(
-            block_shape::collision_shape(test_blocks().block_state_data(snow), 0, &short),
+            block_shape::collision_shape(
+                BlockStateTable::native().block_state_data(snow),
+                0,
+                &short
+            ),
             Some(&[][..])
         );
     }
@@ -478,37 +493,49 @@ mod tests {
     fn explicit_collision_overrides_survive_no_collision_registration() {
         let ctx = CollisionContext::entity(0.0, false, false);
 
-        let pitcher = test_blocks().find_state("pitcher_crop", &[("age", "0"), ("half", "lower")]);
-        assert!(!test_blocks().block_state_data(pitcher).has_collision());
-        let pitcher_shape =
-            block_shape::collision_shape(test_blocks().block_state_data(pitcher), 0, &ctx).unwrap();
+        let pitcher = BlockStateTable::native()
+            .find_state("pitcher_crop", &[("age", "0"), ("half", "lower")]);
+        assert!(
+            !BlockStateTable::native()
+                .block_state_data(pitcher)
+                .has_collision()
+        );
+        let pitcher_shape = block_shape::collision_shape(
+            BlockStateTable::native().block_state_data(pitcher),
+            0,
+            &ctx,
+        )
+        .unwrap();
         assert!(!pitcher_shape.is_empty());
 
-        let wall_sign = test_blocks().find_state(
+        let wall_sign = BlockStateTable::native().find_state(
             "oak_wall_hanging_sign",
             &[("facing", "north"), ("waterlogged", "false")],
         );
-        assert!(!test_blocks().block_state_data(wall_sign).has_collision());
+        assert!(
+            !BlockStateTable::native()
+                .block_state_data(wall_sign)
+                .has_collision()
+        );
         assert_eq!(
-            block_shape::collision_shape(test_blocks().block_state_data(wall_sign), 0, &ctx),
+            block_shape::collision_shape(
+                BlockStateTable::native().block_state_data(wall_sign),
+                0,
+                &ctx
+            ),
             Some(&[[0.0, 0.875, 0.375, 1.0, 1.0, 0.625]][..])
         );
     }
 
     #[test]
     fn shulker_collision_uses_current_block_entity_open_progress() {
-        let state = test_blocks().find_state("shulker_box", &[("facing", "east")]);
+        let state = BlockStateTable::native().find_state("shulker_box", &[("facing", "east")]);
         let pos = BlockPos::new(10, 64, -3);
         let mut anim = BlockEntityAnimStore::default();
         anim.set_open_count(pos, 1);
         anim.tick();
         let chunks = ChunkStore::new(2);
-        let world = CollisionWorld {
-            chunks: &chunks,
-            block_state_table: test_blocks(),
-            block_entity_anim: Some(&anim),
-            piston_noclip: None,
-        };
+        let world = CollisionWorld::with_block_entities(&chunks, BlockStateTable::native(), &anim);
 
         let aabb = world.shulker_lid(state, pos).unwrap();
         assert_eq!(aabb.min, dvec3(10.0, 64.0, -3.0));
@@ -517,7 +544,7 @@ mod tests {
         assert_eq!(aabb.max.y, 65.0);
         assert_eq!(aabb.max.z, -2.0);
         assert!(
-            CollisionWorld::new(&chunks, test_blocks())
+            CollisionWorld::new(&chunks, BlockStateTable::native())
                 .shulker_lid(state, pos)
                 .is_none()
         );
@@ -555,20 +582,16 @@ mod tests {
         use crate::world::block::model::Direction;
         use crate::world::piston::MovingPiston;
         let pos = BlockPos::new(4, 64, 4);
-        let moving =
-            test_blocks().find_state("moving_piston", &[("facing", "east"), ("type", "normal")]);
-        let stone = test_blocks().find_state("stone", &[]);
+        let moving = BlockStateTable::native()
+            .find_state("moving_piston", &[("facing", "east"), ("type", "normal")]);
+        let stone = BlockStateTable::native().find_state("stone", &[]);
         let mut anim = BlockEntityAnimStore::default();
         let mut piston = MovingPiston::new(stone, Direction::East, true, false);
         piston.progress = 0.5;
         anim.pistons.insert(pos, piston);
         let chunks = ChunkStore::new(2);
-        let mut world = CollisionWorld {
-            chunks: &chunks,
-            block_state_table: test_blocks(),
-            block_entity_anim: Some(&anim),
-            piston_noclip: None,
-        };
+        let mut world =
+            CollisionWorld::with_block_entities(&chunks, BlockStateTable::native(), &anim);
         let boxes = |world: &CollisionWorld| {
             let mut boxes = Vec::new();
             assert!(world.special_boxes(moving, pos, &mut boxes));
@@ -584,7 +607,8 @@ mod tests {
         world.piston_noclip = None;
 
         // A retracting piston: its extended base, and the head on its way in.
-        let base = test_blocks().find_state("piston", &[("facing", "east"), ("extended", "false")]);
+        let base = BlockStateTable::native()
+            .find_state("piston", &[("facing", "east"), ("extended", "false")]);
         let mut retracting = MovingPiston::new(base, Direction::East, false, true);
         retracting.progress = 0.5;
         let mut retract_anim = BlockEntityAnimStore::default();

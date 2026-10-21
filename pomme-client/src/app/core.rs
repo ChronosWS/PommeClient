@@ -282,13 +282,11 @@ pub(crate) fn tick_moving_pistons(core: &AppCore, game: &mut GameState) {
         if game.position_set && game.riding_vehicle_id.is_none() {
             // TODO: vanilla's client also moves other entities in the way;
             // the server's position updates do it here.
-            let world = crate::physics::collision::CollisionWorld {
-                block_entity_anim: Some(&game.block_entity_anim),
-                ..crate::physics::collision::CollisionWorld::new(
-                    &game.chunk_store,
-                    game.block_registry.block_state_table(),
-                )
-            };
+            let world = crate::physics::collision::CollisionWorld::with_block_entities(
+                &game.chunk_store,
+                game.block_registry.block_state_table(),
+                &game.block_entity_anim,
+            );
             movement::push_by_moving_piston(
                 &mut game.player,
                 world,
@@ -3146,12 +3144,11 @@ impl AppCore {
             if !removed_this_tick {
                 movement::tick_dead(
                     &mut game.player,
-                    crate::physics::collision::CollisionWorld {
-                        chunks: &game.chunk_store,
-                        block_state_table: game.block_registry.block_state_table(),
-                        block_entity_anim: Some(&game.block_entity_anim),
-                        piston_noclip: None,
-                    },
+                    crate::physics::collision::CollisionWorld::with_block_entities(
+                        &game.chunk_store,
+                        game.block_registry.block_state_table(),
+                        &game.block_entity_anim,
+                    ),
                     game.block_registry.tags(),
                     game.riding_vehicle_id.is_some(),
                 );
@@ -3367,12 +3364,11 @@ impl AppCore {
         movement::tick(
             &mut game.player,
             input,
-            crate::physics::collision::CollisionWorld {
-                chunks: &game.chunk_store,
-                block_state_table: game.block_registry.block_state_table(),
-                block_entity_anim: Some(&game.block_entity_anim),
-                piston_noclip: None,
-            },
+            crate::physics::collision::CollisionWorld::with_block_entities(
+                &game.chunk_store,
+                game.block_registry.block_state_table(),
+                &game.block_entity_anim,
+            ),
             game.block_registry.tags(),
             game.interaction.use_speed_multiplier(),
             game.interaction.slow_due_to_using_item(),

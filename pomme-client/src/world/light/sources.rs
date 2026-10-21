@@ -217,11 +217,7 @@ mod tests {
 
     #[test]
     fn update_tracks_placed_and_removed_occluders() {
-        let block_state_table = block::BlockStateTable::for_protocol(
-            pomme_protocol::version::ProtocolVersion::from_name("26.2")
-                .unwrap()
-                .protocol,
-        );
+        let block_state_table = block::BlockStateTable::native();
         let stone = block_state_table.find_state("stone", &[]);
         let mut blocks: HashMap<i32, BlockState> = HashMap::new();
         let mut sources = ChunkSkyLightSources::new(-64);

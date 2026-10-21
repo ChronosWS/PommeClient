@@ -23,6 +23,10 @@ const DEATH_TICKS: u8 = 5;
 pub trait PistonLevel {
     /// The session's blocks, which `block` and `set_block` states belong to.
     fn block_registry(&self) -> &BlockRegistry;
+
+    fn blocks(&self) -> BlockStateTable {
+        self.block_registry().block_state_table()
+    }
     fn block(&self, pos: BlockPos) -> BlockState;
     fn set_block(&mut self, pos: BlockPos, state: BlockState);
     /// Whether `pos`'s chunk is loaded, so it can hold a block entity.
@@ -172,7 +176,7 @@ impl MovingPistons {
 /// retracts and pulls, 2 retracts without pulling; `b1` is the facing's 3D
 /// data value.
 pub fn trigger_event(level: &mut impl PistonLevel, pos: BlockPos, b0: u8, b1: u8) -> bool {
-    let blocks = level.block_registry().block_state_table();
+    let blocks = level.blocks();
     let state = level.block(pos);
     let sticky = match blocks.block_state_data(state).id() {
         "piston" => false,
@@ -247,7 +251,7 @@ fn move_blocks(
     extending: bool,
     sticky: bool,
 ) -> bool {
-    let blocks = level.block_registry().block_state_table();
+    let blocks = level.blocks();
     let arm = relative(piston_pos, direction, 1);
     if !extending && is(blocks, level.block(arm), "piston_head") {
         level.set_block(arm, BlockState::AIR);
@@ -299,7 +303,7 @@ fn move_blocks(
 
 /// Vanilla `Level.removeBlock`: what's left is the cell's fluid.
 fn remove_block(level: &mut impl PistonLevel, pos: BlockPos) {
-    let blocks = level.block_registry().block_state_table();
+    let blocks = level.blocks();
     let fluid = blocks.fluid_block(blocks.block_state_data(level.block(pos)).fluid());
     level.set_block(pos, fluid);
 }
@@ -322,7 +326,7 @@ pub fn final_tick(level: &mut impl PistonLevel, pos: BlockPos) {
     let Some(piston) = level.pistons().remove(&pos) else {
         return;
     };
-    let blocks = level.block_registry().block_state_table();
+    let blocks = level.blocks();
     if is(blocks, level.block(pos), "moving_piston") {
         // TODO: `Block.updateFromNeighbourShapes`; the server sends the
         // shape-updated block.
@@ -354,7 +358,7 @@ pub fn tick<L: PistonLevel>(
                 continue;
             }
             let piston = level.pistons().remove(&pos).expect("entry checked above");
-            let blocks = level.block_registry().block_state_table();
+            let blocks = level.blocks();
             if is(blocks, level.block(pos), "moving_piston") {
                 // TODO: `Block.updateFromNeighbourShapes` and its `updateOrDestroy`
                 // when the shape update yields air; the server sends the result.
@@ -387,8 +391,7 @@ fn is_pushable(
     if pos.y < level.min_y() || pos.y > level.max_y() {
         return false;
     }
-    let registry = level.block_registry();
-    let blocks = registry.block_state_table();
+    let blocks = level.blocks();
     let data = blocks.block_state_data(state);
     if data.is_air() {
         return true;
@@ -410,7 +413,13 @@ fn is_pushable(
             return false;
         }
     } else {
-        if registry.block(state).block_data().destroy_time == -1.0 {
+        if level
+            .block_registry()
+            .block(state)
+            .block_data()
+            .destroy_time
+            == -1.0
+        {
             return false;
         }
         match data.push_reaction() {
@@ -606,18 +615,15 @@ impl Resolver {
 }
 
 fn is_air(level: &impl PistonLevel, state: BlockState) -> bool {
-    level.block_registry().block_state_data(state).is_air()
+    level.blocks().block_state_data(state).is_air()
 }
 
 fn push_reaction(level: &impl PistonLevel, state: BlockState) -> PushReaction {
-    level
-        .block_registry()
-        .block_state_data(state)
-        .push_reaction()
+    level.blocks().block_state_data(state).push_reaction()
 }
 
 fn is_sticky(level: &impl PistonLevel, state: BlockState) -> bool {
-    let blocks = level.block_registry().block_state_table();
+    let blocks = level.blocks();
     is(blocks, state, "slime_block") || is(blocks, state, "honey_block")
 }
 
@@ -626,7 +632,7 @@ fn can_stick_to_each_other(
     state1: BlockState,
     state2: BlockState,
 ) -> bool {
-    let blocks = level.block_registry().block_state_table();
+    let blocks = level.blocks();
     if is(blocks, state1, "honey_block") && is(blocks, state2, "slime_block") {
         return false;
     }
@@ -727,8 +733,6 @@ fn state_from_nbt(blocks: BlockStateTable, nbt: &NbtCompound) -> Option<BlockSta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::block::block_registry::BlockDefinitions;
-    use crate::world::block::render_assets::BlockRenderAssets;
 
     /// A flat test world: everything unset is air, y in -64..320.
     struct TestLevel {
@@ -748,7 +752,7 @@ mod tests {
         }
 
         fn set_block(&mut self, pos: BlockPos, state: BlockState) {
-            if !is(table(), state, "moving_piston") {
+            if !is(BlockStateTable::native(), state, "moving_piston") {
                 self.pistons.remove(&pos);
             }
             self.blocks.insert(pos, state);
@@ -775,20 +779,18 @@ mod tests {
         }
     }
 
-    fn table() -> BlockStateTable {
-        BlockStateTable::for_protocol(pomme_protocol::version::NATIVE.protocol)
-    }
-
     fn state(name: &str) -> BlockState {
-        table().first_state_of(name).unwrap()
+        BlockStateTable::native().first_state_of(name).unwrap()
     }
 
     fn id(state: BlockState) -> &'static str {
-        table().block_state_data(state).id()
+        BlockStateTable::native().block_state_data(state).id()
     }
 
     fn extend(state: BlockState) -> BlockState {
-        table().with_property(state, "extended", "true").unwrap()
+        BlockStateTable::native()
+            .with_property(state, "extended", "true")
+            .unwrap()
     }
 
     fn at(x: i32) -> BlockPos {
@@ -798,16 +800,15 @@ mod tests {
     /// A piston at the origin facing east, with `blocks` from x = 1 on.
     fn level(sticky: bool, blocks: &[&str]) -> TestLevel {
         let mut level = TestLevel {
-            registry: BlockRegistry::new(
-                std::rc::Rc::new(BlockDefinitions::new()),
-                std::sync::Arc::new(BlockRenderAssets::default()),
-                pomme_protocol::version::NATIVE.protocol,
-            ),
+            registry: BlockRegistry::native(),
             blocks: HashMap::new(),
             pistons: MovingPistons::default(),
             destroyed: Vec::new(),
         };
-        level.set_block(at(0), piston_base(table(), sticky, Direction::East));
+        level.set_block(
+            at(0),
+            piston_base(BlockStateTable::native(), sticky, Direction::East),
+        );
         for (i, name) in blocks.iter().enumerate() {
             level.set_block(at(i as i32 + 1), state(name));
         }
@@ -823,7 +824,7 @@ mod tests {
         let mut level = level(false, &["stone", "dirt"]);
         assert!(trigger_event(&mut level, at(0), 0, 5));
         assert_eq!(
-            table()
+            BlockStateTable::native()
                 .block_state_data(level.block(at(0)))
                 .properties()
                 .get("extended"),
@@ -871,7 +872,10 @@ mod tests {
     fn sticky_retract_leaves_immovable_table() {
         let mut level = level(true, &["piston_head", "obsidian"]);
         level.set_block(at(0), extend(level.block(at(0))));
-        level.set_block(at(1), piston_head(table(), Direction::East, true, false));
+        level.set_block(
+            at(1),
+            piston_head(BlockStateTable::native(), Direction::East, true, false),
+        );
         assert!(trigger_event(&mut level, at(0), 1, 5));
         assert_eq!(name(&level, at(0)), "moving_piston");
         assert_eq!(name(&level, at(1)), "air");
@@ -882,7 +886,10 @@ mod tests {
     fn sticky_retract_pulls_a_normal_block() {
         let mut level = level(true, &["piston_head", "stone"]);
         level.set_block(at(0), extend(level.block(at(0))));
-        level.set_block(at(1), piston_head(table(), Direction::East, true, false));
+        level.set_block(
+            at(1),
+            piston_head(BlockStateTable::native(), Direction::East, true, false),
+        );
         assert!(trigger_event(&mut level, at(0), 1, 5));
         assert_eq!(name(&level, at(1)), "moving_piston");
         assert_eq!(name(&level, at(2)), "air");
@@ -925,7 +932,7 @@ mod tests {
         let mut nbt = NbtCompound::new();
         nbt.insert("facing", 5i8);
         assert_eq!(
-            MovingPiston::from_nbt(&nbt, table()).direction,
+            MovingPiston::from_nbt(&nbt, BlockStateTable::native()).direction,
             Direction::East
         );
     }

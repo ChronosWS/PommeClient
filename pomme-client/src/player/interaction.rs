@@ -1902,8 +1902,6 @@ mod tests {
     use super::*;
     use crate::attribute::AttributeSnapshot;
     use crate::mob_effect::{CONDUIT_POWER, HASTE, MobEffectInstance};
-    use crate::world::block::block_registry::BlockDefinitions;
-    use crate::world::block::render_assets::BlockRenderAssets;
     use crate::world::block::{BlockTags, block_tags_for_test};
 
     #[test]
@@ -2267,19 +2265,12 @@ mod tests {
 
     #[test]
     fn runtime_destroy_progress_differs_by_tool() {
-        let protocol = pomme_protocol::ProtocolVersion::from_name("26.2")
-            .unwrap()
-            .protocol;
-        let block_state_table = BlockStateTable::for_protocol(protocol);
+        let block_state_table = BlockStateTable::native();
         let (_, tags) = seed_standard_tool_tags(block_state_table);
         let stone = block_state_table
             .first_state_of("stone")
             .expect("stone state");
-        let mut block_registry = BlockRegistry::new(
-            std::rc::Rc::new(BlockDefinitions::new()),
-            std::sync::Arc::new(BlockRenderAssets::default()),
-            protocol,
-        );
+        let mut block_registry = BlockRegistry::native();
         block_registry.replace_tags(tags);
         let attributes = AttributeMap::player();
         let effects = ActiveMobEffects::default();
@@ -2307,7 +2298,7 @@ mod tests {
 
     #[test]
     fn standard_pickaxe_tiers_match_vanilla_26_2_speeds() {
-        let (tags, _) = seed_standard_tool_tags(BlockStateTable::for_protocol(NATIVE.protocol));
+        let (tags, _) = seed_standard_tool_tags(BlockStateTable::native());
         for (kind, expected) in [
             (ItemKind::WoodenPickaxe, 2.0),
             (ItemKind::StonePickaxe, 4.0),
@@ -2326,7 +2317,7 @@ mod tests {
 
     #[test]
     fn standard_tool_families_use_native_block_tags() {
-        let (tags, _) = seed_standard_tool_tags(BlockStateTable::for_protocol(NATIVE.protocol));
+        let (tags, _) = seed_standard_tool_tags(BlockStateTable::native());
         for (item, block_name, expected) in [
             (ItemKind::IronPickaxe, "stone", 6.0),
             (ItemKind::IronShovel, "dirt", 6.0),
@@ -2343,7 +2334,7 @@ mod tests {
 
     #[test]
     fn iron_pickaxe_default_tool_uses_native_tags() {
-        let (tags, _) = seed_standard_tool_tags(BlockStateTable::for_protocol(NATIVE.protocol));
+        let (tags, _) = seed_standard_tool_tags(BlockStateTable::native());
         let pickaxe = ItemStackData::new(ItemKind::IronPickaxe, 1);
         let tool = stack_tool(&pickaxe, NATIVE.protocol)
             .expect("iron pickaxe has a native tool component");
