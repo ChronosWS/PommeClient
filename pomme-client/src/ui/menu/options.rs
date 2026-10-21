@@ -603,10 +603,20 @@ impl MainMenu {
                     let text = crate::lang::translate("controls.keybinds.duplicateKeybinds")
                         .unwrap_or("This key is also used for:\n%s")
                         .replace("%s", &collisions.join(", "));
-                    let lines = text
-                        .split('\n')
-                        .map(|line| TooltipLine::new(line.to_owned(), WHITE))
-                        .collect();
+                    let width0 = |spans: &[TextSpan]| {
+                        spans
+                            .iter()
+                            .map(|span| text_width_fn(&span.text, common::FONT_SIZE))
+                            .sum()
+                    };
+                    let lines = crate::ui::chat::wrap_spans(
+                        &[TextSpan::new(text, WHITE)],
+                        common::TOOLTIP_WRAP,
+                        &width0,
+                    )
+                    .into_iter()
+                    .map(TooltipLine::from_spans)
+                    .collect();
                     common::push_tooltip_lines(&mut elements, input.cursor, sw, sh, gs, lines);
                 }
                 if push_button_label_f(

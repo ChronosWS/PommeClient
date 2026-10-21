@@ -100,7 +100,7 @@ impl KeyBindings {
         inputs.retain(|input| {
             !Action::ALL
                 .iter()
-                .any(|action| action.fixed_inputs().contains(input))
+                .any(|owner| owner.fixed_inputs().contains(input))
         });
         self.0.insert(action, inputs);
     }
