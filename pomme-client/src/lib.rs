@@ -26,6 +26,7 @@ mod net;
 mod particle;
 mod physics;
 mod player;
+mod position;
 mod recipe;
 mod renderer;
 mod resource_pack;
@@ -34,6 +35,7 @@ mod singleplayer;
 mod test_util;
 mod tool;
 mod ui;
+mod update;
 mod user;
 mod util;
 mod version;
@@ -53,6 +55,26 @@ pub use crate::args::{LAUNCH_FILE, LaunchArgs};
 pub use crate::logging::install_panic_hook;
 use crate::user::UserData;
 
+/// macOS has no system Vulkan: releases ship MoltenVK beside the binary,
+/// and the loader only finds it through its manifest.
+#[cfg(target_os = "macos")]
+fn use_bundled_moltenvk() {
+    if std::env::var_os("VK_ICD_FILENAMES").is_some()
+        || std::env::var_os("VK_DRIVER_FILES").is_some()
+    {
+        return;
+    }
+    let Some(icd) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("MoltenVK_icd.json")))
+        .filter(|icd| icd.exists())
+    else {
+        return;
+    };
+    // SAFETY: the first thing `run` does, before it starts any thread.
+    unsafe { std::env::set_var("VK_ICD_FILENAMES", icd) };
+}
+
 /// What differs per platform at startup.
 pub struct Platform {
     /// Replaces the per-user data directory; Android passes its app storage.
@@ -62,6 +84,8 @@ pub struct Platform {
 }
 
 pub fn run(args: LaunchArgs, platform: Platform) {
+    #[cfg(target_os = "macos")]
+    use_bundled_moltenvk();
     if let Some(root) = platform.data_root {
         pomme_dirs::set_root(root);
     }
@@ -85,25 +109,8 @@ pub fn run(args: LaunchArgs, platform: Platform) {
         std::process::exit(cpu_bench::run(version, &data_dirs, filter.as_deref()));
     }
 
-    // Phones have no launcher to hand over a token.
-    #[cfg(not(any(debug_assertions, mobile)))]
-    {
-        match &args.launch_token {
-            Some(path) => {
-                let token_path = std::path::Path::new(path);
-                if !token_path.exists() {
-                    eprintln!("Please use the Pomme Launcher to start the game.");
-                    std::process::exit(1);
-                }
-                let _ = std::fs::remove_file(token_path);
-            }
-            None => {
-                eprintln!("Please use the Pomme Launcher to start the game.");
-                eprintln!("Download it at: https://github.com/PommeMC/Pomme-Client");
-                std::process::exit(1);
-            }
-        }
-    }
+    update::clean_up();
+    let check_for_update = update::enabled(&args);
 
     // Bare launches take the newest joinable version, skipping any staged one.
     let default_version = VERSIONS
@@ -163,14 +170,13 @@ pub fn run(args: LaunchArgs, platform: Platform) {
         crate::net::chat_security::ProfileKeyServices::prefetch();
     }
 
-    // Without any account flags (no launcher), a release or phone build
-    // plays as the stored account or signs in first; a desktop dev build
-    // plays offline, and never reads the keychain unasked.
-    let require_account = args.username.is_none()
-        && args.uuid.is_none()
-        && args.access_token.is_none()
-        && cfg!(any(not(debug_assertions), mobile));
-    let user = UserData::from_args(args.username, args.uuid, args.access_token);
+    let (user, require_account) = UserData::for_launch(
+        args.username,
+        args.uuid,
+        args.access_token,
+        cfg!(not(debug_assertions)),
+        cfg!(mobile),
+    );
 
     // A harness script stays off the user's Discord profile, and phones have
     // no Discord client to talk to.
@@ -199,6 +205,9 @@ pub fn run(args: LaunchArgs, platform: Platform) {
                 .map(app::QuickPlay::Singleplayer)),
         winit::dpi::LogicalSize::new(args.width, args.height),
     );
+    if check_for_update {
+        app.check_for_update();
+    }
     if require_account {
         app.require_account();
     }

@@ -292,6 +292,11 @@ impl MainMenu {
         } else {
             "Show Autosave Indicator: OFF"
         };
+        let entity_shadows_label = if self.entity_shadows {
+            "Entity Shadows: ON"
+        } else {
+            "Entity Shadows: OFF"
+        };
         let rows: Vec<OptRow> = vec![
             OptRow::Header("Display"),
             OptRow::Big("Fullscreen Resolution: Current"),
@@ -307,7 +312,7 @@ impl MainMenu {
             OptRow::Pair("Smooth Lighting: ON", &clouds_label),
             OptRow::PairLeft(&cd),
             OptRow::Pair("Particles: All", "Mipmap Levels: 4"),
-            OptRow::Pair("Entity Shadows: ON", "Entity Distance: 100%"),
+            OptRow::Pair(entity_shadows_label, "Entity Distance: 100%"),
             OptRow::Pair("Menu Background Blur: 50%", "Cloud Range: 128"),
             OptRow::Pair("Cutout Leaves: Fancy", "Improved Transparency: OFF"),
             OptRow::Pair("Texture Filtering: None", "Max Anisotropy: 1"),
@@ -339,7 +344,6 @@ impl MainMenu {
             "Smooth Lighting:",
             "Particles:",
             "Mipmap Levels:",
-            "Entity Shadows:",
             "Entity Distance:",
             "Menu Background Blur:",
             "Cloud Range:",
@@ -1579,6 +1583,10 @@ impl MainMenu {
                     }
                     if label.starts_with("Vignette:") {
                         self.vignette = !self.vignette;
+                        self.save_settings();
+                    }
+                    if label.starts_with("Entity Shadows:") {
+                        self.entity_shadows = !self.entity_shadows;
                         self.save_settings();
                     }
                     if label.starts_with("Show Online Status:") {

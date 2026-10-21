@@ -5,6 +5,8 @@ use pomme_gpu_allocator::MemoryLocation;
 use pomme_gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
 use pyronyx::vk;
 
+use super::MAX_FRAMES_IN_FLIGHT;
+
 pub fn create_gpu_image(
     device: &vk::Device,
     allocator: &Arc<Mutex<Allocator>>,
@@ -180,26 +182,8 @@ pub fn try_create_mapped_buffer(
     usage: vk::BufferUsageFlags,
     name: &str,
 ) -> Result<(vk::Buffer, Allocation), String> {
-    let (buffer, mut allocation) =
-        try_create_host_buffer(device, allocator, data.len() as u64, usage, name)?;
-    allocation
-        .mapped_slice_mut()
-        .expect("host buffer mapping was validated at creation")[..data.len()]
-        .copy_from_slice(data);
-    Ok((buffer, allocation))
-}
-
-pub fn try_create_host_buffer(
-    device: &vk::Device,
-    allocator: &Arc<Mutex<Allocator>>,
-    size: u64,
-    usage: vk::BufferUsageFlags,
-    name: &str,
-) -> Result<(vk::Buffer, Allocation), String> {
-    let mapped_size = usize::try_from(size)
-        .map_err(|error| format!("buffer {name} size {size} does not fit usize: {error}"))?;
     let buffer_info = vk::BufferCreateInfo {
-        size,
+        size: data.len() as u64,
         usage,
         sharing_mode: vk::SharingMode::Exclusive,
         ..Default::default()
@@ -207,7 +191,7 @@ pub fn try_create_host_buffer(
     let buffer = device
         .create_buffer(&buffer_info, None)
         .map_err(|error| format!("failed to create buffer {name}: {error}"))?;
-    let allocation = match lock_allocator(allocator).allocate(&AllocationCreateDesc {
+    let mut allocation = match lock_allocator(allocator).allocate(&AllocationCreateDesc {
         name,
         requirements: device.get_buffer_memory_requirements(buffer),
         location: MemoryLocation::CpuToGpu,
@@ -222,24 +206,19 @@ pub fn try_create_host_buffer(
             ));
         }
     };
-    let validated =
+    let filled =
         unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }
             .map_err(|error| format!("failed to bind buffer memory for {name}: {error}"))
             .and_then(|()| {
                 let mapped = allocation
-                    .mapped_slice()
+                    .mapped_slice_mut()
                     .ok_or_else(|| format!("buffer {name} is not host-mapped"))?;
-                if mapped.len() < mapped_size {
-                    return Err(format!(
-                        "buffer {name} mapped length {} is smaller than requested size {size}",
-                        mapped.len()
-                    ));
-                }
+                mapped[..data.len()].copy_from_slice(data);
                 Ok(())
             });
-    if let Err(error) = validated {
-        device.destroy_buffer(buffer, None);
+    if let Err(error) = filled {
         let _ = lock_allocator(allocator).free(allocation);
+        device.destroy_buffer(buffer, None);
         return Err(error);
     }
     Ok((buffer, allocation))
@@ -348,6 +327,82 @@ pub fn create_uniform_buffer(
         vk::BufferUsageFlags::UniformBuffer,
         name,
     )
+}
+
+/// One host-visible buffer per frame in flight.
+pub fn create_per_frame_host_buffers(
+    device: &vk::Device,
+    allocator: &Arc<Mutex<Allocator>>,
+    size: u64,
+    usage: vk::BufferUsageFlags,
+    name: &str,
+) -> (Vec<vk::Buffer>, Vec<Allocation>) {
+    (0..MAX_FRAMES_IN_FLIGHT)
+        .map(|_| create_host_buffer(device, allocator, size, usage, name))
+        .unzip()
+}
+
+/// One `size`-byte uniform buffer per frame in flight, each bound to its own
+/// descriptor set from `pool` at binding 0, so a frame never rewrites one the
+/// GPU may still be reading.
+pub fn create_uniform_sets(
+    device: &vk::Device,
+    allocator: &Arc<Mutex<Allocator>>,
+    pool: vk::DescriptorPool,
+    layout: vk::DescriptorSetLayout,
+    size: u64,
+    name: &str,
+) -> (Vec<vk::DescriptorSet>, Vec<vk::Buffer>, Vec<Allocation>) {
+    let layouts = [layout; MAX_FRAMES_IN_FLIGHT];
+    let alloc_info = vk::DescriptorSetAllocateInfo {
+        descriptor_pool: pool,
+        descriptor_set_count: layouts.len() as u32,
+        set_layouts: layouts.as_ptr(),
+        ..Default::default()
+    };
+    let mut sets = vec![vk::DescriptorSet::null(); layouts.len()];
+    device
+        .allocate_descriptor_sets(&alloc_info, &mut sets)
+        .unwrap_or_else(|e| panic!("failed to allocate {name} descriptor sets: {e:?}"));
+
+    let (buffers, allocations) = create_per_frame_host_buffers(
+        device,
+        allocator,
+        size,
+        vk::BufferUsageFlags::UniformBuffer,
+        name,
+    );
+    for (&set, &buffer) in sets.iter().zip(&buffers) {
+        let buffer_info = vk::DescriptorBufferInfo {
+            buffer,
+            offset: 0,
+            range: size,
+        };
+        let write = vk::WriteDescriptorSet {
+            dst_set: set,
+            dst_binding: 0,
+            descriptor_type: vk::DescriptorType::UniformBuffer,
+            descriptor_count: 1,
+            buffer_info: &buffer_info,
+            ..Default::default()
+        };
+        device.update_descriptor_sets(&[write], &[]);
+    }
+    (sets, buffers, allocations)
+}
+
+/// Destroys buffers made by [`create_per_frame_host_buffers`] or
+/// [`create_uniform_sets`] and frees their memory.
+pub fn destroy_buffers(
+    device: &vk::Device,
+    allocator: &mut Allocator,
+    buffers: &[vk::Buffer],
+    allocations: &mut Vec<Allocation>,
+) {
+    for (&buffer, allocation) in buffers.iter().zip(allocations.drain(..)) {
+        device.destroy_buffer(buffer, None);
+        allocator.free(allocation).ok();
+    }
 }
 
 pub fn upload_image(
