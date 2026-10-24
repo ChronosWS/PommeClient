@@ -236,11 +236,13 @@ pub enum NetworkEvent {
         item: ItemStack,
     },
     ChatMessage {
-        spans: Vec<crate::ui::text::TextSpan>,
-        /// Same bound chat type rendered from the signed body with unsigned
+        /// Preserves keybind references for resolution using the app's current
+        /// bindings.
+        component: Box<crate::chat_component::Component>,
+        /// Same bound chat type decorated from the signed body with unsigned
         /// content removed, for Vanilla's `onlyShowSecureChat` path.
-        secure_spans: Option<Vec<crate::ui::text::TextSpan>>,
-        missing_profile_spans: Option<Vec<crate::ui::text::TextSpan>>,
+        secure_component: Option<Box<crate::chat_component::Component>>,
+        missing_profile_component: Option<Box<crate::chat_component::Component>>,
         signature: Option<[u8; 256]>,
         sender_uuid: Option<uuid::Uuid>,
         signed_body: Option<crate::net::chat_security::SignedChatBody>,
@@ -251,7 +253,7 @@ pub enum NetworkEvent {
         signature: [u8; 256],
     },
     ActionBar {
-        spans: Vec<crate::ui::text::TextSpan>,
+        component: crate::chat_component::Component,
     },
     ServerLinks {
         links: Vec<crate::ui::server_dialog::ServerLink>,

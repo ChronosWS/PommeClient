@@ -13,9 +13,7 @@ use winit::keyboard::KeyCode;
 use winit::monitor::MonitorHandle;
 use winit::window::{CursorGrabMode, Fullscreen, Window};
 
-use crate::app::input::{
-    Action, InputState, KEY_BACK, KEY_FORWARD, KEY_LEFT, KEY_RIGHT, STICK_MOVEMENT_THRESHOLD,
-};
+use crate::app::input::{Action, InputState, STICK_MOVEMENT_THRESHOLD};
 use crate::app::level_load::ReadyInputs;
 use crate::app::phases::in_game::GameState;
 use crate::app::phases::{ConnectionPhase, Gfx};
@@ -486,10 +484,10 @@ fn player_input_state(
     sprint_key_down: bool,
 ) -> PlayerInputState {
     PlayerInputState {
-        forward: input.key_pressed(KEY_FORWARD) || analog_move.y > STICK_MOVEMENT_THRESHOLD,
-        backward: input.key_pressed(KEY_BACK) || analog_move.y < -STICK_MOVEMENT_THRESHOLD,
-        left: input.key_pressed(KEY_LEFT) || analog_move.x > STICK_MOVEMENT_THRESHOLD,
-        right: input.key_pressed(KEY_RIGHT) || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
+        forward: input.action_held(Action::Forward) || analog_move.y > STICK_MOVEMENT_THRESHOLD,
+        backward: input.action_held(Action::Backward) || analog_move.y < -STICK_MOVEMENT_THRESHOLD,
+        left: input.action_held(Action::StrafeLeft) || analog_move.x > STICK_MOVEMENT_THRESHOLD,
+        right: input.action_held(Action::StrafeRight) || analog_move.x < -STICK_MOVEMENT_THRESHOLD,
         jump: input.performing_action(Action::Jump),
         shift: input.performing_action(Action::Sneak),
         sprint: sprint_key_down,
@@ -790,12 +788,14 @@ impl AppCore {
     ) -> Self {
         let resource_packs = ResourcePackManager::new(&data_dirs.game_dir);
 
+        let mut input = InputState::new();
         let mut menu = MainMenu::new(
             &data_dirs.game_dir,
             Arc::clone(&tokio_rt),
             user.username.clone(),
             version.clone(),
             user.access_token.clone(),
+            &mut input.key_bindings,
         );
 
         let display_mode = menu.display_mode;
@@ -809,7 +809,7 @@ impl AppCore {
             presence,
             display_mode,
             window_size,
-            input: InputState::new(),
+            input,
             menu,
             tokio_rt,
             data_dirs,
@@ -986,7 +986,7 @@ impl AppCore {
         // runs the options screen's removed() and saves.
         game.paused = false;
         game.options_from_game = false;
-        self.menu.flush_settings();
+        self.menu.flush_settings(&self.input.key_bindings);
         game.close_menu();
         game.close_creative_inventory();
         game.chat
@@ -1965,21 +1965,29 @@ impl AppCore {
                     self.apply_cursor_grab(window, Some(game));
                 }
                 NetworkEvent::ChatMessage {
-                    spans,
-                    secure_spans,
-                    missing_profile_spans,
+                    component,
+                    secure_component,
+                    missing_profile_component,
                     signature,
                     sender_uuid,
                     signed_body,
                     source,
                     tag,
                 } => {
+                    use crate::ui::text::format_component_spans_with_bindings;
+
                     let only_secure = game.chat.only_secure();
-                    let spans = if only_secure {
-                        secure_spans.unwrap_or(spans)
+                    let component = if only_secure {
+                        secure_component.unwrap_or(component)
                     } else {
-                        spans
+                        component
                     };
+                    let spans = format_component_spans_with_bindings(
+                        &component,
+                        [1.0; 4],
+                        &self.input.key_bindings,
+                    );
+                    tracing::info!("Chat: {}", crate::ui::text::span_text(&spans));
                     if let (Some(sender_uuid), Some(body)) = (sender_uuid, signed_body) {
                         let now_ms = crate::net::chat_security::now_ms();
                         let validation =
@@ -1993,7 +2001,12 @@ impl AppCore {
                             });
                         match validation {
                             None | Some(PlayerChatValidation::Invalid) => {
-                                if let Some(spans) = missing_profile_spans {
+                                if let Some(component) = missing_profile_component {
+                                    let spans = format_component_spans_with_bindings(
+                                        &component,
+                                        [1.0; 4],
+                                        &self.input.key_bindings,
+                                    );
                                     game.chat.push_validation_error(spans, signature);
                                 }
                             }
@@ -2011,6 +2024,7 @@ impl AppCore {
                                         &body,
                                         now_ms,
                                         only_secure,
+                                        &self.input.key_bindings,
                                     );
                                     game.chat
                                         .push_message_with_source(spans, signature, source, tag);
@@ -2026,7 +2040,12 @@ impl AppCore {
                     game.chat.ignore_pending(signature);
                     game.chat.delete_message(signature);
                 }
-                NetworkEvent::ActionBar { spans } => {
+                NetworkEvent::ActionBar { component } => {
+                    let spans = crate::ui::text::format_component_spans_with_bindings(
+                        &component,
+                        [1.0; 4],
+                        &self.input.key_bindings,
+                    );
                     game.action_bar = Some((spans, game.tick_count));
                 }
                 NetworkEvent::ServerLinks { links } => {
@@ -3594,6 +3613,7 @@ pub(crate) fn accepted_player_chat_tag(
     body: &crate::net::chat_security::SignedChatBody,
     now_ms: u64,
     only_secure: bool,
+    bindings: &crate::app::input::KeyBindings,
 ) -> Option<crate::ui::chat::ChatMessageTag> {
     if local_sender {
         return None;
@@ -3602,11 +3622,15 @@ pub(crate) fn accepted_player_chat_tag(
     if !signed || expired {
         return Some(crate::ui::chat::ChatMessageTag::NotSecure);
     }
-    let modified = if only_secure {
-        body.modified_when_unsigned_hidden
+    let decorated = if only_secure {
+        &body.decorated_signed_content
     } else {
-        body.modified
+        &body.decorated_content
     };
+    let modified = body.modified_style
+        || !decorated
+            .plain_text_with_bindings(bindings)
+            .contains(&body.content);
     modified.then(|| crate::ui::chat::ChatMessageTag::Modified {
         original: body.content.clone(),
     })
@@ -3974,8 +3998,9 @@ mod tests {
             salt: 0,
             last_seen: Vec::new(),
             message_index: 0,
-            modified: true,
-            modified_when_unsigned_hidden: true,
+            decorated_content: Box::new(crate::chat_component::Component::text("hello")),
+            decorated_signed_content: Box::new(crate::chat_component::Component::text("hello")),
+            modified_style: true,
             fully_filtered: false,
         }
     }
@@ -3983,30 +4008,31 @@ mod tests {
     #[test]
     fn integrated_server_own_chat_is_always_secure() {
         let body = chat_body();
+        let bindings = crate::app::input::KeyBindings::default();
         let expired_now = 1_000 + 8 * 60 * 1000;
         assert_eq!(
-            accepted_player_chat_tag(true, false, &body, expired_now, false),
+            accepted_player_chat_tag(true, false, &body, expired_now, false, &bindings),
             None
         );
         assert_eq!(
-            accepted_player_chat_tag(true, true, &body, expired_now, false),
+            accepted_player_chat_tag(true, true, &body, expired_now, false, &bindings),
             None
         );
         assert_eq!(
-            accepted_player_chat_tag(true, true, &body, 1_001, true),
+            accepted_player_chat_tag(true, true, &body, 1_001, true, &bindings),
             None
         );
 
         assert_eq!(
-            accepted_player_chat_tag(false, false, &body, 1_001, false),
+            accepted_player_chat_tag(false, false, &body, 1_001, false, &bindings),
             Some(ChatMessageTag::NotSecure)
         );
         assert_eq!(
-            accepted_player_chat_tag(false, true, &body, expired_now, false),
+            accepted_player_chat_tag(false, true, &body, expired_now, false, &bindings),
             Some(ChatMessageTag::NotSecure)
         );
         assert_eq!(
-            accepted_player_chat_tag(false, true, &body, 1_001, true),
+            accepted_player_chat_tag(false, true, &body, 1_001, true, &bindings),
             Some(ChatMessageTag::Modified {
                 original: "hello".to_owned(),
             })
