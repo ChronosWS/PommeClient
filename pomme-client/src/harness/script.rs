@@ -36,6 +36,7 @@ struct StepFile {
     mouse_down: Option<Mouse>,
     mouse_up: Option<Mouse>,
     press: Option<protocol::Press>,
+    bind: Option<protocol::Bind>,
     hover: Option<protocol::Hover>,
     wait_ms: Option<u64>,
     screenshot: Option<String>,
@@ -248,6 +249,9 @@ impl StepFile {
         }
         if let Some(press) = self.press {
             steps.push(Step::Run(Command::Press(press)));
+        }
+        if let Some(bind) = self.bind {
+            steps.push(Step::Run(Command::Bind(bind)));
         }
         if let Some(hover) = self.hover {
             steps.push(Step::Run(Command::Hover(hover)));
@@ -616,7 +620,7 @@ fn ensure(holds: bool, seen: impl FnOnce() -> String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::protocol::ClickKind;
+    use crate::harness::protocol::{Bind, ClickKind, Press};
 
     #[test]
     fn parses_every_step_kind() {
@@ -657,10 +661,29 @@ mod tests {
             mouse_down = "left"
             [[step]]
             expect = { block = "air", at = [0, -59, 4] }
+            [[step]]
+            bind = { action = "key.drop", keys = ["key.keyboard.j"] }
+            [[step]]
+            press = { key = "key.keyboard.j" }
             "#,
         )
         .unwrap();
-        assert_eq!(steps.len(), 17);
+        assert_eq!(steps.len(), 19);
+        assert_eq!(
+            steps[17],
+            Step::Run(Command::Bind(Bind {
+                action: "key.drop".into(),
+                keys: Some(vec!["key.keyboard.j".into()]),
+            }))
+        );
+        assert_eq!(
+            steps[18],
+            Step::Run(Command::Press(Press {
+                action: None,
+                key: Some("key.keyboard.j".into()),
+                ctrl: false,
+            }))
+        );
         assert_eq!(
             steps[15],
             Step::Run(Command::MouseDown {

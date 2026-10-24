@@ -3199,10 +3199,15 @@ impl AppCore {
         // same fixed origin.
         let input_live = game.input_live() && game.chunk_load_bench.is_none();
 
-        // Vanilla Minecraft.handleKeybinds: drop and offhand-swap consume the
+        // Vanilla Minecraft.handleKeybinds: offhand-swap then drop consume the
         // queued key presses each tick; spectators consume without acting.
         if input_live {
             let spectator = game.player.game_mode == 3;
+            while self.input.consume_click(Action::SwapOffhand) {
+                if !spectator {
+                    crate::player::interaction::send_swap_offhand(&connection.packet_tx);
+                }
+            }
             while self.input.consume_click(Action::DropItem) {
                 let whole_stack = self.input.ctrl_held();
                 if !spectator {
@@ -3216,11 +3221,6 @@ impl AppCore {
                     {
                         crate::player::interaction::send_use_swing(&connection.packet_tx);
                     }
-                }
-            }
-            while self.input.consume_click(Action::SwapOffhand) {
-                if !spectator {
-                    crate::player::interaction::send_swap_offhand(&connection.packet_tx);
                 }
             }
             for slot in self.input.take_spectator_slot_presses() {

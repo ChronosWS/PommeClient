@@ -704,17 +704,13 @@ impl InputState {
         }
     }
 
-    /// Presses and releases `action`'s default key for the next frame, as a
-    /// real key event arriving between frames would, with Ctrl held for that
-    /// frame when `ctrl` is set. The harness runs after the frame's update, so
-    /// pressing now would be cleared before anything read it.
+    /// Presses and releases `code` for the next frame, as a real key event
+    /// arriving between frames would, with Ctrl held for that frame when
+    /// `ctrl` is set. The harness runs after the frame's update, so pressing
+    /// now would be cleared before anything read it.
     #[cfg(feature = "test-harness")]
-    pub fn press_action(&mut self, action: Action, ctrl: bool) -> Result<(), String> {
-        let Some(code) = action.default_key() else {
-            return Err(format!("{action:?} has no default key"));
-        };
+    pub fn press_key(&mut self, code: KeyCode, ctrl: bool) {
         self.harness_press = Some((code, ctrl));
-        Ok(())
     }
 
     fn on_key(&mut self, code: KeyCode, state: ElementState, repeat: bool) {
