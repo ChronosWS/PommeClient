@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "ttf-fonts")]
@@ -14,6 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::assets::{AssetId, AssetIndex, resolve_asset_path_with_packs, resource_stack_paths};
 use crate::resource_pack::ResourcePackManager;
+use crate::resources::{BuiltinResources, ResourceFile, ResourceId, ResourceManager};
 
 #[cfg(feature = "ttf-fonts")]
 unsafe extern "C" {
@@ -211,30 +213,37 @@ fn read_unihex_line_bounded<R: BufRead>(
     }
 }
 
-fn load_bitmap_image_bounded(path: &Path) -> Result<image::DynamicImage, String> {
-    let bytes = read_file_bounded(path, MAX_BITMAP_FILE_BYTES, "bitmap font texture")?;
+fn load_bitmap_image_bounded(file: &ResourceFile) -> Result<image::DynamicImage, String> {
+    let label = format!("{:?} from {:?}", file.id(), file.origin());
+    let stream = file.open().map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    stream
+        .take(MAX_BITMAP_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read bitmap font texture {label}: {error}"))?;
+    if bytes.len() > MAX_BITMAP_FILE_BYTES {
+        return Err(format!(
+            "bitmap font texture {label} exceeds the {MAX_BITMAP_FILE_BYTES}-byte limit"
+        ));
+    }
     let reader = image::ImageReader::new(Cursor::new(bytes.as_slice()))
         .with_guessed_format()
-        .map_err(|error| format!("failed to identify bitmap font {}: {error}", path.display()))?;
-    let (width, height) = reader.into_dimensions().map_err(|error| {
-        format!(
-            "failed to read bitmap font dimensions {}: {error}",
-            path.display()
-        )
-    })?;
+        .map_err(|error| format!("failed to identify bitmap font {label}: {error}"))?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|error| format!("failed to read bitmap font dimensions {label}: {error}"))?;
     let decoded_bytes = decoded_rgba_bytes(width, height)
-        .ok_or_else(|| format!("bitmap font {} dimensions overflow", path.display()))?;
+        .ok_or_else(|| format!("bitmap font {label} dimensions overflow"))?;
     if decoded_bytes > MAX_BITMAP_DECODED_BYTES {
         return Err(format!(
-            "bitmap font {} would decode to {decoded_bytes} bytes, exceeding the {MAX_BITMAP_DECODED_BYTES}-byte limit",
-            path.display()
+            "bitmap font {label} would decode to {decoded_bytes} bytes, exceeding the {MAX_BITMAP_DECODED_BYTES}-byte limit"
         ));
     }
     image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|error| format!("failed to identify bitmap font {}: {error}", path.display()))?
+        .map_err(|error| format!("failed to identify bitmap font {label}: {error}"))?
         .decode()
-        .map_err(|error| format!("failed to decode bitmap font {}: {error}", path.display()))
+        .map_err(|error| format!("failed to decode bitmap font {label}: {error}"))
 }
 
 #[derive(Clone, Copy)]
@@ -484,6 +493,7 @@ impl GlyphMap {
         let ctx = LoadContext {
             sources,
             missing: missing_glyph.clone(),
+            bitmap_resources: OnceCell::new(),
         };
 
         let font_ids = discover_font_ids(&sources);
@@ -576,6 +586,9 @@ impl GlyphMap {
 struct LoadContext<'a> {
     sources: FontSources<'a>,
     missing: Arc<GlyphInfo>,
+    /// Local to this load pass/thread; FontSources remains Copy and Send.
+    /// Only bitmap texture bytes use this view, not font definitions/metadata.
+    bitmap_resources: OnceCell<ResourceManager>,
 }
 
 /// The asset key of resource `id` under `prefix` (`Identifier.withPrefix`).
@@ -1099,17 +1112,29 @@ fn load_bitmap_provider(
 ) -> Result<LoadedProvider, String> {
     let rows = definition.chars.len() as u32;
     let cols = definition.chars[0].len() as u32;
-    let path = ctx
-        .sources
-        .resolve(&asset_key(&definition.file, "textures/")?);
-    let image = load_bitmap_image_bounded(&path)?.to_rgba8();
+    let AssetId { namespace, path } = AssetId::parse(&definition.file);
+    let id = ResourceId::new(&format!("{namespace}:textures/{path}"))
+        .map_err(|error| error.to_string())?;
+    let manager = ctx.bitmap_resources.get_or_init(|| {
+        ResourceManager::from_packs(
+            BuiltinResources {
+                jar_assets_dir: ctx.sources.jar_assets_dir,
+                asset_index: ctx.sources.asset_index.as_ref(),
+            },
+            ctx.sources.packs.active_pack_sources(),
+        )
+    });
+    let resource = manager
+        .get_resource(&id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("missing bitmap font texture {id:?}"))?;
+    let image = load_bitmap_image_bounded(resource.file())?.to_rgba8();
     // Vanilla `BitmapProvider.Definition.load` floors the cell size.
     let pixel_w = image.width() / cols;
     let pixel_h = image.height() / rows;
     if pixel_w == 0 || pixel_h == 0 {
         return Err(format!(
-            "bitmap {} is smaller than its {cols}x{rows} grid",
-            path.display()
+            "bitmap {id:?} is smaller than its {cols}x{rows} grid"
         ));
     }
     let pixel_scale = definition.height as f32 / pixel_h as f32;
@@ -1148,9 +1173,8 @@ fn load_bitmap_provider(
             };
             if glyphs.insert(ch, glyph).is_some() {
                 tracing::warn!(
-                    "Codepoint U+{:04X} declared multiple times in {}",
-                    ch as u32,
-                    path.display()
+                    "Codepoint U+{:04X} declared multiple times in {id:?}",
+                    ch as u32
                 );
             }
         }
@@ -1674,6 +1698,7 @@ mod tests {
                     options: FontOptions::default(),
                 },
                 missing: Arc::new(space_glyph(6.0)),
+                bitmap_resources: OnceCell::new(),
             }
         }
     }

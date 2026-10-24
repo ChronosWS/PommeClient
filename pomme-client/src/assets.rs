@@ -186,6 +186,31 @@ impl AssetIndex {
     pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
         self.hashes.keys().map(String::as_str)
     }
+
+    /// Error-aware lookup for the resource boundary; legacy callers retain
+    /// `resolve`'s behavior. A malformed hash must not become a filesystem
+    /// path.
+    pub(crate) fn resolve_checked(&self, asset_key: &str) -> std::io::Result<Option<PathBuf>> {
+        let Some(hash) = self.hashes.get(asset_key) else {
+            return Ok(None);
+        };
+        if hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid asset-index hash for {asset_key}"),
+            ));
+        }
+        let path = self.objects_dir.join(&hash[..2]).join(hash);
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => Ok(Some(path)),
+            Ok(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("asset-index object is not a file: {}", path.display()),
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

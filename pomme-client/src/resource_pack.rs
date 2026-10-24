@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::resources::ResourceOrigin;
+
 pub const CURRENT_PACK_FORMAT: u32 = 84;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -71,6 +73,23 @@ impl ResourcePackManager {
     /// which stacked resources are registered by Vanilla.
     pub fn active_pack_dirs(&self) -> impl Iterator<Item = &Path> {
         self.active_packs.iter().map(|pack| pack.dir.as_path())
+    }
+
+    /// Selected pack roots and source identities in low-to-high priority order.
+    pub(crate) fn active_pack_sources(&self) -> impl Iterator<Item = (PathBuf, ResourceOrigin)> {
+        self.active_packs.iter().map(|pack| {
+            let kind = match pack.source {
+                PackSource::Local => "local",
+                PackSource::Server => "server",
+            };
+            (
+                pack.dir.clone(),
+                ResourceOrigin {
+                    key: format!("{kind}:{}", pack.id),
+                    name: pack.info.name.clone(),
+                },
+            )
+        })
     }
 
     /// Resolve a resource-pack asset together with the metadata sidecar that
