@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::resources::ResourceOrigin;
+use crate::resources::{PackStorage, ResourceError, ResourceOrigin, ResourcePackDescriptor};
 
 pub const CURRENT_PACK_FORMAT: u32 = 84;
 
@@ -16,20 +16,22 @@ pub struct PackInfo {
     pub name: String,
     pub description: String,
     pub compat: PackCompat,
-    pub source: PackSource,
+    pub provenance: PackProvenance,
     pub enabled: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum PackSource {
+pub enum PackProvenance {
     Server,
     Local,
 }
 
 struct ActivePack {
     id: String,
-    source: PackSource,
+    provenance: PackProvenance,
     dir: PathBuf,
+    // Migrated consumers read the original local ZIP; legacy consumers keep dir.
+    archive: Option<PathBuf>,
     info: PackInfo,
 }
 
@@ -75,21 +77,72 @@ impl ResourcePackManager {
         self.active_packs.iter().map(|pack| pack.dir.as_path())
     }
 
-    /// Selected pack roots and source identities in low-to-high priority order.
-    pub(crate) fn active_pack_sources(&self) -> impl Iterator<Item = (PathBuf, ResourceOrigin)> {
-        self.active_packs.iter().map(|pack| {
-            let kind = match pack.source {
-                PackSource::Local => "local",
-                PackSource::Server => "server",
+    /// Selected sources in low-to-high order; metadata-only directories have
+    /// no source. Revalidate pack roots so removed packs are not treated as
+    /// empty.
+    pub(crate) fn active_pack_descriptors(
+        &self,
+    ) -> Result<Vec<ResourcePackDescriptor>, ResourceError> {
+        let mut descriptors = Vec::new();
+        for pack in &self.active_packs {
+            let kind = match pack.provenance {
+                PackProvenance::Local => "local",
+                PackProvenance::Server => "server",
             };
-            (
-                pack.dir.clone(),
-                ResourceOrigin {
-                    key: format!("{kind}:{}", pack.id),
-                    name: pack.info.name.clone(),
-                },
-            )
-        })
+            let origin = ResourceOrigin {
+                key: format!("{kind}:{}", pack.id),
+                name: pack.info.name.clone(),
+            };
+            let descriptor = match &pack.archive {
+                Some(path) => Some(ResourcePackDescriptor {
+                    storage: PackStorage::Zip(path.clone()),
+                    origin,
+                }),
+                None => Self::directory_pack_descriptor(&pack.dir, origin)?,
+            };
+            descriptors.extend(descriptor);
+        }
+        Ok(descriptors)
+    }
+
+    /// Metadata-only packs contribute no source; unusable roots are errors.
+    fn directory_pack_descriptor(
+        root: &Path,
+        origin: ResourceOrigin,
+    ) -> Result<Option<ResourcePackDescriptor>, ResourceError> {
+        Self::validate_directory_pack_root(root, &origin)?;
+        let assets_dir = root.join("assets");
+        // Dangling assets symlinks are present entries, validated on source open.
+        match std::fs::symlink_metadata(&assets_dir) {
+            Ok(_) => Ok(Some(ResourcePackDescriptor {
+                storage: PackStorage::Directory(assets_dir),
+                origin,
+            })),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Self::validate_directory_pack_root(root, &origin)?;
+                Ok(None)
+            }
+            Err(source) => Err(ResourceError::Io {
+                operation: "inspect pack assets directory",
+                id: None,
+                origin,
+                source,
+            }),
+        }
+    }
+
+    fn validate_directory_pack_root(
+        root: &Path,
+        origin: &ResourceOrigin,
+    ) -> Result<(), ResourceError> {
+        std::fs::read_dir(root)
+            .map(|_| ())
+            .map_err(|source| ResourceError::Io {
+                operation: "open source directory",
+                id: None,
+                origin: origin.clone(),
+                source,
+            })
     }
 
     /// Resolve a resource-pack asset together with the metadata sidecar that
@@ -147,11 +200,12 @@ impl ResourcePackManager {
         let info = parse_pack_meta_dir(&dir, hash);
         self.active_packs.push(ActivePack {
             id: pack_id,
-            source: PackSource::Server,
+            provenance: PackProvenance::Server,
             dir,
+            archive: None,
             info: PackInfo {
                 enabled: true,
-                source: PackSource::Server,
+                provenance: PackProvenance::Server,
                 ..info
             },
         });
@@ -162,7 +216,7 @@ impl ResourcePackManager {
         let id_str = id.to_string();
         let before = self.active_packs.len();
         self.active_packs
-            .retain(|p| !(p.id == id_str && p.source == PackSource::Server));
+            .retain(|p| !(p.id == id_str && p.provenance == PackProvenance::Server));
         let removed = self.active_packs.len() < before;
         if removed {
             tracing::info!("Removed server resource pack {id}");
@@ -172,7 +226,8 @@ impl ResourcePackManager {
 
     pub fn clear_server_packs(&mut self) -> bool {
         let before = self.active_packs.len();
-        self.active_packs.retain(|p| p.source != PackSource::Server);
+        self.active_packs
+            .retain(|p| p.provenance != PackProvenance::Server);
         let removed = self.active_packs.len() != before;
         if removed {
             tracing::info!("Cleared all server resource packs");
@@ -199,10 +254,10 @@ impl ResourcePackManager {
                     let already_active = self
                         .active_packs
                         .iter()
-                        .any(|p| p.source == PackSource::Local && p.dir == path);
+                        .any(|p| p.provenance == PackProvenance::Local && p.dir == path);
                     let mut info = parse_pack_meta_dir(&path, &name);
                     info.enabled = already_active;
-                    info.source = PackSource::Local;
+                    info.provenance = PackProvenance::Local;
                     self.available_local.push(info);
                 }
             } else if path.extension().is_some_and(|e| e == "zip")
@@ -211,9 +266,9 @@ impl ResourcePackManager {
                 let already_active = self
                     .active_packs
                     .iter()
-                    .any(|p| p.source == PackSource::Local && p.id == name);
+                    .any(|p| p.provenance == PackProvenance::Local && p.id == name);
                 info.enabled = already_active;
-                info.source = PackSource::Local;
+                info.provenance = PackProvenance::Local;
                 self.available_local.push(info);
             }
         }
@@ -226,11 +281,12 @@ impl ResourcePackManager {
             let info = parse_pack_meta_dir(&path, name);
             self.active_packs.push(ActivePack {
                 id: name.to_owned(),
-                source: PackSource::Local,
+                provenance: PackProvenance::Local,
                 dir: path,
+                archive: None,
                 info: PackInfo {
                     enabled: true,
-                    source: PackSource::Local,
+                    provenance: PackProvenance::Local,
                     ..info
                 },
             });
@@ -247,11 +303,12 @@ impl ResourcePackManager {
             self.active_packs.retain(|p| p.id != name);
             self.active_packs.push(ActivePack {
                 id: name.to_owned(),
-                source: PackSource::Local,
+                provenance: PackProvenance::Local,
                 dir: extract_dir,
+                archive: Some(path),
                 info: PackInfo {
                     enabled: true,
-                    source: PackSource::Local,
+                    provenance: PackProvenance::Local,
                     ..info
                 },
             });
@@ -262,7 +319,7 @@ impl ResourcePackManager {
 
     pub fn disable_local_pack(&mut self, name: &str) {
         self.active_packs
-            .retain(|p| !(p.id == name && p.source == PackSource::Local));
+            .retain(|p| !(p.id == name && p.provenance == PackProvenance::Local));
         tracing::info!("Disabled local resource pack: {name}");
         self.scan_local_packs();
     }
@@ -350,7 +407,7 @@ fn parse_pack_meta_dir(dir: &Path, fallback_name: &str) -> PackInfo {
             name: fallback_name.to_owned(),
             description: fallback_name.to_owned(),
             compat: PackCompat::Compatible,
-            source: PackSource::Local,
+            provenance: PackProvenance::Local,
             enabled: false,
         };
     };
@@ -360,7 +417,7 @@ fn parse_pack_meta_dir(dir: &Path, fallback_name: &str) -> PackInfo {
         name,
         description,
         compat,
-        source: PackSource::Local,
+        provenance: PackProvenance::Local,
         enabled: false,
     }
 }
@@ -379,7 +436,7 @@ fn parse_pack_meta_zip(path: &Path, fallback_name: &str) -> Option<PackInfo> {
         name,
         description,
         compat,
-        source: PackSource::Local,
+        provenance: PackProvenance::Local,
         enabled: false,
     })
 }

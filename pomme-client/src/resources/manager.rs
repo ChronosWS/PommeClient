@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 use super::pack_resource::{
-    DirectoryPackResources, IndexedPackResources, JarPackResources, ResourceOrigin,
-    SharedPackResources,
+    PackStorage, ResourceOrigin, ResourcePackDescriptor, SharedPackResources,
 };
 use super::resource::{Resource, ResourceError, ResourceId};
 use crate::assets::AssetIndex;
@@ -29,21 +28,33 @@ impl ResourceManager {
     }
 
     /// Built-in layers below selected packs, ordered JAR then external index.
-    /// Selected roots and origins retain the caller's low-to-high order.
+    /// Selected descriptors retain the caller's low-to-high order.
     pub(crate) fn from_packs(
         builtin_resources: BuiltinResources<'_>,
-        selected_resource_packs: impl IntoIterator<Item = (PathBuf, ResourceOrigin)>,
-    ) -> Self {
-        let mut sources: Vec<SharedPackResources> = vec![Rc::new(JarPackResources::new(
-            builtin_resources.jar_assets_dir.to_path_buf(),
-        ))];
-        if let Some(index) = builtin_resources.asset_index {
-            sources.push(Rc::new(IndexedPackResources::new(index.clone())));
-        }
-        for (root, origin) in selected_resource_packs {
-            sources.push(Rc::new(DirectoryPackResources::new(root, origin)));
-        }
-        Self::new(sources)
+        selected_resource_packs: impl IntoIterator<Item = ResourcePackDescriptor>,
+    ) -> Result<Self, ResourceError> {
+        let jar = ResourcePackDescriptor {
+            storage: PackStorage::Directory(builtin_resources.jar_assets_dir.to_path_buf()),
+            origin: ResourceOrigin {
+                key: "builtin:minecraft:jar".to_owned(),
+                name: "Minecraft built-in assets".to_owned(),
+            },
+        };
+        let external = builtin_resources
+            .asset_index
+            .map(|index| ResourcePackDescriptor {
+                storage: PackStorage::Indexed(index.clone()),
+                origin: ResourceOrigin {
+                    key: "builtin:minecraft:external".to_owned(),
+                    name: "Minecraft built-in assets".to_owned(),
+                },
+            });
+        let sources = std::iter::once(jar)
+            .chain(external)
+            .chain(selected_resource_packs)
+            .map(ResourcePackDescriptor::open)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::new(sources))
     }
 
     pub(crate) fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError> {
@@ -55,7 +66,7 @@ impl ResourceManager {
     /// JAR images may use external sidecars, but not the reverse.
     pub(crate) fn get_resource(&self, id: &ResourceId) -> Result<Option<Resource>, ResourceError> {
         for (index, source) in self.sources.iter().enumerate().rev() {
-            let Some(file) = source.clone().get_resource(id)? else {
+            let Some(content) = source.clone().get_resource(id)? else {
                 continue;
             };
             let metadata_sources = self.sources[index..].to_vec();
@@ -71,7 +82,7 @@ impl ResourceManager {
                 }
                 Ok(None)
             });
-            return Ok(Some(Resource::new(file, metadata)));
+            return Ok(Some(Resource::new(content, metadata)));
         }
         Ok(None)
     }

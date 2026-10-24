@@ -4,15 +4,41 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use super::resource::{ResourceError, ResourceFile, ResourceId};
+use super::resource::{ResourceContent, ResourceError, ResourceId};
+use crate::assets::AssetIndex;
 
 mod directory;
 mod indexed;
-mod jar;
+mod zip;
 
 pub(crate) use directory::DirectoryPackResources;
 pub(crate) use indexed::IndexedPackResources;
-pub(crate) use jar::JarPackResources;
+pub(crate) use zip::ZipPackResources;
+
+/// Storage selected by the caller, independent of pack identity and priority.
+pub(crate) enum PackStorage {
+    /// Namespace-containing directory, normally `<pack root>/assets`.
+    Directory(PathBuf),
+    Zip(PathBuf),
+    Indexed(AssetIndex),
+}
+
+/// Source construction inputs; storage access is separate from provenance.
+pub(crate) struct ResourcePackDescriptor {
+    pub(crate) storage: PackStorage,
+    pub(crate) origin: ResourceOrigin,
+}
+
+impl ResourcePackDescriptor {
+    pub(crate) fn open(self) -> Result<SharedPackResources, ResourceError> {
+        let origin = self.origin;
+        Ok(match self.storage {
+            PackStorage::Directory(root) => Rc::new(DirectoryPackResources::open(root, origin)?),
+            PackStorage::Zip(path) => Rc::new(ZipPackResources::open(path, origin)?),
+            PackStorage::Indexed(index) => Rc::new(IndexedPackResources::open(index, origin)?),
+        })
+    }
+}
 
 /// Owned byte stream; dropping it releases its backing state.
 pub(crate) type ReadStream = Box<dyn Read + 'static>;
@@ -33,10 +59,13 @@ pub(crate) struct ResourceOrigin {
 pub(crate) trait PackResources {
     fn origin(&self) -> &ResourceOrigin;
 
-    /// Exact lookup: None is absence, Err is access failure. Handles may retain
-    /// this source. Sidecars are ordinary IDs; the manager selects metadata.
-    fn get_resource(self: Rc<Self>, id: &ResourceId)
-    -> Result<Option<ResourceFile>, ResourceError>;
+    /// Exact lookup: None is absence in a usable source, Err is access failure.
+    /// Handles may retain this source. Sidecars are ordinary IDs; the
+    /// manager selects metadata.
+    fn get_resource(
+        self: Rc<Self>,
+        id: &ResourceId,
+    ) -> Result<Option<ResourceContent>, ResourceError>;
 
     /// Exact-source open for a located ID. NotFound after lookup is an error.
     /// The returned stream must not borrow this source or a temporary archive.
@@ -54,15 +83,33 @@ pub(crate) trait PackResources {
         namespace: &str,
         prefix: &str,
     ) -> Result<BTreeSet<ResourceId>, ResourceError>;
-
-    /// Optional root pack.mcmeta, not a namespaced sidecar. Errors carry this
-    /// origin, operation "open pack.mcmeta", and no resource ID.
-    fn open_pack_metadata(&self) -> Result<Option<ReadStream>, ResourceError>;
 }
 
 fn asset_path(assets_dir: &Path, id: &ResourceId) -> PathBuf {
     let id = id.as_asset_id();
     assets_dir.join(id.namespace).join(id.path)
+}
+
+/// Checks current root accessibility, not future access or descendant contents.
+fn check_directory(root: &Path) -> io::Result<()> {
+    std::fs::read_dir(root).map(|_| ())
+}
+
+fn open_directory(root: &Path, origin: &ResourceOrigin) -> Result<(), ResourceError> {
+    check_directory(root).map_err(|source| ResourceError::Io {
+        operation: "open source directory",
+        id: None,
+        origin: origin.clone(),
+        source,
+    })
+}
+
+fn is_source_file(root: &Path, path: &Path) -> io::Result<bool> {
+    let present = is_file(path)?;
+    if !present {
+        check_directory(root)?;
+    }
+    Ok(present)
 }
 
 fn is_file(path: &Path) -> io::Result<bool> {
@@ -90,7 +137,7 @@ fn lookup_error(id: &ResourceId, origin: &ResourceOrigin, source: io::Error) -> 
     }
 }
 
-/// Enumeration and built-in root metadata are unsupported, not absent.
+/// Enumeration is unsupported, not absent.
 fn unsupported(origin: &ResourceOrigin, operation: &'static str) -> ResourceError {
     ResourceError::Io {
         operation,

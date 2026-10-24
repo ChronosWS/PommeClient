@@ -187,6 +187,10 @@ impl AssetIndex {
         self.hashes.keys().map(String::as_str)
     }
 
+    pub(crate) fn objects_dir(&self) -> &Path {
+        &self.objects_dir
+    }
+
     /// Error-aware lookup for the resource boundary; legacy callers retain
     /// `resolve`'s behavior. A malformed hash must not become a filesystem
     /// path.

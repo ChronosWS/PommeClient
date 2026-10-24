@@ -1,7 +1,8 @@
 //! Client resource bytes, independent of particles, render assets and the GPU.
 //! Exact lookup serves bitmap-font textures; other consumers remain legacy.
 //!
-//! Discovery, selection, downloads and ZIP extraction belong to the caller.
+//! Discovery, selection, downloads and legacy extraction belong to the caller.
+//! Root pack.mcmeta belongs to pack management; resource sidecars stay here.
 //! Source priority: selected packs above the optional external index above JAR.
 //! Built-ins are separate layers of one pack, not a composite source.
 //! Filters/overlays belong in source composition, not loaders. This layer
@@ -17,8 +18,10 @@ mod pack_resource;
 mod resource;
 
 pub(crate) use manager::{BuiltinResources, ResourceManager};
-pub(crate) use pack_resource::{ResourceOrigin, SharedPackResources};
-pub(crate) use resource::{ResourceFile, ResourceId};
+pub(crate) use pack_resource::{
+    PackStorage, ResourceOrigin, ResourcePackDescriptor, SharedPackResources,
+};
+pub(crate) use resource::{ResourceContent, ResourceError, ResourceId};
 
 /// Uncalled, typechecked consumer contract; selection supplies the sources.
 fn consumer_contract(
@@ -31,10 +34,6 @@ fn consumer_contract(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Read;
 
-    // Root pack metadata is distinct from sidecars and unsupported by built-ins.
-    if let Some(pack) = selected_low_to_high.first() {
-        let _pack_metadata = pack.open_pack_metadata()?;
-    }
     let mut sources = vec![builtin_jar];
     sources.extend(builtin_external);
     sources.extend(selected_low_to_high);
@@ -48,14 +47,14 @@ fn consumer_contract(
     // Callers can filter logical IDs without inspecting active pack directories.
     for (id, resource) in winners {
         if id.as_asset_id().path.ends_with(".json") {
-            let _origin = resource.file().origin();
-            let _stream = resource.file().open()?;
+            let _origin = resource.content().origin();
+            let _stream = resource.content().open()?;
         }
     }
     drop(manager);
     if let Some(resource) = winner {
         let mut bytes = Vec::new();
-        resource.file().open()?.read_to_end(&mut bytes)?;
+        resource.content().open()?.read_to_end(&mut bytes)?;
         if let Some(metadata) = resource.metadata()? {
             let _possibly_different_origin = metadata.origin();
             let _sidecar_bytes = metadata.open()?;

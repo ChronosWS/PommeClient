@@ -15,7 +15,9 @@ use serde_json::{Map, Value};
 
 use crate::assets::{AssetId, AssetIndex, resolve_asset_path_with_packs, resource_stack_paths};
 use crate::resource_pack::ResourcePackManager;
-use crate::resources::{BuiltinResources, ResourceFile, ResourceId, ResourceManager};
+use crate::resources::{
+    BuiltinResources, ResourceContent, ResourceError, ResourceId, ResourceManager,
+};
 
 #[cfg(feature = "ttf-fonts")]
 unsafe extern "C" {
@@ -213,9 +215,9 @@ fn read_unihex_line_bounded<R: BufRead>(
     }
 }
 
-fn load_bitmap_image_bounded(file: &ResourceFile) -> Result<image::DynamicImage, String> {
-    let label = format!("{:?} from {:?}", file.id(), file.origin());
-    let stream = file.open().map_err(|error| error.to_string())?;
+fn load_bitmap_image_bounded(content: &ResourceContent) -> Result<image::DynamicImage, String> {
+    let label = format!("{:?} from {:?}", content.id(), content.origin());
+    let stream = content.open().map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
     stream
         .take(MAX_BITMAP_FILE_BYTES as u64 + 1)
@@ -588,7 +590,7 @@ struct LoadContext<'a> {
     missing: Arc<GlyphInfo>,
     /// Local to this load pass/thread; FontSources remains Copy and Send.
     /// Only bitmap texture bytes use this view, not font definitions/metadata.
-    bitmap_resources: OnceCell<ResourceManager>,
+    bitmap_resources: OnceCell<Result<ResourceManager, ResourceError>>,
 }
 
 /// The asset key of resource `id` under `prefix` (`Identifier.withPrefix`).
@@ -1115,20 +1117,24 @@ fn load_bitmap_provider(
     let AssetId { namespace, path } = AssetId::parse(&definition.file);
     let id = ResourceId::new(&format!("{namespace}:textures/{path}"))
         .map_err(|error| error.to_string())?;
-    let manager = ctx.bitmap_resources.get_or_init(|| {
-        ResourceManager::from_packs(
-            BuiltinResources {
-                jar_assets_dir: ctx.sources.jar_assets_dir,
-                asset_index: ctx.sources.asset_index.as_ref(),
-            },
-            ctx.sources.packs.active_pack_sources(),
-        )
-    });
+    let manager = ctx
+        .bitmap_resources
+        .get_or_init(|| {
+            ResourceManager::from_packs(
+                BuiltinResources {
+                    jar_assets_dir: ctx.sources.jar_assets_dir,
+                    asset_index: ctx.sources.asset_index.as_ref(),
+                },
+                ctx.sources.packs.active_pack_descriptors()?,
+            )
+        })
+        .as_ref()
+        .map_err(|error| format!("failed to initialize bitmap font resources: {error}"))?;
     let resource = manager
         .get_resource(&id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("missing bitmap font texture {id:?}"))?;
-    let image = load_bitmap_image_bounded(resource.file())?.to_rgba8();
+    let image = load_bitmap_image_bounded(resource.content())?.to_rgba8();
     // Vanilla `BitmapProvider.Definition.load` floors the cell size.
     let pixel_w = image.width() / cols;
     let pixel_h = image.height() / rows;

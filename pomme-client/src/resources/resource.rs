@@ -33,7 +33,7 @@ pub(crate) enum ResourceError {
     InvalidId(String),
     #[error("invalid resource enumeration namespace/prefix: {namespace:?}/{prefix:?}")]
     InvalidQuery { namespace: String, prefix: String },
-    /// Enumeration and root pack.mcmeta have no ID, only operation/origin.
+    /// Source construction, enumeration and root pack.mcmeta have no ID.
     #[error("{operation} failed for {id:?} in {origin:?}: {source}")]
     Io {
         operation: &'static str,
@@ -45,9 +45,9 @@ pub(crate) enum ResourceError {
 }
 
 /// Reopenable resource or sidecar, independent of the manager's lifetime.
-/// Pins a source or backing pathname, not immutable file contents.
+/// Pins a source or backing pathname, not immutable bytes.
 #[derive(Clone)]
-pub(crate) struct ResourceFile {
+pub(crate) struct ResourceContent {
     id: ResourceId,
     origin: ResourceOrigin,
     backing: ResourceBacking,
@@ -59,7 +59,7 @@ enum ResourceBacking {
     File(PathBuf),
 }
 
-impl ResourceFile {
+impl ResourceContent {
     /// Requires an ID already located in this source.
     pub(crate) fn new(id: ResourceId, source: SharedPackResources) -> Self {
         Self {
@@ -85,7 +85,7 @@ impl ResourceFile {
         &self.origin
     }
 
-    /// Missing or changed backing files never trigger source fallback.
+    /// Missing or changed backing content never triggers source fallback.
     /// Later Read errors are io::Error; the handle retains ID/origin context.
     pub(crate) fn open(&self) -> Result<ReadStream, ResourceError> {
         let opened = match &self.backing {
@@ -103,29 +103,30 @@ impl ResourceFile {
     }
 }
 
-/// Resolved file and lazy .mcmeta lookup, independent of the manager.
-/// Each file has its own origin; metadata is not merged or interpreted.
+/// Resolved content and lazy .mcmeta lookup, independent of the manager.
+/// Each content handle has its own origin; metadata is not merged or
+/// interpreted.
 #[derive(Clone)]
 pub(crate) struct Resource {
-    file: ResourceFile,
-    metadata: Rc<dyn Fn() -> Result<Option<ResourceFile>, ResourceError>>,
+    content: ResourceContent,
+    metadata: Rc<dyn Fn() -> Result<Option<ResourceContent>, ResourceError>>,
 }
 
 impl Resource {
     pub(crate) fn new(
-        file: ResourceFile,
-        metadata: Rc<dyn Fn() -> Result<Option<ResourceFile>, ResourceError>>,
+        content: ResourceContent,
+        metadata: Rc<dyn Fn() -> Result<Option<ResourceContent>, ResourceError>>,
     ) -> Self {
-        Self { file, metadata }
+        Self { content, metadata }
     }
 
-    pub(crate) fn file(&self) -> &ResourceFile {
-        &self.file
+    pub(crate) fn content(&self) -> &ResourceContent {
+        &self.content
     }
 
     /// Uncached sidecar lookup; access errors are not absence. Calls and clones
     /// share a fixed source view but can observe filesystem changes.
-    pub(crate) fn metadata(&self) -> Result<Option<ResourceFile>, ResourceError> {
+    pub(crate) fn metadata(&self) -> Result<Option<ResourceContent>, ResourceError> {
         (self.metadata)()
     }
 }

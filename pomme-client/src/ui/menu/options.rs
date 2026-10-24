@@ -1669,7 +1669,7 @@ impl MainMenu {
         text_width_fn: common::TextWidthFn,
         key_bindings: &KeyBindings,
     ) -> MainMenuResult {
-        use crate::resource_pack::PackSource;
+        use crate::resource_pack::PackProvenance;
 
         if input.escape {
             self.pack_search.clear();
@@ -1873,7 +1873,7 @@ impl MainMenu {
 
         for (i, pack) in selected.iter().enumerate() {
             let ey = entries_top + i as f32 * (entry_h + entry_gap);
-            let is_server = pack.source == PackSource::Server;
+            let is_server = pack.provenance == PackProvenance::Server;
             let label = if is_server {
                 format!("[Server] {}", pack.name)
             } else {
