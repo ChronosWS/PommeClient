@@ -11,14 +11,14 @@ use super::{
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// A namespace-containing assets directory, including extracted JARs and packs.
-pub(crate) struct DirectoryPackResources {
+pub(super) struct DirectoryPackResources {
     root: PathBuf,
     pack_root: Option<PathBuf>,
     origin: ResourceOrigin,
 }
 
 impl DirectoryPackResources {
-    pub(crate) fn open(root: PathBuf, origin: ResourceOrigin) -> Result<Self, ResourceError> {
+    pub(super) fn open(root: PathBuf, origin: ResourceOrigin) -> Result<Self, ResourceError> {
         open_directory(&root, &origin)?;
         Ok(Self {
             root,

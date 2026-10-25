@@ -12,13 +12,13 @@ use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// An external asset-index source layer.
 /// Fallback belongs to the manager; handles retain this fixed index mapping.
-pub(crate) struct IndexedPackResources {
+pub(super) struct IndexedPackResources {
     asset_index: AssetIndex,
     origin: ResourceOrigin,
 }
 
 impl IndexedPackResources {
-    pub(crate) fn open(
+    pub(super) fn open(
         asset_index: AssetIndex,
         origin: ResourceOrigin,
     ) -> Result<Self, ResourceError> {

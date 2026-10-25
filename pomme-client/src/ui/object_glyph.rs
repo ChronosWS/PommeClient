@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::assets::{self, AssetId, AssetIndex};
 use crate::chat_component::normalize_identifier;
 use crate::renderer::pipelines::menu_overlay::ATLAS_CELL;
-use crate::resource_pack::ResourcePackManager;
+use crate::resources::ResourcePackManager;
 
 #[derive(Clone, Debug)]
 enum Recipe {

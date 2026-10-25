@@ -12,7 +12,7 @@ const MAX_VERSION_JSON_SIZE: u64 = 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 #[error("cannot read resource pack format for {version} from {path}: {source}")]
-pub(crate) struct InstalledFormatError {
+pub(super) struct InstalledFormatError {
     path: PathBuf,
     version: String,
     #[source]
@@ -37,7 +37,7 @@ enum FormatReadError {
 
 /// Read the selected installed JAR, never selected packs or protocol metadata.
 /// Missing first-run assets and corrupt metadata are both explicit errors.
-pub(crate) fn read_installed_pack_format(
+pub(super) fn read_installed_pack_format(
     path: &Path,
     expected_version: &str,
 ) -> Result<PackFormat, InstalledFormatError> {

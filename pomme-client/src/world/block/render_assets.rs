@@ -146,7 +146,7 @@ impl BlockRenderAssets {
         jar_assets_dir: &Path,
         asset_index: &Option<AssetIndex>,
         cache_dir: Option<&Path>,
-        packs: Option<&crate::resource_pack::ResourcePackManager>,
+        packs: Option<&crate::resources::ResourcePackManager>,
     ) -> Self {
         // Only vanilla textures are cached, so a cache shared between
         // profiles never carries one profile's resource packs into another.

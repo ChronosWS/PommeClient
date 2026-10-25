@@ -14,8 +14,9 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use crate::assets::{AssetId, AssetIndex};
-use crate::resource_pack::ResourcePackManager;
-use crate::resources::{ResourceContent, ResourceError, ResourceId, ResourceManager};
+use crate::resources::{
+    ResourceContent, ResourceError, ResourceId, ResourceManager, ResourcePackManager,
+};
 
 #[cfg(feature = "ttf-fonts")]
 unsafe extern "C" {
@@ -1591,7 +1592,6 @@ mod tests {
     use std::cell::OnceCell;
 
     use super::*;
-    use crate::resources::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
 
     /// A temp dir with an empty pack manager, removed on drop.
     struct Fixture {
@@ -1688,18 +1688,8 @@ mod tests {
         }
 
         fn resource_manager(&self, packs: &ResourcePackManager, assets: &Path) -> ResourceManager {
-            let builtin = ResourcePackDescriptor {
-                storage: vec![PackStorage::Zip(self.client_jar_from(assets).to_owned())],
-                origin: ResourceOrigin {
-                    pack_id: packs.builtin_pack_id().clone(),
-                    name: "Fixture".to_owned(),
-                },
-                filter: Default::default(),
-            };
-            ResourceManager::new(
-                std::iter::once(builtin).chain(packs.active_pack_descriptors().unwrap()),
-            )
-            .unwrap()
+            ResourceManager::new(packs.fixture_sources(self.client_jar_from(assets)).unwrap())
+                .unwrap()
         }
     }
 

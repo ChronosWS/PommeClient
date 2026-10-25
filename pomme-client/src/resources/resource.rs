@@ -96,7 +96,7 @@ pub(crate) struct ResourceContent {
 
 impl ResourceContent {
     /// Requires an ID already located in this source.
-    pub(crate) fn new(id: ResourceId, source: SharedPackResources) -> Self {
+    pub(super) fn new(id: ResourceId, source: SharedPackResources) -> Self {
         Self {
             id,
             origin: source.origin().clone(),
@@ -163,7 +163,7 @@ pub(crate) struct Resource {
 }
 
 impl Resource {
-    pub(crate) fn new(
+    pub(super) fn new(
         content: ResourceContent,
         metadata: Rc<dyn Fn() -> Result<Option<ResourceContent>, ResourceError>>,
     ) -> Self {

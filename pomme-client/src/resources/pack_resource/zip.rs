@@ -76,14 +76,14 @@ impl Read for OwnedZipEntry {
 /// independently. Replacing/deleting the pathname does not reopen it. In-place
 /// edits are not protected: this is an opened source view, not an immutable
 /// byte snapshot.
-pub(crate) struct ZipPackResources {
+pub(super) struct ZipPackResources {
     origin: ResourceOrigin,
     archive: Rc<ZipArchive<SharedFileCursor>>,
     prefix: String,
 }
 
 impl ZipPackResources {
-    pub(crate) fn open(path: PathBuf, origin: ResourceOrigin) -> Result<Self, ResourceError> {
+    pub(super) fn open(path: PathBuf, origin: ResourceOrigin) -> Result<Self, ResourceError> {
         let archive = (|| -> io::Result<_> {
             let cursor = SharedFileCursor {
                 file: Rc::new(RefCell::new(File::open(path)?)),

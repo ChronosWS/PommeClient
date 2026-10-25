@@ -3,8 +3,8 @@
 //! legacy. Current adapters access assets; server-data domains are not
 //! implemented.
 //!
-//! Discovery, selection, downloads and legacy extraction belong to the caller.
-//! Root pack.mcmeta belongs to pack management; resource sidecars stay here.
+//! Pack management owns discovery, selection, downloads and legacy extraction.
+//! Its root metadata parser is private; resource sidecars remain queryable.
 //! Source priority: selected packs above the optional external index above JAR
 //! above embedded Pomme resources. Bootstrap needs only the embedded pack.
 //! Built-ins are separate layers of one pack, not a composite source.
@@ -21,6 +21,7 @@
 mod filter;
 mod installed_format;
 mod manager;
+mod pack;
 mod pack_format;
 mod pack_resource;
 mod resource;
@@ -30,6 +31,7 @@ pub(crate) mod metadata {
     pub(crate) const PACK_METADATA_FILE: &str = "pack.mcmeta";
     pub(crate) const PACK_SECTION: &str = "pack";
     pub(crate) const PACK_DESCRIPTION: &str = "description";
+    pub(crate) const PACK_NAME: &str = "name";
     pub(crate) const FILTER_SECTION: &str = "filter";
     pub(crate) const OVERLAYS_SECTION: &str = "overlays";
     pub(crate) const OVERLAY_ENTRIES: &str = "entries";
@@ -51,19 +53,21 @@ pub(crate) mod metadata {
     pub(crate) const VERSION_RESOURCE_MINOR: &str = "resource_minor";
 }
 
-pub(crate) use filter::{ResourceFilter, ResourceFilterSpec};
-pub(crate) use installed_format::read_installed_pack_format;
 pub(crate) use manager::ResourceManager;
-pub(crate) use pack_format::{
-    PackFormat, PackFormatRange, parse_resource_pack_range, select_resource_overlays,
+pub(crate) use pack::{
+    PackCompat, PackError, PackId, PackInfo, PackProvenance, ResourcePackManager,
 };
 pub(crate) use pack_resource::embedded::{POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT};
-pub(crate) use pack_resource::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
 pub(crate) use resource::{ResourceContent, ResourceError, ResourceId};
+
+/// Owned registration snapshot issued by pack management in low-to-high order.
+/// Storage, compiled filters and physical layers stay private to resources.
+/// This fixes registrations, not filesystem contents; reload rereads metadata.
+pub(crate) struct ResourceSources(Vec<pack_resource::ResourcePackDescriptor>);
 
 /// Uncalled, typechecked consumer contract; selection supplies the sources.
 fn consumer_contract(
-    sources_low_to_high: Vec<ResourcePackDescriptor>,
+    sources_low_to_high: ResourceSources,
     requested: &str,
     prefix: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {

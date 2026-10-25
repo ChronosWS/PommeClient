@@ -1,64 +1,18 @@
-use std::hash::{Hash, Hasher};
-use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
+use id::PackIdentity;
+use metadata::PackMetadata;
 use pomme_protocol::KnownPack;
 
-use crate::resources::{
-    PackFormat, PackFormatRange, PackStorage, ResourceError, ResourceFilter, ResourceFilterSpec,
-    ResourceOrigin, ResourcePackDescriptor, metadata, parse_resource_pack_range,
-    read_installed_pack_format, select_resource_overlays,
-};
+use super::installed_format::read_installed_pack_format;
+use super::pack_format::{PackFormat, PackFormatRange};
+use super::pack_resource::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
+use super::{ResourceError, ResourceSources, metadata as keys};
 
-/// Logical pack identity issued by discovery/management, not by source opening.
-/// Equality survives reopening and content/title changes; built-in identity is
-/// version-specific. Multiple source layers may share it, regardless of access.
-#[derive(Clone, Debug)]
-pub struct PackId(Arc<PackRegistration>);
+mod id;
+mod metadata;
 
-#[derive(Debug)]
-struct PackRegistration {
-    identity: PackIdentity,
-    known_pack: Option<KnownPack>,
-}
-
-impl PackId {
-    /// Optional semantic identity, not a guarantee of registry data
-    /// availability.
-    pub fn known_pack(&self) -> Option<&KnownPack> {
-        self.0.known_pack.as_ref()
-    }
-}
-
-// Optional metadata does not change the logical identity's equality or hash.
-impl PartialEq for PackId {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.identity == other.0.identity
-    }
-}
-
-impl Eq for PackId {}
-
-impl Hash for PackId {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.identity.hash(state);
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Hash)]
-enum PackIdentity {
-    Pomme,
-    // The discovered selection, not its archive/extraction/source location.
-    Local {
-        directory: PathBuf,
-        selection: String,
-    },
-    Server(uuid::Uuid),
-    Builtin {
-        version: String,
-    },
-}
+pub(crate) use id::PackId;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PackCompat {
@@ -141,9 +95,9 @@ impl ResourcePackManager {
         let _ = std::fs::create_dir_all(&packs_dir);
         let _ = std::fs::create_dir_all(&server_cache_dir);
         let mut mgr = Self {
-            embedded_pack_id: Self::issue_pack_id(PackIdentity::Pomme, None),
+            embedded_pack_id: PackId::new(PackIdentity::Pomme, None),
             installed_resources: None,
-            builtin_pack_id: Self::issue_pack_id(
+            builtin_pack_id: PackId::new(
                 PackIdentity::Builtin {
                     version: asset_version.to_owned(),
                 },
@@ -190,17 +144,10 @@ impl ResourcePackManager {
         }
     }
 
-    fn issue_pack_id(identity: PackIdentity, known_pack: Option<KnownPack>) -> PackId {
-        PackId(Arc::new(PackRegistration {
-            identity,
-            known_pack,
-        }))
-    }
-
     /// Owned snapshot, low-to-high: Pomme, Minecraft (JAR then index),
     /// selections. No installation is needed to open the embedded bootstrap
     /// stack.
-    pub(crate) fn source_descriptors(&self) -> Result<Vec<ResourcePackDescriptor>, ResourceError> {
+    pub(crate) fn sources(&self) -> Result<ResourceSources, ResourceError> {
         let mut sources = vec![ResourcePackDescriptor {
             storage: vec![PackStorage::Embedded],
             origin: ResourceOrigin {
@@ -224,7 +171,7 @@ impl ResourcePackManager {
             });
         }
         sources.extend(self.active_pack_descriptors()?);
-        Ok(sources)
+        Ok(ResourceSources(sources))
     }
 
     /// The recognized built-in pack, even before its storage is
@@ -268,9 +215,7 @@ impl ResourcePackManager {
     /// packs. Revalidate roots and reread root metadata for each new
     /// resource view, rather than using the discovery UI's possibly stale
     /// metadata.
-    pub(crate) fn active_pack_descriptors(
-        &self,
-    ) -> Result<Vec<ResourcePackDescriptor>, ResourceError> {
+    fn active_pack_descriptors(&self) -> Result<Vec<ResourcePackDescriptor>, ResourceError> {
         let mut descriptors = Vec::new();
         for pack in &self.active_packs {
             let origin = ResourceOrigin {
@@ -280,25 +225,22 @@ impl ResourcePackManager {
             if pack.archive.is_none() {
                 Self::validate_directory_pack_root(&pack.dir, &origin)?;
             }
-            let metadata =
-                read_resource_metadata(&pack.dir, pack.archive.as_deref()).map_err(|source| {
-                    ResourceError::Io {
-                        operation: "read pack.mcmeta",
-                        id: None,
-                        origin: origin.clone(),
-                        source,
-                    }
+            let metadata = PackMetadata::read(&pack.dir, pack.archive.as_deref())
+                .and_then(PackMetadata::require_object)
+                .map_err(|source| ResourceError::Io {
+                    operation: "read pack.mcmeta",
+                    id: None,
+                    origin: origin.clone(),
+                    source,
                 })?;
-            let overlays = select_resource_overlays(
-                metadata.get(metadata::OVERLAYS_SECTION),
-                self.target_format,
-            )
-            .map_err(|source| ResourceError::Io {
-                operation: "validate pack overlays",
-                id: None,
-                origin: origin.clone(),
-                source,
-            })?;
+            let (filter, overlays) = metadata
+                .resource_sections(self.target_format, &origin)
+                .map_err(|source| ResourceError::Io {
+                    operation: "validate pack overlays",
+                    id: None,
+                    origin: origin.clone(),
+                    source,
+                })?;
             let storage = match &pack.archive {
                 Some(path) => PackStorage::ZipPack {
                     path: path.clone(),
@@ -311,7 +253,7 @@ impl ResourcePackManager {
             };
             descriptors.push(ResourcePackDescriptor {
                 storage: vec![storage],
-                filter: read_resource_filter(&metadata, &origin),
+                filter,
                 origin,
             });
         }
@@ -387,7 +329,7 @@ impl ResourcePackManager {
         let info = parse_pack_meta_dir(
             &dir,
             hash,
-            Self::issue_pack_id(PackIdentity::Server(id), None),
+            PackId::new(PackIdentity::Server(id), None),
             self.target_format,
         );
         self.active_packs.push(ActivePack {
@@ -444,7 +386,7 @@ impl ResourcePackManager {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let pack_id = Self::issue_pack_id(
+            let pack_id = PackId::new(
                 PackIdentity::Local {
                     directory: directory.clone(),
                     selection: name.clone(),
@@ -453,7 +395,7 @@ impl ResourcePackManager {
             );
 
             if path.is_dir() {
-                if path.join(metadata::PACK_METADATA_FILE).exists() {
+                if path.join(keys::PACK_METADATA_FILE).exists() {
                     let already_active = self
                         .active_packs
                         .iter()
@@ -484,7 +426,7 @@ impl ResourcePackManager {
         let Some(pack_id) =
             self.available_local
                 .iter()
-                .find_map(|info| match &info.pack_id.0.identity {
+                .find_map(|info| match info.pack_id.identity() {
                     PackIdentity::Local { selection, .. } if selection == name => {
                         Some(info.pack_id.clone())
                     }
@@ -494,7 +436,7 @@ impl ResourcePackManager {
             return;
         };
         let path = self.packs_dir.join(name);
-        if path.is_dir() && path.join(metadata::PACK_METADATA_FILE).exists() {
+        if path.is_dir() && path.join(keys::PACK_METADATA_FILE).exists() {
             self.active_packs.retain(|p| p.id != name);
             let info = parse_pack_meta_dir(&path, name, pack_id, self.target_format);
             self.active_packs.push(ActivePack {
@@ -545,7 +487,7 @@ impl ResourcePackManager {
             else {
                 return;
             };
-            let PackIdentity::Local { selection, .. } = &info.pack_id.0.identity else {
+            let PackIdentity::Local { selection, .. } = info.pack_id.identity() else {
                 return;
             };
             let selection = selection.clone();
@@ -569,6 +511,24 @@ impl ResourcePackManager {
 
     pub fn server_cache_dir(&self) -> &Path {
         &self.server_cache_dir
+    }
+
+    /// Existing font fixtures intentionally omit the embedded bootstrap layer.
+    #[cfg(test)]
+    pub(crate) fn fixture_sources(
+        &self,
+        client_jar: &Path,
+    ) -> Result<ResourceSources, ResourceError> {
+        let mut sources = vec![ResourcePackDescriptor {
+            storage: vec![PackStorage::Zip(client_jar.to_owned())],
+            origin: ResourceOrigin {
+                pack_id: self.builtin_pack_id.clone(),
+                name: "Fixture".to_owned(),
+            },
+            filter: Default::default(),
+        }];
+        sources.extend(self.active_pack_descriptors()?);
+        Ok(ResourceSources(sources))
     }
 }
 
@@ -601,113 +561,15 @@ fn validate_hash(data: &[u8], expected: &str) -> Result<(), PackError> {
     Ok(())
 }
 
-/// Read only root metadata from the same location as the resource provider.
-/// Local ZIPs use the original archive, not the legacy extraction cache.
-fn read_resource_metadata(
-    root: &Path,
-    archive: Option<&Path>,
-) -> io::Result<serde_json::Map<String, serde_json::Value>> {
-    fn decode(metadata: impl io::Read) -> io::Result<serde_json::Map<String, serde_json::Value>> {
-        serde_json::from_reader(metadata).map_err(io::Error::from)
-    }
-    if let Some(path) = archive {
-        let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
-        match archive.by_name(metadata::PACK_METADATA_FILE) {
-            Ok(metadata) => decode(metadata),
-            Err(zip::result::ZipError::FileNotFound) => Ok(Default::default()),
-            Err(error) => Err(error.into()),
-        }
-    } else {
-        match std::fs::File::open(root.join(metadata::PACK_METADATA_FILE)) {
-            Ok(metadata) => decode(metadata),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Default::default()),
-            Err(error) => Err(error),
-        }
-    }
-}
-
-fn read_resource_filter(
-    metadata: &serde_json::Map<String, serde_json::Value>,
-    origin: &ResourceOrigin,
-) -> ResourceFilter {
-    let result = (|| -> io::Result<ResourceFilter> {
-        let Some(section) = metadata.get(metadata::FILTER_SECTION) else {
-            return Ok(ResourceFilter::default());
-        };
-        let spec: ResourceFilterSpec = serde_json::from_value(section.clone())?;
-        spec.compile()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    })();
-    match result {
-        Ok(filter) => filter,
-        Err(error) => {
-            // Vanilla 26.3 MultiPackResourceManager.getPackFilterSection logs
-            // metadata/decode errors and ignores the entire section. Do not
-            // retain a successfully compiled prefix of an invalid block list.
-            tracing::error!(
-                pack = %origin.name,
-                pack_id = ?origin.pack_id,
-                %error,
-                "Invalid pack.mcmeta filter metadata; ignoring entire filter section (Rust regex syntax, not full Java Pattern support)"
-            );
-            ResourceFilter::default()
-        }
-    }
-}
-
-fn parse_meta_value(
-    v: &serde_json::Value,
-    fallback: &str,
-) -> (String, String, Option<PackFormatRange>) {
-    let pack = v.get(metadata::PACK_SECTION);
-
-    let description = pack
-        .and_then(|p| p.get(metadata::PACK_DESCRIPTION))
-        .and_then(|d| d.as_str())
-        .unwrap_or(fallback)
-        .to_owned();
-
-    let name = pack
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .unwrap_or(fallback)
-        .to_owned();
-
-    (name, description, pack.and_then(parse_resource_pack_range))
-}
-
 fn parse_pack_meta_dir(
     dir: &Path,
     fallback_name: &str,
     pack_id: PackId,
     target_format: Option<PackFormat>,
 ) -> PackInfo {
-    let meta_path = dir.join(metadata::PACK_METADATA_FILE);
-    let Some(v) = std::fs::read_to_string(&meta_path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-    else {
-        return PackInfo {
-            pack_id,
-            format_range: None,
-            name: fallback_name.to_owned(),
-            description: fallback_name.to_owned(),
-            compat: PackCompat::Unknown,
-            provenance: PackProvenance::Local,
-            enabled: false,
-        };
-    };
-
-    let (name, description, format_range) = parse_meta_value(&v, fallback_name);
-    PackInfo {
-        pack_id,
-        format_range,
-        name,
-        description,
-        compat: PackCompat::for_format(format_range, target_format),
-        provenance: PackProvenance::Local,
-        enabled: false,
-    }
+    PackMetadata::read(dir, None)
+        .unwrap_or_default()
+        .info(fallback_name, pack_id, target_format)
 }
 
 fn parse_pack_meta_zip(
@@ -716,24 +578,10 @@ fn parse_pack_meta_zip(
     pack_id: PackId,
     target_format: Option<PackFormat>,
 ) -> Option<PackInfo> {
-    let data = std::fs::read(path).ok()?;
-    let cursor = std::io::Cursor::new(data);
-    let mut archive = zip::ZipArchive::new(cursor).ok()?;
-    let mut mcmeta = archive.by_name(metadata::PACK_METADATA_FILE).ok()?;
-    let mut contents = String::new();
-    std::io::Read::read_to_string(&mut mcmeta, &mut contents).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&contents).ok()?;
-
-    let (name, description, format_range) = parse_meta_value(&v, fallback_name);
-    Some(PackInfo {
-        pack_id,
-        format_range,
-        name,
-        description,
-        compat: PackCompat::for_format(format_range, target_format),
-        provenance: PackProvenance::Local,
-        enabled: false,
-    })
+    let metadata = PackMetadata::read(path, Some(path)).ok()?;
+    metadata
+        .is_present()
+        .then(|| metadata.info(fallback_name, pack_id, target_format))
 }
 
 fn extract_zip(data: &[u8], dest: &Path) -> Result<(), PackError> {

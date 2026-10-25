@@ -516,7 +516,7 @@ pub struct MultipartEntry {
 pub fn load_all_block_textures(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> HashMap<String, FaceTextures> {
     let mut results = HashMap::new();
     let mut model_cache = HashMap::new();
@@ -553,7 +553,7 @@ type MultipartMap = HashMap<String, Vec<MultipartEntry>>;
 pub fn bake_all_models(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> (BakedModelMap, MultipartMap) {
     let mut results: BakedModelMap = HashMap::new();
     let mut multipart_results: HashMap<String, Vec<MultipartEntry>> = HashMap::new();
@@ -679,7 +679,7 @@ pub enum ItemTintSource {
 /// in `FallbackResourceManager`.
 fn item_definition_names(
     jar_assets_dir: &Path,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> std::collections::BTreeSet<String> {
     let pack_dirs = packs
         .into_iter()
@@ -812,7 +812,7 @@ fn parse_item_tint_sources(
 pub fn bake_item_models(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> BakedItemModels {
     let mut item_models: HashMap<String, BakedModel> = HashMap::new();
     let mut flat_item_textures: HashSet<String> = HashSet::new();
@@ -1578,7 +1578,7 @@ fn parse_when_condition(when: &Option<serde_json::Value>) -> HashMap<String, Str
 fn for_each_blockstate(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
     mut callback: impl FnMut(&str, &BlockstateFile) -> Option<()>,
 ) {
     let Some(blockstates_dir) = resolve_blockstates_dir(jar_assets_dir, asset_index, packs) else {
@@ -1617,7 +1617,7 @@ fn for_each_blockstate(
 fn resolve_blockstates_dir(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> Option<PathBuf> {
     let candidates = [
         jar_assets_dir.join("assets/minecraft/blockstates"),
@@ -1691,7 +1691,7 @@ fn resolve_model(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     cache: &mut HashMap<String, ModelFile>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> ResolvedModel {
     let mut texture_map: HashMap<String, String> = HashMap::new();
     let mut elements: Option<Vec<ElementDef>> = None;
@@ -1773,7 +1773,7 @@ fn load_model<'a>(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     cache: &'a mut HashMap<String, ModelFile>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> Option<&'a ModelFile> {
     if cache.contains_key(model_id) {
         return cache.get(model_id);
@@ -1799,7 +1799,7 @@ fn resolve_model_path(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     asset_key: &str,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> Option<PathBuf> {
     let primary = resolve_asset_path_with_packs(jar_assets_dir, asset_index, asset_key, packs);
     if primary.exists() {
@@ -3160,7 +3160,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut packs = crate::resource_pack::ResourcePackManager::new(
+        let mut packs = crate::resources::ResourcePackManager::new(
             &instance,
             "fixture",
             &root.join("fixture.jar"),

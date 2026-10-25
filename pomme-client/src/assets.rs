@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::resource_pack::ResourcePackManager;
+use crate::resources::ResourcePackManager;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AssetId<'a> {

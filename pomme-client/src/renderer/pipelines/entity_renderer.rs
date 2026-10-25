@@ -17,7 +17,7 @@ use crate::renderer::entity_model::{BakedEntityModel, EntityVertex};
 use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::rhi::{self, VertexFormat};
 use crate::renderer::{entity_model, shader, util};
-use crate::resource_pack::ResourcePackManager;
+use crate::resources::ResourcePackManager;
 use crate::world::block::BedDirection;
 
 pub const MAX_OVERLAYS: usize = 4;

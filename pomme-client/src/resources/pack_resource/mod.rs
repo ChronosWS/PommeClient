@@ -4,23 +4,23 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use super::PackId;
 use super::filter::ResourceFilter;
 use super::resource::{ResourceContent, ResourceError, ResourceId};
 use crate::assets::{AssetIndex, identifier_chars};
-use crate::resource_pack::PackId;
 
 mod directory;
-pub(crate) mod embedded;
+pub(super) mod embedded;
 mod indexed;
 mod overlay;
 mod zip;
 
-pub(crate) use directory::DirectoryPackResources;
-pub(crate) use indexed::IndexedPackResources;
-pub(crate) use zip::ZipPackResources;
+use directory::DirectoryPackResources;
+use indexed::IndexedPackResources;
+use zip::ZipPackResources;
 
-/// Storage selected by the caller, independent of pack identity and priority.
-pub(crate) enum PackStorage {
+/// Storage selected by pack management, independent of identity and priority.
+pub(super) enum PackStorage {
     /// Namespace-containing directory, normally `<pack root>/assets`.
     Directory(PathBuf),
     Zip(PathBuf),
@@ -38,10 +38,10 @@ pub(crate) enum PackStorage {
 
 /// One logical pack, with zero or more physical layers in low-to-high order.
 /// Its filter affects only lower packs, never any of its own layers.
-pub(crate) struct ResourcePackDescriptor {
-    pub(crate) storage: Vec<PackStorage>,
-    pub(crate) origin: ResourceOrigin,
-    pub(crate) filter: ResourceFilter,
+pub(super) struct ResourcePackDescriptor {
+    pub(super) storage: Vec<PackStorage>,
+    pub(super) origin: ResourceOrigin,
+    pub(super) filter: ResourceFilter,
 }
 
 #[derive(Clone)]
@@ -101,7 +101,7 @@ impl ResourcePackDescriptor {
 
 /// Owned byte stream; dropping it releases its backing state.
 pub(crate) type ReadStream = Box<dyn Read + 'static>;
-pub(crate) type SharedPackResources = Rc<dyn PackResources>;
+pub(super) type SharedPackResources = Rc<dyn PackResources>;
 
 /// Logical pack provenance and diagnostic display metadata, not source
 /// identity. Compare pack_id for identity; names can change and layers can
@@ -109,8 +109,18 @@ pub(crate) type SharedPackResources = Rc<dyn PackResources>;
 /// different pack.
 #[derive(Clone, Debug)]
 pub(crate) struct ResourceOrigin {
-    pub(crate) pack_id: PackId,
-    pub(crate) name: String,
+    pub(super) pack_id: PackId,
+    pub(super) name: String,
+}
+
+impl ResourceOrigin {
+    pub(crate) fn pack_id(&self) -> &PackId {
+        &self.pack_id
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Resource bytes from one source layer, with syntax-checked logical IDs.
@@ -118,7 +128,7 @@ pub(crate) struct ResourceOrigin {
 /// Current adapters access the assets tree; other resource domains are not
 /// wired. Access failures must not become absence or empty results.
 /// Providers and resource acquisition stay on the application thread.
-pub(crate) trait PackResources {
+pub(super) trait PackResources {
     fn origin(&self) -> &ResourceOrigin;
 
     /// Exact lookup: None is absence in a usable source, Err is access failure.

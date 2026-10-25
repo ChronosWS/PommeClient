@@ -1,20 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use super::ResourceSources;
 use super::pack_resource::{OpenedResourcePack, ResourcePackDescriptor, validate_query};
 use super::resource::{Resource, ResourceError, ResourceId};
 
 /// App-lifetime owner of the active source stack, ordered low-to-high priority.
-/// Pack discovery and selection belong to the caller.
+/// Pack discovery and selection belong to pack management.
 pub(crate) struct ResourceManager {
     packs: Vec<OpenedResourcePack>,
 }
 
 impl ResourceManager {
-    pub(crate) fn new(
-        sources: impl IntoIterator<Item = ResourcePackDescriptor>,
-    ) -> Result<Self, ResourceError> {
+    pub(crate) fn new(sources: ResourceSources) -> Result<Self, ResourceError> {
         let packs = sources
+            .0
             .into_iter()
             .map(ResourcePackDescriptor::open)
             .collect::<Result<Vec<_>, _>>()?;
@@ -26,7 +26,7 @@ impl ResourceManager {
     /// not immutable filesystem bytes. Consumer failures do not roll back.
     pub(crate) fn reload(
         &mut self,
-        sources: impl IntoIterator<Item = ResourcePackDescriptor>,
+        sources: ResourceSources,
         rebuild: impl FnOnce(&Self),
     ) -> Result<(), ResourceError> {
         let candidate = Self::new(sources)?;

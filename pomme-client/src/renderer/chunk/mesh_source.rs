@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::assets::AssetIndex;
 use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_names};
 use crate::renderer::chunk::mesher::{BiomeClimate, MeshDispatcher};
-use crate::resource_pack::ResourcePackManager;
+use crate::resources::ResourcePackManager;
 use crate::world::block::model::CardinalLightType;
 use crate::world::block::render_assets::{BlockRenderAssets, OwnedBlockRenderView};
 

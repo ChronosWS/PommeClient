@@ -351,7 +351,7 @@ impl Colormap {
         jar_assets_dir: &std::path::Path,
         asset_index: &Option<crate::assets::AssetIndex>,
         colormap_path: &str,
-        packs: Option<&crate::resource_pack::ResourcePackManager>,
+        packs: Option<&crate::resources::ResourcePackManager>,
     ) -> Self {
         let path = crate::assets::resolve_asset_path_with_packs(
             jar_assets_dir,
@@ -721,7 +721,7 @@ impl MeshDispatcher {
         uv_map: AtlasUVMap,
         jar_assets_dir: &std::path::Path,
         asset_index: &Option<crate::assets::AssetIndex>,
-        packs: Option<&crate::resource_pack::ResourcePackManager>,
+        packs: Option<&crate::resources::ResourcePackManager>,
         biome_climate: Arc<HashMap<u32, BiomeClimate>>,
         cardinal_lighting: CardinalLighting,
     ) -> Self {

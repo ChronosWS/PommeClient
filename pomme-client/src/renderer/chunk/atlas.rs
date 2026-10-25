@@ -549,7 +549,7 @@ fn resolve_texture_resource(
     asset_key: &str,
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
 ) -> (PathBuf, Option<PathBuf>) {
     if let Some((path, metadata)) =
         packs.and_then(|packs| packs.resolve_asset_with_metadata(asset_key))
@@ -580,7 +580,7 @@ fn load_source(
     name: &str,
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resource_pack::ResourcePackManager>,
+    packs: Option<&crate::resources::ResourcePackManager>,
     retain_alpha_mask: bool,
 ) -> Source {
     let asset_key = atlas_asset_path(name);
@@ -663,7 +663,7 @@ impl TextureAtlas {
         asset_index: &Option<AssetIndex>,
         texture_names: &HashSet<&str>,
         generated_item_textures: &HashSet<&str>,
-        packs: Option<&crate::resource_pack::ResourcePackManager>,
+        packs: Option<&crate::resources::ResourcePackManager>,
     ) -> Result<Self, String> {
         let AtlasCpu {
             uv_map,
@@ -862,7 +862,7 @@ impl TextureAtlas {
         asset_index: &Option<AssetIndex>,
         texture_names: &HashSet<&str>,
         generated_item_textures: &HashSet<&str>,
-        packs: Option<&crate::resource_pack::ResourcePackManager>,
+        packs: Option<&crate::resources::ResourcePackManager>,
     ) -> AtlasCpu {
         let mut sources: Vec<Source> = Vec::with_capacity(texture_names.len());
         for &name in texture_names {
@@ -2042,7 +2042,7 @@ mod tests {
         replacement.put_pixel(1, 3, image::Rgba([255, 255, 255, 255]));
         replacement.save(&pack_path).unwrap();
 
-        let mut packs = crate::resource_pack::ResourcePackManager::new(
+        let mut packs = crate::resources::ResourcePackManager::new(
             &instance,
             "fixture",
             &root.join("fixture.jar"),

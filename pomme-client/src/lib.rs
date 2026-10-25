@@ -30,7 +30,6 @@ mod player;
 mod position;
 mod recipe;
 mod renderer;
-mod resource_pack;
 #[allow(dead_code)] // Resource contracts are typechecked; only exact lookup is live.
 pub(crate) mod resources;
 mod singleplayer;

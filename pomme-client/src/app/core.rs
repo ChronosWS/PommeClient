@@ -30,8 +30,7 @@ use crate::player::LocalPlayer;
 use crate::player::tab_list::{PlayerChatValidation, TabList};
 use crate::renderer::Renderer;
 use crate::renderer::chunk::mesh_source::MeshSource;
-use crate::resource_pack::ResourcePackManager;
-use crate::resources::ResourceError;
+use crate::resources::{ResourceError, ResourcePackManager};
 use crate::ui::menu::{
     CREDITS_KEY_CTRL_L, CREDITS_KEY_CTRL_R, CREDITS_KEY_SPACE, CREDITS_KEY_UP, MainMenu, MenuInput,
 };
@@ -48,7 +47,7 @@ pub struct PendingPackDownload {
     pub handle: std::thread::JoinHandle<PackDownloadResult>,
 }
 
-pub type PackDownloadResult = Result<std::path::PathBuf, crate::resource_pack::PackError>;
+pub type PackDownloadResult = Result<std::path::PathBuf, crate::resources::PackError>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PlayerSkinSource {
@@ -1012,7 +1011,7 @@ impl AppCore {
         }
         let resources = crate::resources::ResourceManager::new(
             resource_packs
-                .source_descriptors()
+                .sources()
                 .expect("failed to describe startup resources"),
         )
         .expect("failed to open startup resources");
@@ -1691,7 +1690,7 @@ impl AppCore {
         if let Some(index) = &installed_index {
             resource_packs.register_installation(index.clone());
         }
-        let result = resource_packs.source_descriptors().and_then(|sources| {
+        let result = resource_packs.sources().and_then(|sources| {
             resources.reload(sources, |resources| {
                 menu.available_packs = resource_packs.available_local_packs().to_vec();
                 menu.active_packs = resource_packs.active_pack_info();

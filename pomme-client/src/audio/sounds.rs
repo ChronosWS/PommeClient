@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::assets::{AssetIndex, resolve_asset_path};
-use crate::resource_pack::ResourcePackManager;
+use crate::resources::ResourcePackManager;
 use crate::util::JavaRandom;
 
 /// Vanilla `SoundEventRegistrationSerializer`'s `attenuation_distance` default.

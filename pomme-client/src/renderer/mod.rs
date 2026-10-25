@@ -1216,7 +1216,7 @@ impl Renderer {
 
     pub fn reload_assets(
         &mut self,
-        packs: &crate::resource_pack::ResourcePackManager,
+        packs: &crate::resources::ResourcePackManager,
         resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {
@@ -1285,7 +1285,7 @@ impl Renderer {
     /// Vanilla `FontManager.updateOptions`: only the font sets change.
     pub fn reload_fonts(
         &mut self,
-        packs: &crate::resource_pack::ResourcePackManager,
+        packs: &crate::resources::ResourcePackManager,
         resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {

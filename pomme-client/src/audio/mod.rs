@@ -16,7 +16,7 @@ use self::openal::{Buffer, Context, Source, SourceState};
 use self::sounds::{SoundVariant, SoundsIndex};
 use crate::assets::AssetIndex;
 use crate::entity::components::Position;
-use crate::resource_pack::ResourcePackManager;
+use crate::resources::ResourcePackManager;
 
 const MENU_MUSIC_EVENT: &str = "music.menu";
 const UI_CLICK_EVENT: &str = "ui.button.click";
