@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::assets::{AssetId, AssetIndex};
+use crate::assets::AssetId;
 use crate::resources::{ResourceContent, ResourceError, ResourceId, ResourceManager};
 
 #[cfg(feature = "ttf-fonts")]
@@ -31,7 +31,6 @@ pub(crate) struct FontOptions {
 pub(crate) struct FontSources<'a> {
     pub resources: &'a ResourceManager,
     pub jar_assets_dir: &'a std::path::Path,
-    pub asset_index: &'a Option<AssetIndex>,
     pub options: FontOptions,
 }
 
@@ -1662,7 +1661,6 @@ mod tests {
                 FontSources {
                     resources: &self.resource_manager(&self.packs, &self.jar()),
                     jar_assets_dir: &self.jar(),
-                    asset_index: &None,
                     options: FontOptions::default(),
                 },
                 u32::MAX,
@@ -1676,7 +1674,6 @@ mod tests {
                         .resources
                         .get_or_init(|| self.resource_manager(&self.packs, &self.root)),
                     jar_assets_dir: self.root.as_path(),
-                    asset_index: &None,
                     options: FontOptions::default(),
                 },
                 missing: Arc::new(space_glyph(6.0)),
@@ -2061,7 +2058,6 @@ mod tests {
             FontSources {
                 resources: &fixture.resource_manager(&packs, &fixture.jar()),
                 jar_assets_dir: &fixture.jar(),
-                asset_index: &None,
                 options: FontOptions::default(),
             },
             u32::MAX,
@@ -2115,7 +2111,6 @@ mod tests {
                 FontSources {
                     resources: &fixture.resource_manager(packs, &fixture.jar()),
                     jar_assets_dir: &fixture.jar(),
-                    asset_index: &None,
                     options: FontOptions::default(),
                 },
                 u32::MAX,

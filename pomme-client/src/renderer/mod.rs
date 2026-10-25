@@ -52,7 +52,6 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::app::input::InputState;
-use crate::assets::AssetIndex;
 use crate::entity::components::{LookDirection, Position};
 use crate::position::{BlockPos, ChunkPos};
 use crate::renderer::chunk::block_lighter::LightLevels;
@@ -250,7 +249,6 @@ pub struct Renderer {
 
     render_assets: Arc<BlockRenderAssets>,
     jar_assets_dir: PathBuf,
-    asset_index: Option<AssetIndex>,
 
     chunk_pipeline: ChunkPipeline,
     lightmap: Lightmap,
@@ -309,7 +307,6 @@ impl Renderer {
         let FontSources {
             resources,
             jar_assets_dir,
-            asset_index,
             options: font_options,
         } = font_sources;
         // Providers are application-thread-only. The model worker receives
@@ -377,8 +374,7 @@ impl Renderer {
         let hand_pipeline = HandPipeline::new(
             &ctx.device,
             swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
+            resources,
             &lightmap,
         );
 
@@ -430,8 +426,6 @@ impl Renderer {
         let entity_renderer = EntityRenderer::new(
             &ctx.device,
             swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
             resources,
             &lightmap,
         );
@@ -495,7 +489,6 @@ impl Renderer {
             camera,
             render_assets,
             jar_assets_dir: jar_assets_dir.to_path_buf(),
-            asset_index: asset_index.clone(),
             atlas,
             chunk_pipeline,
             lightmap,
@@ -1269,6 +1262,22 @@ impl Renderer {
             &self.ctx.device,
             resources,
         );
+        self.entity_renderer.reload_default_player_textures(
+            &self.ctx.device,
+            resources,
+        );
+        if let Some(old_skin) = self.hand_pipeline.reload_default_skin(
+            &self.ctx.device,
+            resources,
+        ) {
+            // Rebind both consumers before retiring the hand-owned texture.
+            self.skin_preview.rebind_skin(
+                &self.ctx.device,
+                self.hand_pipeline.skin_texture(),
+                self.hand_pipeline.skin_sampler(),
+            );
+            old_skin.destroy(&self.ctx.device);
+        }
 
         self.reload_fonts_idle(resources, font_options);
         if let Err(error) = self.menu_pipeline.reload_gui_assets(
@@ -1276,7 +1285,6 @@ impl Renderer {
             FontSources {
                 resources,
                 jar_assets_dir: &self.jar_assets_dir,
-                asset_index: &self.asset_index,
                 options: font_options,
             },
         ) {
@@ -1335,7 +1343,6 @@ impl Renderer {
             FontSources {
                 resources,
                 jar_assets_dir: &self.jar_assets_dir,
-                asset_index: &self.asset_index,
                 options: font_options,
             },
         ) {
@@ -1384,7 +1391,7 @@ impl Renderer {
                 // In-flight frames may still reference the old skin texture,
                 // hand mesh, and preview pipeline about to be destroyed.
                 self.ctx.device.wait_idle();
-                self.hand_pipeline.reload_skin(&self.ctx.device, &skin);
+                let old_skin = self.hand_pipeline.reload_skin(&self.ctx.device, &skin);
                 self.skin_preview.destroy(&self.ctx.device);
                 self.skin_preview = SkinPreviewPipeline::new(
                     &self.ctx.device,
@@ -1393,6 +1400,7 @@ impl Renderer {
                     self.hand_pipeline.skin_sampler(),
                     skin.slim,
                 );
+                old_skin.destroy(&self.ctx.device);
                 self.update_player_entity_skin(uuid, &skin);
             }
             Err(e) => tracing::warn!("Failed to load player skin: {e}"),

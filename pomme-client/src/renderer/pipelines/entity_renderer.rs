@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use azalea_inventory::ItemStack;
@@ -8,7 +7,6 @@ use azalea_inventory::components::{DataComponentTrait, DyedColor, EquipmentSlot,
 use azalea_registry::builtin::EntityKind;
 use serde::Deserialize;
 
-use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::entity::components::Position;
 use crate::entity::dimensions;
 use crate::renderer::camera::CameraUniform;
@@ -311,8 +309,8 @@ struct MobTextureDefinition {
 }
 
 struct MobVariant {
-    /// Default player skins remain on the legacy path until their migration.
-    texture_definition: Option<MobTextureDefinition>,
+    /// Static fallback only; downloaded player skins are stored separately.
+    texture_definition: MobTextureDefinition,
     model: BakedEntityModel,
     vertex_buffer: rhi::backend::Buffer,
     texture: rhi::backend::Texture,
@@ -1748,8 +1746,6 @@ impl EntityRenderer {
     pub fn new(
         device: &rhi::backend::Device,
         targets: rhi::backend::PipelineTargets,
-        jar_assets_dir: &Path,
-        asset_index: &Option<AssetIndex>,
         resources: &ResourceManager,
         lightmap: &Lightmap,
     ) -> Self {
@@ -1814,9 +1810,7 @@ impl EntityRenderer {
                     texture_layout,
                     texture_sampler,
                     texture_sampler_repeat,
-                    jar_assets_dir,
-                    asset_index,
-                    (def.kind != EntityKind::Player).then_some(resources),
+                    resources,
                     v,
                 )
             };
@@ -1894,8 +1888,31 @@ impl EntityRenderer {
         device: &rhi::backend::Device,
         resources: &ResourceManager,
     ) {
+        self.reload_static_textures(device, resources, |kind| {
+            kind != EntityKind::Player
+        });
+    }
+
+    /// Reload only static player fallbacks, never the UUID-keyed profile skins.
+    /// The caller must wait for device idle before replacing sampled images.
+    pub fn reload_default_player_textures(
+        &mut self,
+        device: &rhi::backend::Device,
+        resources: &ResourceManager,
+    ) {
+        self.reload_static_textures(device, resources, |kind| {
+            kind == EntityKind::Player
+        });
+    }
+
+    fn reload_static_textures(
+        &mut self,
+        device: &rhi::backend::Device,
+        resources: &ResourceManager,
+        include_kind: impl Fn(EntityKind) -> bool,
+    ) {
         for (kind, entry) in &mut self.mobs {
-            if *kind == EntityKind::Player {
+            if !include_kind(*kind) {
                 continue;
             }
             for variant in entry
@@ -1905,10 +1922,7 @@ impl EntityRenderer {
                 .chain(entry.adult_overlays.iter_mut().flatten())
                 .chain(entry.baby_overlays.iter_mut().flatten())
             {
-                let definition = variant
-                    .texture_definition
-                    .as_ref()
-                    .expect("non-player variant has a managed texture definition");
+                let definition = &variant.texture_definition;
                 let (pixels, width, height) = load_mob_texture(resources, definition);
                 let texture =
                     util::create_sampled_texture(device, "entity_texture", &pixels, width, height);
@@ -3052,9 +3066,7 @@ fn build_variants(
     texture_layout: rhi::backend::BindGroupLayout,
     texture_sampler: rhi::backend::Sampler,
     texture_sampler_repeat: rhi::backend::Sampler,
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    resources: Option<&ResourceManager>,
+    resources: &ResourceManager,
     variant: VariantDef,
 ) -> Vec<MobVariant> {
     let VariantDef {
@@ -3081,7 +3093,7 @@ fn build_variants(
                 rhi::BufferUsages::VERTEX,
             );
 
-            let texture_definition = resources.map(|_| MobTextureDefinition {
+            let texture_definition = MobTextureDefinition {
                 ids: tex_keys
                     .iter()
                     .map(|key| {
@@ -3091,12 +3103,8 @@ fn build_variants(
                     .collect(),
                 fallback_size: tex_size,
                 sampler,
-            });
-            let pixels = match (resources, &texture_definition) {
-                (Some(resources), Some(definition)) => load_mob_texture(resources, definition),
-                _ => load_default_player_texture(jar_assets_dir, asset_index, tex_keys, tex_size),
             };
-            let (pixels, width, height) = pixels;
+            let (pixels, width, height) = load_mob_texture(resources, &texture_definition);
             let texture =
                 util::create_sampled_texture(device, "entity_texture", &pixels, width, height);
 
@@ -3132,15 +3140,11 @@ fn load_mob_texture(
             })
             .map_err(|error| error.to_string())
             .and_then(|bytes| {
-                image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                    .map(|image| image.to_rgba8())
+                util::load_png_reader(bytes.as_slice(), MAX_MOB_TEXTURE_BYTES)
                     .map_err(|error| error.to_string())
             });
         match image {
-            Ok(image) => {
-                let (width, height) = image.dimensions();
-                return (image.into_raw(), width, height);
-            }
+            Ok(image) => return image,
             Err(error) => tracing::warn!("Failed to load mob texture {id}: {error}"),
         }
         // Preserve the consumer's ordered alternative-ID behavior on missing,
@@ -3152,27 +3156,6 @@ fn load_mob_texture(
         definition.ids
     );
     fallback_texture(definition.fallback_size)
-}
-
-fn load_default_player_texture(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    asset_keys: &[&str],
-    fallback_size: u32,
-) -> (Vec<u8>, u32, u32) {
-    asset_keys
-        .iter()
-        .find_map(|key| {
-            let path = resolve_asset_path(jar_assets_dir, asset_index, key);
-            util::load_png(&path)
-        })
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                "Failed to load entity texture {:?}, using fallback",
-                asset_keys
-            );
-            fallback_texture(fallback_size)
-        })
 }
 
 // TODO: frames in flight may still read a replaced, removed or cleared skin;

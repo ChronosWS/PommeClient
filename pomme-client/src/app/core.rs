@@ -1659,7 +1659,6 @@ impl AppCore {
         crate::ui::font::FontSources {
             resources: &self.resources,
             jar_assets_dir: &self.data_dirs.jar_assets_dir,
-            asset_index: &self.asset_index,
             options: self.menu.font_options(),
         }
     }
