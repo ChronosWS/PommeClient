@@ -387,12 +387,7 @@ impl Renderer {
 
         splash(&mut menu_pipeline, 0.7, "Loading sky and panorama...");
 
-        let sky_pipeline = SkyPipeline::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
-        );
+        let sky_pipeline = SkyPipeline::new(&ctx.device, swapchain_state.targets(), resources);
 
         let weather_pipeline =
             WeatherPipeline::new(&ctx.device, swapchain_state.targets(), resources);
@@ -1271,6 +1266,8 @@ impl Renderer {
         self.reload_panorama_resources(resources);
         self.cloud_pipeline.reload_resources(resources);
         self.weather_pipeline
+            .reload_textures(&self.ctx.device, resources);
+        self.sky_pipeline
             .reload_textures(&self.ctx.device, resources);
 
         warm_item_meshes(
