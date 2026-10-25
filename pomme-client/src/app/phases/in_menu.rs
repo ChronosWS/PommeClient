@@ -147,20 +147,7 @@ pub fn update_menu(
     gfx.renderer
         .set_menu_blur_radius(core.menu.menu_background_blurriness);
 
-    if core.menu.rescan_packs {
-        core.menu.rescan_packs = false;
-        core.resource_packs.scan_local_packs();
-        core.menu.available_packs = core.resource_packs.available_local_packs().to_vec();
-        core.menu.active_packs = core.resource_packs.active_pack_info();
-    }
-
-    if let Some((pack_id, enable)) = core.menu.pack_toggle.take() {
-        core.resource_packs.set_local_pack_enabled(&pack_id, enable);
-        core.menu.active_packs = core.resource_packs.active_pack_info();
-        core.menu.available_packs = core.resource_packs.available_local_packs().to_vec();
-    }
-
-    if core.menu.reload_assets
+    if core.process_resource_pack_requests()
         && let Err(error) = core.reload_pack_assets(&mut gfx.renderer)
     {
         tracing::error!(%error, "Failed to reload selected packs; resource sources unchanged");

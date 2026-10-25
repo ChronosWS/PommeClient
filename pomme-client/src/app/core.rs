@@ -1574,7 +1574,25 @@ impl AppCore {
         renderer.remove_player_entity_skin(uuid);
     }
 
-    fn reload_live_resource_assets(
+    /// Applies local pack requests from either options screen. The caller must
+    /// rebuild live world consumers too when a reload is requested in game.
+    pub(crate) fn process_resource_pack_requests(&mut self) -> bool {
+        if std::mem::take(&mut self.menu.rescan_packs) {
+            self.resource_packs.scan_local_packs();
+            self.menu.available_packs = self.resource_packs.available_local_packs().to_vec();
+            self.menu.active_packs = self.resource_packs.active_pack_info();
+        }
+
+        if let Some((pack_id, enable)) = self.menu.pack_toggle.take() {
+            self.resource_packs.set_local_pack_enabled(&pack_id, enable);
+            self.menu.active_packs = self.resource_packs.active_pack_info();
+            self.menu.available_packs = self.resource_packs.available_local_packs().to_vec();
+        }
+
+        self.menu.reload_assets
+    }
+
+    pub(crate) fn reload_live_resource_assets(
         &mut self,
         game: &mut GameState,
         renderer: &mut Renderer,

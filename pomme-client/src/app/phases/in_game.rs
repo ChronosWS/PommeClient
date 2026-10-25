@@ -4473,8 +4473,11 @@ pub fn update_game(
         );
     }
     if game.options_from_game {
-        // TODO: a resource-pack toggle's `menu.reload_assets` is only applied
-        // once back on the title screen.
+        if core.process_resource_pack_requests()
+            && let Err(error) = core.reload_live_resource_assets(game, &mut gfx.renderer)
+        {
+            tracing::error!(%error, "Failed to reload selected packs; resource sources unchanged");
+        }
         core.apply_font_options(&mut gfx.renderer);
         if !core.menu.is_options_screen() {
             game.options_from_game = false;
