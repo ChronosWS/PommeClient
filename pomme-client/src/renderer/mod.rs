@@ -442,12 +442,8 @@ impl Renderer {
 
         let moving_block_buffers = MovingBlockBuffers::new(&ctx.device);
 
-        let entity_shadow_pipeline = EntityShadowPipeline::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
-        );
+        let entity_shadow_pipeline =
+            EntityShadowPipeline::new(&ctx.device, swapchain_state.targets(), resources);
 
         let block_entity_pipeline = BlockEntityPipeline::new(
             &ctx.device,
@@ -1269,6 +1265,8 @@ impl Renderer {
             .reload_textures(&self.ctx.device, resources);
         self.sky_pipeline
             .reload_textures(&self.ctx.device, resources);
+        self.entity_shadow_pipeline
+            .reload_texture(&self.ctx.device, resources);
 
         warm_item_meshes(
             &self.ctx.device,
