@@ -998,13 +998,7 @@ impl AppCore {
         )
         .expect("failed to open startup resources");
         let audio = if installed {
-            crate::audio::AudioEngine::new(
-                &resources,
-                &data_dirs.jar_assets_dir,
-                asset_index.clone(),
-                &resource_packs,
-                menu.category_volumes(),
-            )
+            crate::audio::AudioEngine::new(&resources, menu.category_volumes())
         } else {
             crate::audio::AudioEngine::disabled()
         };
@@ -1706,15 +1700,9 @@ impl AppCore {
                 menu.load_splash(resources);
                 if let Some(index) = installed_index {
                     *asset_index = index;
-                    *audio = crate::audio::AudioEngine::new(
-                        resources,
-                        &data_dirs.jar_assets_dir,
-                        asset_index.clone(),
-                        resource_packs,
-                        menu.category_volumes(),
-                    );
+                    *audio = crate::audio::AudioEngine::new(resources, menu.category_volumes());
                 } else {
-                    audio.reload_assets(resources, resource_packs);
+                    audio.reload_assets(resources);
                 }
                 // A pack swap changes what the sprites look like, so they reload.
                 inline_objects

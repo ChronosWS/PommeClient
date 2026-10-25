@@ -183,6 +183,8 @@ impl ResourcePackManager {
             .find(|pack_id| pack_id.known_pack() == Some(known_pack))
     }
 
+    // Retained only for the legacy path-safety regression fixture.
+    #[cfg(test)]
     pub fn resolve_asset(&self, asset_key: &str) -> Option<PathBuf> {
         if !crate::assets::valid_asset_key(asset_key) {
             return None;

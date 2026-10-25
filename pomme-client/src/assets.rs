@@ -147,6 +147,8 @@ impl AssetIndex {
         })
     }
 
+    // Retained only for the legacy path-safety regression fixture.
+    #[cfg(test)]
     pub fn resolve(&self, asset_key: &str) -> Option<PathBuf> {
         let hash = self.hashes.get(asset_key)?;
         let path = self.objects_dir.join(&hash[..2]).join(hash);
@@ -161,9 +163,8 @@ impl AssetIndex {
         &self.objects_dir
     }
 
-    /// Error-aware lookup for the resource boundary; legacy callers retain
-    /// `resolve`'s behavior. A malformed hash must not become a filesystem
-    /// path.
+    /// Error-aware lookup for the resource boundary. A malformed hash must not
+    /// become a filesystem path.
     pub(crate) fn resolve_checked(&self, asset_key: &str) -> std::io::Result<Option<PathBuf>> {
         let Some(hash) = self.hashes.get(asset_key) else {
             return Ok(None);

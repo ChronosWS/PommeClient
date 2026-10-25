@@ -3,8 +3,8 @@ mod openal;
 mod sounds;
 
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -13,10 +13,9 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use self::decoder::{StreamDecoder, decode_all};
 use self::openal::{Buffer, Context, Source, SourceState};
-use self::sounds::{SoundVariant, SoundsIndex};
-use crate::assets::AssetIndex;
+use self::sounds::{SoundAsset, SoundVariant, SoundsIndex};
 use crate::entity::components::Position;
-use crate::resources::{ResourceManager, ResourcePackManager};
+use crate::resources::{ResourceId, ResourceManager};
 
 const MENU_MUSIC_EVENT: &str = "music.menu";
 const UI_CLICK_EVENT: &str = "ui.button.click";
@@ -29,6 +28,12 @@ const LOGICAL_SOUND_RETENTION_TICKS: i32 = 20;
 const MENU_MUSIC_STARTING_DELAY_TICKS: i32 = 100;
 const MENU_MUSIC_MIN_DELAY_TICKS: i32 = 20;
 const MENU_MUSIC_MAX_DELAY_TICKS: i32 = 600;
+
+/// Worker-only encoded input limits, independent of the existing PCM cache.
+/// Static decoding releases its input after decoding. Each active stream owns
+/// its input until dropped; no compressed-file cache or eager prefetch exists.
+const MAX_ENCODED_SOUND_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ACTIVE_STREAM_BYTES: usize = 256 * 1024 * 1024;
 
 /// Sound categories, matching the protocol `SoundSource` order so a packet's
 /// source index maps straight onto a volume slot.
@@ -131,7 +136,7 @@ pub struct QueuedSubtitle {
 #[derive(Clone, Debug)]
 struct ResolvedSound {
     sound_id: String,
-    path: PathBuf,
+    asset: SoundAsset,
     entry_volume: f32,
     entry_pitch: f32,
     stream: bool,
@@ -142,7 +147,7 @@ struct ResolvedSound {
 struct PlayCommand {
     id: u64,
     sound_id: String,
-    path: PathBuf,
+    asset: SoundAsset,
     category: SoundCategory,
     volume: f32,
     pitch: f32,
@@ -195,8 +200,6 @@ pub struct AudioEngine {
     command_tx: Option<Sender<AudioCommand>>,
     event_rx: Receiver<AudioEvent>,
     worker: Option<JoinHandle<()>>,
-    jar_assets_dir: PathBuf,
-    asset_index: Option<AssetIndex>,
     sounds: SoundsIndex,
     volumes: [f32; SoundCategory::COUNT],
     subtitles_enabled: bool,
@@ -213,14 +216,8 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
-    pub fn new(
-        resources: &ResourceManager,
-        jar_assets_dir: &Path,
-        asset_index: Option<AssetIndex>,
-        packs: &ResourcePackManager,
-        volumes: [f32; SoundCategory::COUNT],
-    ) -> Self {
-        let sounds = match SoundsIndex::load(resources, jar_assets_dir, &asset_index, packs) {
+    pub fn new(resources: &ResourceManager, volumes: [f32; SoundCategory::COUNT]) -> Self {
+        let sounds = match SoundsIndex::load(resources) {
             Ok(sounds) => sounds,
             Err(error) => {
                 tracing::warn!(%error, "audio disabled: failed to load sound registry");
@@ -278,15 +275,7 @@ impl AudioEngine {
             }
         };
 
-        Self::attached(
-            command_tx,
-            event_rx,
-            worker,
-            jar_assets_dir.to_path_buf(),
-            asset_index,
-            sounds,
-            volumes,
-        )
+        Self::attached(command_tx, event_rx, worker, sounds, volumes)
     }
 
     /// Bootstrap without installed sources must not open a device or worker.
@@ -295,8 +284,6 @@ impl AudioEngine {
         Self::attached(
             None,
             event_rx,
-            None,
-            PathBuf::new(),
             None,
             SoundsIndex::default(),
             [1.0; SoundCategory::COUNT],
@@ -308,8 +295,6 @@ impl AudioEngine {
         command_tx: Option<Sender<AudioCommand>>,
         event_rx: Receiver<AudioEvent>,
         worker: Option<JoinHandle<()>>,
-        jar_assets_dir: PathBuf,
-        asset_index: Option<AssetIndex>,
         sounds: SoundsIndex,
         volumes: [f32; SoundCategory::COUNT],
     ) -> Self {
@@ -317,8 +302,6 @@ impl AudioEngine {
             command_tx,
             event_rx,
             worker,
-            jar_assets_dir,
-            asset_index,
             sounds,
             volumes,
             subtitles_enabled: false,
@@ -342,8 +325,6 @@ impl AudioEngine {
             Some(command_tx),
             event_rx,
             None,
-            PathBuf::new(),
-            None,
             SoundsIndex::default(),
             [1.0; SoundCategory::COUNT],
         );
@@ -360,13 +341,8 @@ impl AudioEngine {
 
     /// Rebuilds the sound-event registry against the current resource-pack
     /// stack and clears native sources/buffers that may reference old assets.
-    pub fn reload_assets(&mut self, resources: &ResourceManager, packs: &ResourcePackManager) {
-        let sounds = match SoundsIndex::load(
-            resources,
-            &self.jar_assets_dir,
-            &self.asset_index,
-            packs,
-        ) {
+    pub fn reload_assets(&mut self, resources: &ResourceManager) {
+        let sounds = match SoundsIndex::load(resources) {
             Ok(sounds) => sounds,
             Err(error) => {
                 tracing::warn!(%error, "failed to reload sound registry; retaining previous audio state");
@@ -432,7 +408,7 @@ impl AudioEngine {
         self.send(AudioCommand::Play(PlayCommand {
             id,
             sound_id: sound.sound_id,
-            path: sound.path,
+            asset: sound.asset,
             category: SoundCategory::Ui,
             volume: volume * sound.entry_volume,
             pitch: pitch * sound.entry_pitch,
@@ -517,7 +493,7 @@ impl AudioEngine {
         self.send(AudioCommand::Play(PlayCommand {
             id,
             sound_id: sound.sound_id,
-            path: sound.path,
+            asset: sound.asset,
             category: SoundCategory::from_index(category),
             volume: instance_volume,
             pitch: pitch * sound.entry_pitch,
@@ -640,7 +616,7 @@ impl AudioEngine {
         self.send(AudioCommand::Play(PlayCommand {
             id,
             sound_id: sound.sound_id,
-            path: sound.path,
+            asset: sound.asset,
             category: SoundCategory::Music,
             volume: sound.entry_volume,
             pitch: sound.entry_pitch,
@@ -668,7 +644,7 @@ impl AudioEngine {
     fn resolve_variant(&self, event: &str, variant: SoundVariant) -> ResolvedSound {
         ResolvedSound {
             sound_id: canonical_sound_id(event),
-            path: variant.path,
+            asset: variant.asset,
             entry_volume: variant.volume,
             entry_pitch: variant.pitch,
             stream: variant.stream,
@@ -707,7 +683,11 @@ struct AudioWorker {
     volumes: [f32; SoundCategory::COUNT],
     commands: Receiver<AudioCommand>,
     events: Sender<AudioEvent>,
-    static_buffers: HashMap<PathBuf, Rc<Buffer>>,
+    // IDs identify winners only within one registry view. The engine alone owns
+    // the sender; FIFO ReloadAssets drops all voices and PCM before any play
+    // from the new registry. No other producer can submit an old view later.
+    // Queued old plays pin their selected sources until that reload boundary.
+    static_buffers: HashMap<ResourceId, Rc<Buffer>>,
     active: HashMap<u64, ActiveSound>,
 }
 
@@ -860,6 +840,8 @@ impl AudioWorker {
                 self.clear_active();
             }
             AudioCommand::ReloadAssets => {
+                // Also drops the decoders' encoded bytes. No cached PCM survives
+                // this registry boundary, even for an unchanged logical ID.
                 self.clear_active();
                 self.static_buffers.clear();
             }
@@ -918,7 +900,7 @@ impl AudioWorker {
         if at_capacity {
             tracing::debug!(
                 "OpenAL source pool exhausted; dropping sound {}",
-                play.path.display()
+                play.asset.content.id()
             );
             return false;
         }
@@ -943,18 +925,18 @@ impl AudioWorker {
         }
 
         let (source, kind) = if play.stream {
-            match self.start_stream(source, &play.path) {
+            match self.start_stream(source, &play.asset) {
                 Ok((source, stream)) => (source, ActiveKind::Stream(stream)),
                 Err(e) => {
-                    tracing::warn!("failed to stream sound {}: {e}", play.path.display());
+                    tracing::warn!(asset = ?play.asset, "failed to stream sound: {e}");
                     return false;
                 }
             }
         } else {
-            let buffer = match self.static_buffer(&play.path) {
+            let buffer = match self.static_buffer(&play.asset) {
                 Ok(buffer) => buffer,
                 Err(e) => {
-                    tracing::warn!("failed to decode sound {}: {e}", play.path.display());
+                    tracing::warn!(asset = ?play.asset, "failed to decode sound: {e}");
                     return false;
                 }
             };
@@ -984,26 +966,48 @@ impl AudioWorker {
         true
     }
 
-    fn static_buffer(&mut self, path: &Path) -> Result<Rc<Buffer>, String> {
-        if let Some(buffer) = self.static_buffers.get(path) {
+    fn static_buffer(&mut self, asset: &SoundAsset) -> Result<Rc<Buffer>, String> {
+        if let Some(buffer) = self.static_buffers.get(asset.content.id()) {
             return Ok(Rc::clone(buffer));
         }
-        let decoded = decode_all(path)?;
+        let bytes = asset
+            .content
+            .read_bytes(MAX_ENCODED_SOUND_BYTES)
+            .map_err(|error| error.to_string())?;
+        let decoded = decode_all(Arc::from(bytes), asset.content.id().clone())?;
         let buffer = Rc::new(
             self.context
                 .create_buffer(decoded.format, &decoded.samples)?,
         );
         self.static_buffers
-            .insert(path.to_path_buf(), Rc::clone(&buffer));
+            .insert(asset.content.id().clone(), Rc::clone(&buffer));
         Ok(buffer)
     }
 
     fn start_stream(
         &self,
         source: Source,
-        path: &Path,
+        asset: &SoundAsset,
     ) -> Result<(Source, StreamPlayback), String> {
-        let mut decoder = StreamDecoder::open(path)?;
+        let active_bytes: usize = self
+            .active
+            .values()
+            .map(|sound| match &sound.kind {
+                ActiveKind::Stream(stream) => stream.decoder.encoded_len(),
+                ActiveKind::Static { .. } => 0,
+            })
+            .sum();
+        // Admission runs after gain/source-capacity checks. The single worker
+        // may hold one extra bounded read while checking the aggregate budget;
+        // rejected input is dropped, and refusals use normal completion reports.
+        let bytes = asset
+            .content
+            .read_bytes(MAX_ENCODED_SOUND_BYTES)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > MAX_ACTIVE_STREAM_BYTES.saturating_sub(active_bytes) {
+            return Err("active compressed audio budget exceeded".to_string());
+        }
+        let mut decoder = StreamDecoder::from_bytes(Arc::from(bytes), asset.content.id().clone())?;
         let mut queued = VecDeque::new();
         let mut finished_decoding = false;
         for _ in 0..4 {

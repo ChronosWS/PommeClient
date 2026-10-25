@@ -11,7 +11,7 @@ use crate::assets::{AssetId, identifier_chars};
 /// Owned logical name with nonempty namespace and path, checked only for
 /// identifier characters. Storage resolution belongs to the source adapter.
 /// Deterministic namespace-then-path ordering does not imply pack priority.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ResourceId {
     namespace: String,
     path: String,
