@@ -1,19 +1,20 @@
 use std::f32::consts::{FRAC_PI_2, PI};
-use std::path::Path;
+use std::io::Cursor;
 
 use azalea_block::BlockState;
 use glam::{Quat, Vec3};
 
-use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::position::BlockPos;
 use crate::renderer::camera::CameraUniform;
 use crate::renderer::chunk::mesher::{CUBE_FACE_DIRS, cube_face_geometry};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, rhi, shader, util};
+use crate::resources::{ResourceError, ResourceId, ResourceManager};
 use crate::world::block::BlockStateData;
 use crate::world::block::model::{BakedQuad, Direction, direction_from_positions};
 use crate::world::block::render_assets::BlockRenderView;
 
 const STAGE_COUNT: u32 = 10;
+const MAX_DESTROY_STAGE_BYTES: usize = 32 * 1024 * 1024;
 /// Vertex-buffer capacity (a multiple of 6). Block models stay well under this;
 /// an oversized model is capped with a warning rather than truncated silently.
 const MAX_OVERLAY_VERTS: usize = 1536;
@@ -50,8 +51,7 @@ impl BlockOverlayPipeline {
     pub fn new(
         device: &rhi::backend::Device,
         targets: rhi::backend::PipelineTargets,
-        jar_assets_dir: &Path,
-        asset_index: &Option<AssetIndex>,
+        resources: &ResourceManager,
     ) -> Self {
         let camera_layout = rhi::backend::create_bind_group_layout(device, util::VERTEX_UNIFORM);
         let texture_layout = rhi::backend::create_bind_group_layout(device, util::FRAGMENT_TEXTURE);
@@ -73,7 +73,7 @@ impl BlockOverlayPipeline {
             "block_overlay_camera",
         );
 
-        let atlas = load_destroy_atlas(device, jar_assets_dir, asset_index);
+        let atlas = load_destroy_atlas(device, resources);
 
         let atlas_sampler = rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST);
 
@@ -111,6 +111,18 @@ impl BlockOverlayPipeline {
             atlas,
             atlas_sampler,
         }
+    }
+
+    /// The caller must idle the device before replacing the shared texture set.
+    /// Geometry, stage UVs and the nearest sampler are retained.
+    pub fn reload_texture(&mut self, device: &rhi::backend::Device, resources: &ResourceManager) {
+        let atlas = load_destroy_atlas(device, resources);
+        self.texture_set.replace(
+            device,
+            self.texture_layout,
+            &util::texture_binding(atlas.handle(), self.atlas_sampler),
+        );
+        std::mem::replace(&mut self.atlas, atlas).destroy(device);
     }
 
     pub fn update_camera(&mut self, frame: usize, uniform: &CameraUniform) {
@@ -287,35 +299,103 @@ fn face_rotation(dir: Direction) -> Quat {
 
 fn load_destroy_atlas(
     device: &rhi::backend::Device,
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
+    resources: &ResourceManager,
 ) -> rhi::backend::Texture {
-    let mut atlas_pixels = Vec::new();
-    let mut tile_size = 16u32;
-
-    for stage in 0..STAGE_COUNT {
-        let key = format!("minecraft/textures/block/destroy_stage_{stage}.png");
-        let path = resolve_asset_path(jar_assets_dir, asset_index, &key);
-        if let Some((pixels, w, _h)) = util::load_png(&path) {
-            tile_size = w;
-            atlas_pixels.extend_from_slice(&pixels);
-        } else {
-            atlas_pixels.extend(std::iter::repeat_n(
-                0u8,
-                (tile_size * tile_size * 4) as usize,
-            ));
+    let max_image_dimension_2d = device.max_texture_dimension_2d;
+    let stages: Vec<_> = (0..STAGE_COUNT)
+        .map(|stage| load_destroy_stage(resources, stage, max_image_dimension_2d))
+        .collect();
+    // Packs may override only some stages at a different resolution. Every row
+    // must remain square and equally sized for the existing stage UV mapping.
+    let atlas_w = stages
+        .iter()
+        .flatten()
+        .map(image::RgbaImage::width)
+        .max()
+        .unwrap_or(16);
+    let (atlas_h, atlas_bytes) = destroy_atlas_layout(atlas_w, max_image_dimension_2d)
+        .expect("validated destroy stage dimensions or Vulkan-supported 16px fallback");
+    // Missing, filtered, malformed and unreadable stages keep the old all-zero
+    // RGBA fallback; never retry a lower provider or a filesystem path here.
+    let mut atlas_pixels = vec![0; atlas_bytes];
+    let stage_bytes = atlas_bytes / STAGE_COUNT as usize;
+    for (stage, pixels) in stages
+        .into_iter()
+        .zip(atlas_pixels.chunks_exact_mut(stage_bytes))
+    {
+        if let Some(stage) = stage {
+            let stage = if stage.width() == atlas_w {
+                stage
+            } else {
+                image::imageops::resize(
+                    &stage,
+                    atlas_w,
+                    atlas_w,
+                    image::imageops::FilterType::Nearest,
+                )
+            };
+            pixels.copy_from_slice(stage.as_raw());
         }
     }
 
-    let atlas_w = tile_size;
-    let atlas_h = tile_size * STAGE_COUNT;
-
     let texture =
         util::create_sampled_texture(device, "destroy_atlas", &atlas_pixels, atlas_w, atlas_h);
-
     tracing::info!("Block overlay: loaded {STAGE_COUNT} destroy stages ({atlas_w}x{atlas_h})");
-
     texture
+}
+
+/// Bound the whole vertical atlas by the device limit and checked RGBA length,
+/// rather than imposing an arbitrary resource-pack resolution cap.
+fn destroy_atlas_layout(tile_size: u32, max_image_dimension_2d: u32) -> Option<(u32, usize)> {
+    let height = tile_size.checked_mul(STAGE_COUNT)?;
+    if tile_size == 0 || height > max_image_dimension_2d {
+        return None;
+    }
+    let bytes = usize::try_from(tile_size)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?
+        .checked_mul(4)?;
+    Some((height, bytes))
+}
+
+fn load_destroy_stage(
+    resources: &ResourceManager,
+    stage: u32,
+    max_image_dimension_2d: u32,
+) -> Option<image::RgbaImage> {
+    let key = format!("minecraft:textures/block/destroy_stage_{stage}.png");
+    let image = ResourceId::new(&key)
+        .and_then(|id| {
+            resources
+                .get_resource(&id)?
+                .ok_or(ResourceError::Missing(id))?
+                .content()
+                .read_bytes(MAX_DESTROY_STAGE_BYTES)
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            // Check dimensions before decoding pixels, including room for all
+            // ten rows on this GPU. PNG decoding expands grayscale and palettes.
+            let (w, h) =
+                image::ImageReader::with_format(Cursor::new(&bytes), image::ImageFormat::Png)
+                    .into_dimensions()
+                    .map_err(|error| error.to_string())?;
+            if w != h || destroy_atlas_layout(w, max_image_dimension_2d).is_none() {
+                return Err(format!(
+                    "invalid stage dimensions {w}x{h} for destroy atlas"
+                ));
+            }
+            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                .map(|image| image.to_rgba8())
+                .map_err(|error| error.to_string())
+        });
+    match image {
+        Ok(image) => Some(image),
+        Err(error) => {
+            tracing::warn!("Failed to load {key}, using transparent stage fallback: {error}");
+            None
+        }
+    }
 }
 
 fn create_pipeline(

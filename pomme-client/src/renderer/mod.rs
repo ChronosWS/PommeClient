@@ -378,12 +378,8 @@ impl Renderer {
             &lightmap,
         );
 
-        let block_overlay_pipeline = BlockOverlayPipeline::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
-        );
+        let block_overlay_pipeline =
+            BlockOverlayPipeline::new(&ctx.device, swapchain_state.targets(), resources);
 
         splash(&mut menu_pipeline, 0.7, "Loading sky and panorama...");
 
@@ -1266,6 +1262,8 @@ impl Renderer {
         self.sky_pipeline
             .reload_textures(&self.ctx.device, resources);
         self.entity_shadow_pipeline
+            .reload_texture(&self.ctx.device, resources);
+        self.block_overlay_pipeline
             .reload_texture(&self.ctx.device, resources);
 
         warm_item_meshes(

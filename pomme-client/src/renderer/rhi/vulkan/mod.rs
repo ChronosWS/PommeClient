@@ -71,6 +71,7 @@ pub struct Device {
     /// A GPU with memory of its own, which uploads reach through a copy.
     pub discrete: bool,
     pub max_texture_array_layers: u32,
+    pub max_texture_dimension_2d: u32,
 }
 
 impl Device {
@@ -102,6 +103,7 @@ impl Device {
             device_local_bytes,
             discrete: properties.device_type == vk::PhysicalDeviceType::DiscreteGpu,
             max_texture_array_layers: properties.limits.max_image_array_layers,
+            max_texture_dimension_2d: properties.limits.max_image_dimension2_d,
         }
     }
 
