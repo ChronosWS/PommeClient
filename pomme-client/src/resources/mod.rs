@@ -7,7 +7,8 @@
 //! Root pack.mcmeta belongs to pack management; resource sidecars stay here.
 //! Source priority: selected packs above the optional external index above JAR.
 //! Built-ins are separate layers of one pack, not a composite source.
-//! Filters/overlays belong in source composition, not loaders. This layer
+//! Filters apply between logical packs, not within their physical layers.
+//! Overlays belong in source composition, not loaders. This layer
 //! does not merge JSON, decode images or build atlases.
 //!
 //! A manager fixes source order, not filesystem contents. Handles outlive it
@@ -15,30 +16,26 @@
 //! fail. Sources must retain required storage leases. Streams close on drop.
 //! Atomic reload is not guaranteed; threading requirements remain undecided.
 
+mod filter;
 mod manager;
 mod pack_resource;
 mod resource;
 
+pub(crate) use filter::{ResourceFilter, ResourceFilterSpec};
 pub(crate) use manager::{BuiltinResources, ResourceManager};
-pub(crate) use pack_resource::{
-    PackStorage, ResourceOrigin, ResourcePackDescriptor, SharedPackResources,
-};
+pub(crate) use pack_resource::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
 pub(crate) use resource::{ResourceContent, ResourceError, ResourceId};
 
 /// Uncalled, typechecked consumer contract; selection supplies the sources.
 fn consumer_contract(
-    builtin_jar: SharedPackResources,
-    builtin_external: Option<SharedPackResources>,
-    selected_low_to_high: Vec<SharedPackResources>,
+    builtin: BuiltinResources<'_>,
+    selected_low_to_high: Vec<ResourcePackDescriptor>,
     requested: &str,
     prefix: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Read;
 
-    let mut sources = vec![builtin_jar];
-    sources.extend(builtin_external);
-    sources.extend(selected_low_to_high);
-    let manager = ResourceManager::new(sources);
+    let manager = ResourceManager::from_packs(builtin, selected_low_to_high)?;
     let id = ResourceId::new(requested)?;
     let winner = manager.get_resource(&id)?;
     let _stack_low_to_high = manager.get_resource_stack(&id)?;

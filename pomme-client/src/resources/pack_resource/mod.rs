@@ -4,6 +4,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use super::filter::ResourceFilter;
 use super::resource::{ResourceContent, ResourceError, ResourceId};
 use crate::assets::{AssetIndex, identifier_chars};
 use crate::resource_pack::PackId;
@@ -24,19 +25,42 @@ pub(crate) enum PackStorage {
     Indexed(AssetIndex),
 }
 
-/// Source construction inputs; storage access is separate from provenance.
+/// One logical pack, with zero or more physical layers in low-to-high order.
+/// Its filter affects only lower packs, never any of its own layers.
 pub(crate) struct ResourcePackDescriptor {
-    pub(crate) storage: PackStorage,
+    pub(crate) storage: Vec<PackStorage>,
     pub(crate) origin: ResourceOrigin,
+    pub(crate) filter: ResourceFilter,
+}
+
+#[derive(Clone)]
+pub(super) struct OpenedResourcePack {
+    pub(super) sources: Vec<SharedPackResources>,
+    pub(super) filter: Rc<ResourceFilter>,
 }
 
 impl ResourcePackDescriptor {
-    pub(crate) fn open(self) -> Result<SharedPackResources, ResourceError> {
-        let origin = self.origin;
-        Ok(match self.storage {
-            PackStorage::Directory(root) => Rc::new(DirectoryPackResources::open(root, origin)?),
-            PackStorage::Zip(path) => Rc::new(ZipPackResources::open(path, origin)?),
-            PackStorage::Indexed(index) => Rc::new(IndexedPackResources::open(index, origin)?),
+    pub(super) fn open(self) -> Result<OpenedResourcePack, ResourceError> {
+        let sources = self
+            .storage
+            .into_iter()
+            .map(|storage| {
+                let origin = self.origin.clone();
+                let source: SharedPackResources = match storage {
+                    PackStorage::Directory(root) => {
+                        Rc::new(DirectoryPackResources::open(root, origin)?)
+                    }
+                    PackStorage::Zip(path) => Rc::new(ZipPackResources::open(path, origin)?),
+                    PackStorage::Indexed(index) => {
+                        Rc::new(IndexedPackResources::open(index, origin)?)
+                    }
+                };
+                Ok(source)
+            })
+            .collect::<Result<_, ResourceError>>()?;
+        Ok(OpenedResourcePack {
+            sources,
+            filter: Rc::new(self.filter),
         })
     }
 }

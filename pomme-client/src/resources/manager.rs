@@ -3,7 +3,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use super::pack_resource::{
-    PackStorage, ResourceOrigin, ResourcePackDescriptor, SharedPackResources, validate_query,
+    OpenedResourcePack, PackStorage, ResourceOrigin, ResourcePackDescriptor, validate_query,
 };
 use super::resource::{Resource, ResourceError, ResourceId};
 use crate::assets::AssetIndex;
@@ -15,52 +15,43 @@ pub(crate) struct BuiltinResources<'a> {
     pub(crate) asset_index: Option<&'a AssetIndex>,
 }
 
-/// Fixed selected-source view; input order is low-to-high priority.
+/// Fixed selected-pack view; input order is low-to-high priority.
 /// Pack discovery and selection belong to the caller.
 pub(crate) struct ResourceManager {
-    sources: Vec<SharedPackResources>,
+    packs: Vec<OpenedResourcePack>,
 }
 
 impl ResourceManager {
-    pub(crate) fn new(sources_low_to_high: Vec<SharedPackResources>) -> Self {
-        Self {
-            sources: sources_low_to_high,
-        }
-    }
-
     /// Built-in layers below selected packs, ordered JAR then external index.
     /// Selected descriptors retain the caller's low-to-high order.
     pub(crate) fn from_packs(
         builtin_resources: BuiltinResources<'_>,
         selected_resource_packs: impl IntoIterator<Item = ResourcePackDescriptor>,
     ) -> Result<Self, ResourceError> {
-        let jar = ResourcePackDescriptor {
-            storage: PackStorage::Directory(builtin_resources.jar_assets_dir.to_path_buf()),
+        let mut storage = vec![PackStorage::Directory(
+            builtin_resources.jar_assets_dir.to_path_buf(),
+        )];
+        if let Some(index) = builtin_resources.asset_index {
+            storage.push(PackStorage::Indexed(index.clone()));
+        }
+        let builtin = ResourcePackDescriptor {
+            storage,
             origin: ResourceOrigin {
                 pack_id: builtin_resources.pack_id.clone(),
                 name: "Minecraft built-in assets".to_owned(),
             },
+            filter: Default::default(),
         };
-        let external = builtin_resources
-            .asset_index
-            .map(|index| ResourcePackDescriptor {
-                storage: PackStorage::Indexed(index.clone()),
-                origin: ResourceOrigin {
-                    pack_id: builtin_resources.pack_id.clone(),
-                    name: "Minecraft built-in assets".to_owned(),
-                },
-            });
-        let sources = std::iter::once(jar)
-            .chain(external)
+        let packs = std::iter::once(builtin)
             .chain(selected_resource_packs)
             .map(ResourcePackDescriptor::open)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self::new(sources))
+        Ok(Self { packs })
     }
 
     pub(crate) fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError> {
         let mut namespaces = BTreeSet::new();
-        for source in &self.sources {
+        for source in self.packs.iter().flat_map(|pack| &pack.sources) {
             namespaces.extend(source.namespaces()?);
         }
         Ok(namespaces)
@@ -70,50 +61,72 @@ impl ResourceManager {
     /// Lazy metadata comes from the winning source or higher, never lower.
     /// JAR images may use external sidecars, but not the reverse.
     pub(crate) fn get_resource(&self, id: &ResourceId) -> Result<Option<Resource>, ResourceError> {
-        for (index, source) in self.sources.iter().enumerate().rev() {
-            let Some(content) = source.clone().get_resource(id)? else {
-                continue;
-            };
-            let metadata_sources = self.sources[index..].to_vec();
-            let id = id.clone();
-            let metadata = Rc::new(move || {
-                let asset_id = id.as_asset_id();
-                let metadata_id =
-                    ResourceId::new(&format!("{}:{}.mcmeta", asset_id.namespace, asset_id.path))?;
-                for candidate in metadata_sources.iter().rev() {
-                    if let Some(sidecar) = candidate.clone().get_resource(&metadata_id)? {
-                        return Ok(Some(sidecar));
+        for (pack_index, pack) in self.packs.iter().enumerate().rev() {
+            for (source_index, source) in pack.sources.iter().enumerate().rev() {
+                let Some(content) = source.clone().get_resource(id)? else {
+                    continue;
+                };
+                let metadata_packs = self.packs[pack_index..].to_vec();
+                let id = id.clone();
+                let metadata = Rc::new(move || {
+                    let metadata_id = ResourceId::new(&format!("{id}.mcmeta"))?;
+                    for (index, candidate) in metadata_packs.iter().enumerate().rev() {
+                        // Keep the physical-layer boundary even within one pack:
+                        // external content cannot inherit a lower JAR sidecar.
+                        let start = if index == 0 { source_index } else { 0 };
+                        for source in candidate.sources[start..].iter().rev() {
+                            if let Some(sidecar) = source.clone().get_resource(&metadata_id)? {
+                                return Ok(Some(sidecar));
+                            }
+                        }
+                        if candidate.filter.blocks(&metadata_id) {
+                            break;
+                        }
                     }
-                }
-                Ok(None)
-            });
-            return Ok(Some(Resource::new(content, metadata)));
+                    Ok(None)
+                });
+                return Ok(Some(Resource::new(content, metadata)));
+            }
+            if pack.filter.blocks(id) {
+                break;
+            }
         }
         Ok(None)
     }
 
     /// All matches low-to-high, empty on absence; access errors never fall
     /// back. Each entry's lazy, uncached metadata comes only from its own
-    /// source.
+    /// source, unless a higher pack filters that sidecar ID.
     pub(crate) fn get_resource_stack(
         &self,
         id: &ResourceId,
     ) -> Result<Vec<Resource>, ResourceError> {
         let mut resources = Vec::new();
-        for source in &self.sources {
-            let Some(content) = source.clone().get_resource(id)? else {
-                continue;
-            };
-            let source = source.clone();
-            let id = id.clone();
-            let metadata = Rc::new(move || {
-                let asset_id = id.as_asset_id();
-                let metadata_id =
-                    ResourceId::new(&format!("{}:{}.mcmeta", asset_id.namespace, asset_id.path))?;
-                source.clone().get_resource(&metadata_id)
-            });
-            resources.push(Resource::new(content, metadata));
+        let metadata_id = ResourceId::new(&format!("{id}.mcmeta"))?;
+        let mut metadata_blocked = false;
+        // Walk high-to-low so blocked lower storage is never accessed.
+        for pack in self.packs.iter().rev() {
+            for source in pack.sources.iter().rev() {
+                let Some(content) = source.clone().get_resource(id)? else {
+                    continue;
+                };
+                let source = source.clone();
+                let metadata_id = metadata_id.clone();
+                let metadata = Rc::new(move || {
+                    if metadata_blocked {
+                        Ok(None)
+                    } else {
+                        source.clone().get_resource(&metadata_id)
+                    }
+                });
+                resources.push(Resource::new(content, metadata));
+            }
+            if pack.filter.blocks(id) {
+                break;
+            }
+            metadata_blocked |= pack.filter.blocks(&metadata_id);
         }
+        resources.reverse();
         Ok(resources)
     }
 
@@ -162,9 +175,12 @@ impl ResourceManager {
     ) -> Result<BTreeSet<ResourceId>, ResourceError> {
         validate_query(None, prefix)?;
         let mut ids = BTreeSet::new();
-        for source in &self.sources {
-            for namespace in source.namespaces()? {
-                ids.extend(source.list_resources(&namespace, prefix)?);
+        for pack in &self.packs {
+            ids.retain(|id| !pack.filter.blocks(id));
+            for source in &pack.sources {
+                for namespace in source.namespaces()? {
+                    ids.extend(source.list_resources(&namespace, prefix)?);
+                }
             }
         }
         ids.retain(|id| !id.path().ends_with(".mcmeta") && selector(id));

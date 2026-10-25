@@ -1,10 +1,14 @@
 use std::hash::{Hash, Hasher};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pomme_protocol::KnownPack;
 
-use crate::resources::{PackStorage, ResourceError, ResourceOrigin, ResourcePackDescriptor};
+use crate::resources::{
+    PackStorage, ResourceError, ResourceFilter, ResourceFilterSpec, ResourceOrigin,
+    ResourcePackDescriptor,
+};
 
 pub const CURRENT_PACK_FORMAT: u32 = 84;
 
@@ -174,9 +178,10 @@ impl ResourcePackManager {
         self.active_packs.iter().map(|pack| pack.dir.as_path())
     }
 
-    /// Selected sources in low-to-high order; metadata-only directories have
-    /// no source. Revalidate pack roots so removed packs are not treated as
-    /// empty.
+    /// Selected logical packs in low-to-high order, including filter-only
+    /// packs. Revalidate roots and reread root metadata for each new
+    /// resource view, rather than using the discovery UI's possibly stale
+    /// metadata.
     pub(crate) fn active_pack_descriptors(
         &self,
     ) -> Result<Vec<ResourcePackDescriptor>, ResourceError> {
@@ -187,41 +192,46 @@ impl ResourcePackManager {
                 name: pack.info.name.clone(),
             };
             let descriptor = match &pack.archive {
-                Some(path) => Some(ResourcePackDescriptor {
-                    storage: PackStorage::Zip(path.clone()),
+                Some(path) => ResourcePackDescriptor {
+                    storage: vec![PackStorage::Zip(path.clone())],
+                    filter: read_resource_filter(&pack.dir, Some(path), &origin),
                     origin,
-                }),
+                },
                 None => Self::directory_pack_descriptor(&pack.dir, origin)?,
             };
-            descriptors.extend(descriptor);
+            descriptors.push(descriptor);
         }
         Ok(descriptors)
     }
 
-    /// Metadata-only packs contribute no source; unusable roots are errors.
+    /// Metadata-only packs still contribute their filter; unusable roots error.
     fn directory_pack_descriptor(
         root: &Path,
         origin: ResourceOrigin,
-    ) -> Result<Option<ResourcePackDescriptor>, ResourceError> {
+    ) -> Result<ResourcePackDescriptor, ResourceError> {
         Self::validate_directory_pack_root(root, &origin)?;
         let assets_dir = root.join("assets");
         // Dangling assets symlinks are present entries, validated on source open.
-        match std::fs::symlink_metadata(&assets_dir) {
-            Ok(_) => Ok(Some(ResourcePackDescriptor {
-                storage: PackStorage::Directory(assets_dir),
-                origin,
-            })),
+        let storage = match std::fs::symlink_metadata(&assets_dir) {
+            Ok(_) => vec![PackStorage::Directory(assets_dir)],
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Self::validate_directory_pack_root(root, &origin)?;
-                Ok(None)
+                Vec::new()
             }
-            Err(source) => Err(ResourceError::Io {
-                operation: "inspect pack assets directory",
-                id: None,
-                origin,
-                source,
-            }),
-        }
+            Err(source) => {
+                return Err(ResourceError::Io {
+                    operation: "inspect pack assets directory",
+                    id: None,
+                    origin,
+                    source,
+                });
+            }
+        };
+        Ok(ResourcePackDescriptor {
+            storage,
+            filter: read_resource_filter(root, None, &origin),
+            origin,
+        })
     }
 
     fn validate_directory_pack_root(
@@ -503,6 +513,58 @@ fn validate_hash(data: &[u8], expected: &str) -> Result<(), PackError> {
         return Err(PackError::HashMismatch);
     }
     Ok(())
+}
+
+/// Read only root metadata from the same location as the resource provider.
+/// Local ZIPs use the original archive, not the legacy extraction cache.
+fn read_resource_filter(
+    root: &Path,
+    archive: Option<&Path>,
+    origin: &ResourceOrigin,
+) -> ResourceFilter {
+    let result = (|| -> io::Result<ResourceFilter> {
+        if let Some(path) = archive {
+            let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+            match archive.by_name("pack.mcmeta") {
+                Ok(metadata) => decode_resource_filter(metadata),
+                Err(zip::result::ZipError::FileNotFound) => Ok(ResourceFilter::default()),
+                Err(error) => Err(error.into()),
+            }
+        } else {
+            match std::fs::File::open(root.join("pack.mcmeta")) {
+                Ok(metadata) => decode_resource_filter(metadata),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    Ok(ResourceFilter::default())
+                }
+                Err(error) => Err(error),
+            }
+        }
+    })();
+    match result {
+        Ok(filter) => filter,
+        Err(error) => {
+            // Vanilla 26.3 MultiPackResourceManager.getPackFilterSection logs
+            // metadata/decode errors and ignores the entire section. Do not
+            // retain a successfully compiled prefix of an invalid block list.
+            tracing::error!(
+                pack = %origin.name,
+                pack_id = ?origin.pack_id,
+                %error,
+                "Invalid pack.mcmeta filter metadata; ignoring entire filter section (Rust regex syntax, not full Java Pattern support)"
+            );
+            ResourceFilter::default()
+        }
+    }
+}
+
+fn decode_resource_filter(metadata: impl io::Read) -> io::Result<ResourceFilter> {
+    let mut root: serde_json::Map<String, serde_json::Value> = serde_json::from_reader(metadata)?;
+    let Some(section) = root.remove("filter") else {
+        return Ok(ResourceFilter::default());
+    };
+    let spec: ResourceFilterSpec = serde_json::from_value(section)?;
+    spec.compile()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn parse_meta_value(v: &serde_json::Value, fallback: &str) -> (String, String, PackCompat) {
