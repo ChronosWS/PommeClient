@@ -1663,7 +1663,6 @@ impl AppCore {
             resources: &self.resources,
             jar_assets_dir: &self.data_dirs.jar_assets_dir,
             asset_index: &self.asset_index,
-            packs: &self.resource_packs,
             options: self.menu.font_options(),
         }
     }
@@ -1746,11 +1745,7 @@ impl AppCore {
     /// once, from the title screen or in game.
     pub fn apply_font_options(&mut self, renderer: &mut Renderer) {
         if std::mem::take(&mut self.menu.reload_fonts) {
-            renderer.reload_fonts(
-                &self.resource_packs,
-                &self.resources,
-                self.menu.font_options(),
-            );
+            renderer.reload_fonts(&self.resources, self.menu.font_options());
         }
     }
 

@@ -14,9 +14,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use crate::assets::{AssetId, AssetIndex};
-use crate::resources::{
-    ResourceContent, ResourceError, ResourceId, ResourceManager, ResourcePackManager,
-};
+use crate::resources::{ResourceContent, ResourceError, ResourceId, ResourceManager};
 
 #[cfg(feature = "ttf-fonts")]
 unsafe extern "C" {
@@ -34,7 +32,6 @@ pub(crate) struct FontSources<'a> {
     pub resources: &'a ResourceManager,
     pub jar_assets_dir: &'a std::path::Path,
     pub asset_index: &'a Option<AssetIndex>,
-    pub packs: &'a ResourcePackManager,
     pub options: FontOptions,
 }
 
@@ -1592,6 +1589,7 @@ mod tests {
     use std::cell::OnceCell;
 
     use super::*;
+    use crate::resources::ResourcePackManager;
 
     /// A temp dir with an empty pack manager, removed on drop.
     struct Fixture {
@@ -1665,7 +1663,6 @@ mod tests {
                     resources: &self.resource_manager(&self.packs, &self.jar()),
                     jar_assets_dir: &self.jar(),
                     asset_index: &None,
-                    packs: &self.packs,
                     options: FontOptions::default(),
                 },
                 u32::MAX,
@@ -1680,7 +1677,6 @@ mod tests {
                         .get_or_init(|| self.resource_manager(&self.packs, &self.root)),
                     jar_assets_dir: self.root.as_path(),
                     asset_index: &None,
-                    packs: &self.packs,
                     options: FontOptions::default(),
                 },
                 missing: Arc::new(space_glyph(6.0)),
@@ -2066,7 +2062,6 @@ mod tests {
                 resources: &fixture.resource_manager(&packs, &fixture.jar()),
                 jar_assets_dir: &fixture.jar(),
                 asset_index: &None,
-                packs: &packs,
                 options: FontOptions::default(),
             },
             u32::MAX,
@@ -2121,7 +2116,6 @@ mod tests {
                     resources: &fixture.resource_manager(packs, &fixture.jar()),
                     jar_assets_dir: &fixture.jar(),
                     asset_index: &None,
-                    packs,
                     options: FontOptions::default(),
                 },
                 u32::MAX,

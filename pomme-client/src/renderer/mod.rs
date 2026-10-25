@@ -307,7 +307,6 @@ impl Renderer {
             resources,
             jar_assets_dir,
             asset_index,
-            packs,
             options: font_options,
         } = font_sources;
         let render_assets_handle = {
@@ -428,7 +427,6 @@ impl Renderer {
             swapchain_state.targets(),
             jar_assets_dir,
             asset_index,
-            packs,
             resources,
             &lightmap,
         );
@@ -1233,19 +1231,16 @@ impl Renderer {
             .reload_mob_textures(&self.ctx.device, resources);
         self.entity_renderer.reload_armor_assets(
             &self.ctx.device,
-            &self.jar_assets_dir,
-            &self.asset_index,
-            packs,
+            resources,
         );
 
-        self.reload_fonts_idle(packs, resources, font_options);
+        self.reload_fonts_idle(resources, font_options);
         if let Err(error) = self.menu_pipeline.reload_gui_assets(
             &self.ctx.device,
             FontSources {
                 resources,
                 jar_assets_dir: &self.jar_assets_dir,
                 asset_index: &self.asset_index,
-                packs,
                 options: font_options,
             },
         ) {
@@ -1285,18 +1280,16 @@ impl Renderer {
     /// Vanilla `FontManager.updateOptions`: only the font sets change.
     pub fn reload_fonts(
         &mut self,
-        packs: &crate::resources::ResourcePackManager,
         resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {
         self.ctx.device.wait_idle();
-        self.reload_fonts_idle(packs, resources, font_options);
+        self.reload_fonts_idle(resources, font_options);
     }
 
     /// Shared by font-option changes and the already-idle full resource reload.
     fn reload_fonts_idle(
         &mut self,
-        packs: &crate::resources::ResourcePackManager,
         resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {
@@ -1307,7 +1300,6 @@ impl Renderer {
                 resources,
                 jar_assets_dir: &self.jar_assets_dir,
                 asset_index: &self.asset_index,
-                packs,
                 options: font_options,
             },
         ) {

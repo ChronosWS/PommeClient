@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use azalea_inventory::ItemStack;
@@ -8,7 +8,7 @@ use azalea_inventory::components::{DataComponentTrait, DyedColor, EquipmentSlot,
 use azalea_registry::builtin::EntityKind;
 use serde::Deserialize;
 
-use crate::assets::{AssetIndex, resolve_asset_path, resolve_asset_path_with_packs};
+use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::entity::components::Position;
 use crate::entity::dimensions;
 use crate::renderer::camera::CameraUniform;
@@ -17,7 +17,7 @@ use crate::renderer::entity_model::{BakedEntityModel, EntityVertex};
 use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::rhi::{self, VertexFormat};
 use crate::renderer::{entity_model, shader, util};
-use crate::resources::{ResourceError, ResourceId, ResourceManager, ResourcePackManager};
+use crate::resources::{ResourceError, ResourceId, ResourceManager};
 use crate::world::block::BedDirection;
 
 pub const MAX_OVERLAYS: usize = 4;
@@ -369,7 +369,7 @@ enum ArmorDye {
 }
 
 struct ArmorLayerDef {
-    texture_key: String,
+    texture_id: ResourceId,
     dye: ArmorDye,
 }
 
@@ -578,90 +578,46 @@ pub fn jeb_sheep_tint(entity_id: i32, age_in_ticks: u32) -> [f32; 4] {
     ]
 }
 
-fn equipment_texture_key(texture: &str, layer_type: &str) -> Option<String> {
-    let (namespace, path) = texture.split_once(':').unwrap_or(("minecraft", texture));
-    let key = format!("{namespace}/textures/entity/equipment/{layer_type}/{path}.png");
-    if namespace.contains('/') || !crate::assets::valid_asset_key(&key) {
-        tracing::warn!("Ignoring invalid equipment texture id {texture:?}");
-        return None;
-    }
-    Some(key)
+// Equipment definitions are small layer lists, with headroom for custom packs.
+const MAX_EQUIPMENT_JSON_BYTES: usize = 1024 * 1024;
+const MAX_ARMOR_TEXTURE_BYTES: usize = 32 * 1024 * 1024;
+
+fn equipment_texture_id(texture: &str, layer_type: &str) -> Option<ResourceId> {
+    // Unqualified textures default to minecraft, not the definition namespace.
+    ResourceId::new(texture)
+        .and_then(|id| {
+            ResourceId::new(&format!(
+                "{}:textures/entity/equipment/{layer_type}/{}.png",
+                id.namespace(),
+                id.path()
+            ))
+        })
+        .map_err(|error| {
+            tracing::warn!("Ignoring invalid equipment texture id {texture:?}: {error}");
+            error
+        })
+        .ok()
 }
 
-fn collect_equipment_json_dir(
-    dir: &Path,
-    base: &Path,
-    namespace: &str,
-    out: &mut HashMap<String, PathBuf>,
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_equipment_json_dir(&path, base, namespace, out);
-            continue;
-        }
-        if path.extension().is_none_or(|ext| ext != "json") {
-            continue;
-        }
-        let Ok(relative) = path.strip_prefix(base) else {
-            continue;
-        };
-        let mut resource_path = relative
-            .with_extension("")
-            .to_string_lossy()
-            .replace('\\', "/");
-        while resource_path.starts_with('/') {
-            resource_path.remove(0);
-        }
-        if !resource_path.is_empty() {
-            out.insert(format!("{namespace}:{resource_path}"), path);
-        }
+fn read_equipment_json(
+    resources: &ResourceManager,
+    id: &ResourceId,
+) -> Option<EquipmentClientInfoJson> {
+    // Resolve only the winning content. A bad winner must not resurrect a
+    // lower definition, and one unreadable ID must not discard other assets.
+    let bytes = match resources.get_resource(id) {
+        Ok(Some(resource)) => resource.content().read_bytes(MAX_EQUIPMENT_JSON_BYTES),
+        Ok(None) => return None,
+        Err(error) => Err(error),
     }
-}
-
-fn collect_equipment_json_root(root: &Path, out: &mut HashMap<String, PathBuf>) {
-    let Ok(namespaces) = std::fs::read_dir(root) else {
-        return;
-    };
-    for namespace in namespaces.flatten() {
-        let ns_path = namespace.path();
-        if !ns_path.is_dir() {
-            continue;
-        }
-        let ns = namespace.file_name().to_string_lossy().to_string();
-        let equipment = ns_path.join("equipment");
-        if equipment.is_dir() {
-            collect_equipment_json_dir(&equipment, &equipment, &ns, out);
-        }
-    }
-}
-
-fn discover_equipment_json(
-    jar_assets_dir: &Path,
-    packs: Option<&ResourcePackManager>,
-) -> HashMap<String, PathBuf> {
-    let mut resources = HashMap::new();
-    collect_equipment_json_root(jar_assets_dir, &mut resources);
-    // Packs come low-to-high priority, so later inserts override.
-    if let Some(packs) = packs {
-        for pack in packs.active_pack_dirs() {
-            collect_equipment_json_root(&pack.join("assets"), &mut resources);
-        }
-    }
-    resources
-}
-
-fn read_equipment_json(path: &Path) -> Option<EquipmentClientInfoJson> {
-    let bytes = std::fs::read(path).ok()?;
+    .map_err(|error| {
+        tracing::warn!("Failed to read equipment definition {id}: {error}");
+        error
+    })
+    .ok()?;
     serde_json::from_slice(&bytes)
         .map_err(|error| {
-            tracing::warn!(
-                "Failed to parse equipment definition {}: {error}",
-                path.display()
-            );
+            tracing::warn!("Failed to parse equipment definition {id}: {error}");
             error
         })
         .ok()
@@ -671,7 +627,7 @@ fn armor_layer_defs(layers: &[EquipmentLayerJson], layer_type: &str) -> Vec<Armo
     layers
         .iter()
         .filter_map(|layer| {
-            let texture_key = equipment_texture_key(&layer.texture, layer_type)?;
+            let texture_id = equipment_texture_id(&layer.texture, layer_type)?;
             let dye = layer
                 .dyeable
                 .as_ref()
@@ -680,19 +636,27 @@ fn armor_layer_defs(layers: &[EquipmentLayerJson], layer_type: &str) -> Vec<Armo
                         .color_when_undyed
                         .map(|color| color as u32 & 0x00ff_ffff),
                 });
-            Some(ArmorLayerDef { texture_key, dye })
+            Some(ArmorLayerDef { texture_id, dye })
         })
         .collect()
 }
 
 fn load_armor_asset_defs(
-    jar_assets_dir: &Path,
-    packs: Option<&ResourcePackManager>,
-) -> HashMap<String, ArmorAssetDef> {
-    discover_equipment_json(jar_assets_dir, packs)
+    resources: &ResourceManager,
+) -> Result<HashMap<String, ArmorAssetDef>, ResourceError> {
+    let ids = resources.list_resource_ids("equipment", |id| id.path().ends_with(".json"))?;
+    Ok(ids
         .into_iter()
-        .filter_map(|(id, path)| {
-            let info = read_equipment_json(&path)?;
+        .filter_map(|id| {
+            let path = id
+                .path()
+                .strip_prefix("equipment/")?
+                .strip_suffix(".json")?;
+            if path.is_empty() {
+                return None;
+            }
+            let asset_id = format!("{}:{path}", id.namespace());
+            let info = read_equipment_json(resources, &id)?;
             let layers = |ty| {
                 info.layers
                     .get(ty)
@@ -701,29 +665,19 @@ fn load_armor_asset_defs(
             let humanoid = layers("humanoid");
             let leggings = layers("humanoid_leggings");
             (!humanoid.is_empty() || !leggings.is_empty())
-                .then_some((id, ArmorAssetDef { humanoid, leggings }))
+                .then_some((asset_id, ArmorAssetDef { humanoid, leggings }))
         })
-        .collect()
+        .collect())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_armor_texture_layer(
     device: &rhi::backend::Device,
     texture_layout: rhi::backend::BindGroupLayout,
     texture_sampler: rhi::backend::Sampler,
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    packs: Option<&ResourcePackManager>,
+    resources: &ResourceManager,
     def: ArmorLayerDef,
 ) -> ArmorTextureLayer {
-    let path = resolve_asset_path_with_packs(jar_assets_dir, asset_index, &def.texture_key, packs);
-    let (pixels, width, height) = util::load_png(&path).unwrap_or_else(|| {
-        tracing::warn!(
-            "Failed to load equipment texture {}, using fallback",
-            def.texture_key
-        );
-        fallback_texture(64)
-    });
+    let (pixels, width, height) = load_armor_texture(resources, &def.texture_id);
     let texture = util::create_sampled_texture(device, "armor_texture", &pixels, width, height);
 
     let set = util::create_texture_group(device, texture_layout, texture.handle(), texture_sampler);
@@ -735,18 +689,43 @@ fn build_armor_texture_layer(
     }
 }
 
-/// Loads every equipment definition with humanoid layers and uploads its
-/// textures.
+fn load_armor_texture(resources: &ResourceManager, id: &ResourceId) -> (Vec<u8>, u32, u32) {
+    let image = resources
+        .get_resource(id)
+        .and_then(|resource| {
+            resource
+                .ok_or_else(|| ResourceError::Missing(id.clone()))?
+                .content()
+                .read_bytes(MAX_ARMOR_TEXTURE_BYTES)
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                .map(|image| image.to_rgba8())
+                .map_err(|error| error.to_string())
+        });
+    match image {
+        Ok(image) => {
+            let (width, height) = image.dimensions();
+            (image.into_raw(), width, height)
+        }
+        Err(error) => {
+            tracing::warn!("Failed to load equipment texture {id}: {error}, using fallback");
+            // Missing, filtered or invalid winning content never retries disk
+            // lookup or a lower pack's version of this ID.
+            fallback_texture(64)
+        }
+    }
+}
+
+/// Uploads prepared humanoid definitions into owned RHI textures and groups.
 fn load_armor_assets(
     device: &rhi::backend::Device,
     texture_layout: rhi::backend::BindGroupLayout,
     texture_sampler: rhi::backend::Sampler,
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    packs: &ResourcePackManager,
+    resources: &ResourceManager,
+    defs: HashMap<String, ArmorAssetDef>,
 ) -> HashMap<String, ArmorAsset> {
-    let packs = Some(packs);
-    let defs = load_armor_asset_defs(jar_assets_dir, packs);
     defs.into_iter()
         .map(|(id, def)| {
             let build = |layer| {
@@ -754,9 +733,7 @@ fn load_armor_assets(
                     device,
                     texture_layout,
                     texture_sampler,
-                    jar_assets_dir,
-                    asset_index,
-                    packs,
+                    resources,
                     layer,
                 )
             };
@@ -800,8 +777,8 @@ fn destroy_armor_assets(device: &rhi::backend::Device, assets: &mut HashMap<Stri
         .drain()
         .flat_map(|(_, asset)| asset.humanoid.into_iter().chain(asset.leggings))
     {
-        layer.texture.destroy(device);
         layer.set.destroy(device);
+        layer.texture.destroy(device);
     }
 }
 
@@ -1773,7 +1750,6 @@ impl EntityRenderer {
         targets: rhi::backend::PipelineTargets,
         jar_assets_dir: &Path,
         asset_index: &Option<AssetIndex>,
-        packs: &ResourcePackManager,
         resources: &ResourceManager,
         lightmap: &Lightmap,
     ) -> Self {
@@ -1816,13 +1792,16 @@ impl EntityRenderer {
         let texture_sampler = rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST);
         let texture_sampler_repeat =
             rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST_REPEAT);
+        let armor_defs = load_armor_asset_defs(resources).unwrap_or_else(|error| {
+            tracing::warn!("Failed to enumerate equipment definitions; armor unavailable: {error}");
+            HashMap::new()
+        });
         let armor_assets = load_armor_assets(
             device,
             texture_layout,
             texture_sampler,
-            jar_assets_dir,
-            asset_index,
-            packs,
+            resources,
+            armor_defs,
         );
         let armor_meshes = build_armor_meshes(device);
 
@@ -1943,22 +1922,32 @@ impl EntityRenderer {
         }
     }
 
+    /// The caller must wait for device idle before replacing armor resources.
     pub fn reload_armor_assets(
         &mut self,
         device: &rhi::backend::Device,
-        jar_assets_dir: &Path,
-        asset_index: &Option<AssetIndex>,
-        packs: &ResourcePackManager,
+        resources: &ResourceManager,
     ) {
-        destroy_armor_assets(device, &mut self.armor_assets);
-        self.armor_assets = load_armor_assets(
+        // Prepare before destroying the old category. Enumeration failure is
+        // distinct from a legitimate empty (including fully filtered) selection.
+        let defs = match load_armor_asset_defs(resources) {
+            Ok(defs) => defs,
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to enumerate equipment definitions; retaining current armor: {error}"
+                );
+                return;
+            }
+        };
+        let replacement = load_armor_assets(
             device,
             self.texture_layout,
             self.texture_sampler,
-            jar_assets_dir,
-            asset_index,
-            packs,
+            resources,
+            defs,
         );
+        let mut old = std::mem::replace(&mut self.armor_assets, replacement);
+        destroy_armor_assets(device, &mut old);
     }
 
     pub fn update_camera(&mut self, frame: usize, uniform: &CameraUniform) {
@@ -3366,7 +3355,7 @@ mod tests {
 
     use super::{
         ArmorDye, EquipmentClientInfoJson, OverlayKind, Route, Visibility, armor_layer_defs,
-        armor_render_info, body_route, equipment_texture_key, layer_route,
+        armor_render_info, body_route, equipment_texture_id, layer_route,
     };
 
     fn invisible(visibility: Visibility, glowing: bool) -> EntityRenderInfo {
@@ -3472,8 +3461,8 @@ mod tests {
         let layers = armor_layer_defs(&info.layers["humanoid"], "humanoid");
         assert_eq!(layers.len(), 2);
         assert_eq!(
-            layers[0].texture_key,
-            "minecraft/textures/entity/equipment/humanoid/leather.png"
+            layers[0].texture_id.to_string(),
+            "minecraft:textures/entity/equipment/humanoid/leather.png"
         );
         assert_eq!(
             layers[0].dye,
@@ -3482,20 +3471,53 @@ mod tests {
             }
         );
         assert_eq!(
-            layers[1].texture_key,
-            "example/textures/entity/equipment/humanoid/overlay.png"
+            layers[1].texture_id.to_string(),
+            "example:textures/entity/equipment/humanoid/overlay.png"
         );
         assert_eq!(layers[1].dye, ArmorDye::None);
     }
 
     #[test]
-    fn equipment_texture_ids_reject_path_traversal() {
+    fn equipment_texture_ids_validate_syntax_and_contain_lookup() {
         assert_eq!(
-            equipment_texture_key("iron", "humanoid"),
-            Some("minecraft/textures/entity/equipment/humanoid/iron.png".into())
+            equipment_texture_id("iron", "humanoid").map(|id| id.to_string()),
+            Some("minecraft:textures/entity/equipment/humanoid/iron.png".into())
         );
-        assert!(equipment_texture_key("minecraft:../iron", "humanoid").is_none());
-        assert!(equipment_texture_key(":iron", "humanoid").is_none());
+        // IDs validate logical syntax, not filesystem components. The old
+        // ../iron case stays valid; containment belongs to the provider.
+        assert_eq!(
+            equipment_texture_id("minecraft:../iron", "humanoid").map(|id| id.to_string()),
+            Some("minecraft:textures/entity/equipment/humanoid/../iron.png".into())
+        );
+        assert!(equipment_texture_id(":iron", "humanoid").is_none());
+
+        let root = std::env::temp_dir().join(format!("pomme-armor-{}", uuid::Uuid::new_v4()));
+        let pack = root.join("resourcepacks/armor");
+        let textures = pack.join("assets/minecraft/textures/entity/equipment/humanoid");
+        std::fs::create_dir_all(&textures).unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"pack_format":55,"description":"armor containment"}}"#,
+        )
+        .unwrap();
+        std::fs::write(textures.join("iron.png"), b"inside").unwrap();
+        std::fs::write(pack.join("iron.png"), b"outside assets").unwrap();
+        let mut packs =
+            crate::resources::ResourcePackManager::new(&root, "fixture", &root.join("unused.jar"));
+        packs.enable_local_pack("armor");
+        let resources = crate::resources::ResourceManager::new(packs.sources().unwrap()).unwrap();
+        let inside = equipment_texture_id("iron", "humanoid").unwrap();
+        assert!(resources.get_resource(&inside).unwrap().is_some());
+        // Six parent components escape the assets root to an existing file;
+        // rejection must be containment, not a missing-file false positive.
+        let outside = equipment_texture_id("minecraft:../../../../../../iron", "humanoid").unwrap();
+        let result = resources.get_resource(&outside);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(matches!(
+            result,
+            Err(crate::resources::ResourceError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::PermissionDenied
+        ));
     }
 
     use azalea_registry::builtin::EntityKind;
