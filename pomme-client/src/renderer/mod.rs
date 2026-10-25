@@ -410,12 +410,8 @@ impl Renderer {
             false,
         );
 
-        let book_preview = BookPreviewPipeline::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
-        );
+        let book_preview =
+            BookPreviewPipeline::new(&ctx.device, swapchain_state.targets(), resources);
 
         let entity_outline =
             EntityOutline::new(&ctx.device, swapchain_state.targets(), swapchain_extent);
@@ -1264,6 +1260,8 @@ impl Renderer {
         self.entity_shadow_pipeline
             .reload_texture(&self.ctx.device, resources);
         self.block_overlay_pipeline
+            .reload_texture(&self.ctx.device, resources);
+        self.book_preview
             .reload_texture(&self.ctx.device, resources);
 
         warm_item_meshes(
