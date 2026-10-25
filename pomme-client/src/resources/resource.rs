@@ -1,13 +1,12 @@
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::{fmt, io};
 
 use super::pack_resource::{ReadStream, ResourceOrigin, SharedPackResources};
-use crate::assets::{AssetId, identifier_chars, valid_asset_key};
+use crate::assets::{AssetId, identifier_chars};
 
-/// Owned key checked against the asset-key grammar, including namespace.
-/// Paths include category and extension. Deterministic namespace-then-path
-/// ordering does not imply resource-pack priority.
+/// Owned logical name with nonempty namespace and path, checked only for
+/// identifier characters. Storage resolution belongs to the source adapter.
+/// Deterministic namespace-then-path ordering does not imply pack priority.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ResourceId {
     namespace: String,
@@ -16,16 +15,17 @@ pub(crate) struct ResourceId {
 
 impl ResourceId {
     pub(crate) fn new(value: &str) -> Result<Self, ResourceError> {
-        let id = AssetId::parse(value);
-        // Joining first would reinterpret a slash in the namespace as path.
-        if !identifier_chars(id.namespace, false)
-            || !valid_asset_key(&format!("{}/{}", id.namespace, id.path))
+        let (namespace, path) = value.split_once(':').unwrap_or(("minecraft", value));
+        if namespace.is_empty()
+            || path.is_empty()
+            || !identifier_chars(namespace, false)
+            || !identifier_chars(path, true)
         {
             return Err(ResourceError::InvalidId(value.to_owned()));
         }
         Ok(Self {
-            namespace: id.namespace.to_owned(),
-            path: id.path.to_owned(),
+            namespace: namespace.to_owned(),
+            path: path.to_owned(),
         })
     }
 
@@ -83,18 +83,12 @@ pub(crate) enum ResourceError {
 }
 
 /// Reopenable resource or sidecar, independent of the manager's lifetime.
-/// Pins a source or backing pathname, not immutable bytes.
+/// Pins a source, not immutable bytes; each open repeats its storage checks.
 #[derive(Clone)]
 pub(crate) struct ResourceContent {
     id: ResourceId,
     origin: ResourceOrigin,
-    backing: ResourceBacking,
-}
-
-#[derive(Clone)]
-enum ResourceBacking {
-    Source(SharedPackResources),
-    File(PathBuf),
+    source: SharedPackResources,
 }
 
 impl ResourceContent {
@@ -103,15 +97,7 @@ impl ResourceContent {
         Self {
             id,
             origin: source.origin().clone(),
-            backing: ResourceBacking::Source(source),
-        }
-    }
-
-    pub(crate) fn from_path(id: ResourceId, origin: ResourceOrigin, path: PathBuf) -> Self {
-        Self {
-            id,
-            origin,
-            backing: ResourceBacking::File(path),
+            source,
         }
     }
 
@@ -126,18 +112,14 @@ impl ResourceContent {
     /// Missing or changed backing content never triggers source fallback.
     /// Later Read errors are io::Error; the handle retains ID/origin context.
     pub(crate) fn open(&self) -> Result<ReadStream, ResourceError> {
-        let opened = match &self.backing {
-            ResourceBacking::Source(source) => source.open(&self.id),
-            ResourceBacking::File(path) => {
-                std::fs::File::open(path).map(|file| Box::new(file) as ReadStream)
-            }
-        };
-        opened.map_err(|source| ResourceError::Io {
-            operation: "open resource",
-            id: Some(self.id.clone()),
-            origin: self.origin.clone(),
-            source,
-        })
+        self.source
+            .open(&self.id)
+            .map_err(|source| ResourceError::Io {
+                operation: "open resource",
+                id: Some(self.id.clone()),
+                origin: self.origin.clone(),
+                source,
+            })
     }
 }
 

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, asset_path, is_source_file, lookup_error,
-    open_directory, open_file, unsupported,
+    PackResources, ReadStream, ResourceOrigin, canonical_directory, lookup_error, open_directory,
+    open_file, source_file, unsupported,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
@@ -21,8 +21,10 @@ impl DirectoryPackResources {
         Ok(Self { root, origin })
     }
 
-    fn path(&self, id: &ResourceId) -> PathBuf {
-        asset_path(&self.root, id)
+    fn locate(&self, id: &ResourceId) -> io::Result<Option<PathBuf>> {
+        let root = canonical_directory(&self.root)?;
+        // Only the final resolved resource is confined to the source assets root.
+        source_file(&root, &root.join(id.namespace()).join(id.path()))
     }
 }
 
@@ -35,14 +37,17 @@ impl PackResources for DirectoryPackResources {
         self: Rc<Self>,
         id: &ResourceId,
     ) -> Result<Option<ResourceContent>, ResourceError> {
-        let path = self.path(id);
-        let present = is_source_file(&self.root, &path)
+        let path = self
+            .locate(id)
             .map_err(|source| lookup_error(id, &self.origin, source))?;
-        Ok(present.then(|| ResourceContent::from_path(id.clone(), self.origin.clone(), path)))
+        Ok(path.map(|_| ResourceContent::new(id.clone(), self)))
     }
 
     fn open(&self, id: &ResourceId) -> io::Result<ReadStream> {
-        open_file(&self.path(id))
+        let path = self.locate(id)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("missing resource {id:?}"))
+        })?;
+        open_file(&path)
     }
 
     fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError> {

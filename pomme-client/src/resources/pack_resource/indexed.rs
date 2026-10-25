@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, check_directory, lookup_error, open_directory,
-    open_file, unsupported,
+    PackResources, ReadStream, ResourceOrigin, canonical_directory, lookup_error, open_directory,
+    open_file, source_file, unsupported,
 };
 use crate::assets::AssetIndex;
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// An external asset-index source layer.
-/// Fallback belongs to the manager; handles pin the selected object path.
+/// Fallback belongs to the manager; handles retain this fixed index mapping.
 pub(crate) struct IndexedPackResources {
     asset_index: AssetIndex,
     origin: ResourceOrigin,
@@ -30,13 +30,13 @@ impl IndexedPackResources {
     }
 
     fn locate(&self, id: &ResourceId) -> io::Result<Option<PathBuf>> {
+        let root = canonical_directory(self.asset_index.objects_dir())?;
         let asset_id = id.as_asset_id();
         let key = format!("{}/{}", asset_id.namespace, asset_id.path);
-        let path = self.asset_index.resolve_checked(&key)?;
-        if path.is_none() {
-            check_directory(self.asset_index.objects_dir())?;
-        }
-        Ok(path)
+        let Some(path) = self.asset_index.resolve_checked(&key)? else {
+            return Ok(None);
+        };
+        source_file(&root, &path)
     }
 }
 
@@ -52,7 +52,7 @@ impl PackResources for IndexedPackResources {
         let path = self
             .locate(id)
             .map_err(|source| lookup_error(id, &self.origin, source))?;
-        Ok(path.map(|path| ResourceContent::from_path(id.clone(), self.origin.clone(), path)))
+        Ok(path.map(|_| ResourceContent::new(id.clone(), self)))
     }
 
     fn open(&self, id: &ResourceId) -> io::Result<ReadStream> {

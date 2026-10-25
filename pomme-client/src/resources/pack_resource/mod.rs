@@ -55,7 +55,8 @@ pub(crate) struct ResourceOrigin {
     pub(crate) name: String,
 }
 
-/// Resource bytes from one source layer, with checked IDs and queries.
+/// Resource bytes from one source layer, with syntax-checked logical IDs.
+/// Filesystem adapters must check resolved storage paths at lookup and open.
 /// Current adapters access the assets tree; other resource domains are not
 /// wired. Access failures must not become absence or empty results.
 /// Threading requirements remain undecided.
@@ -77,20 +78,16 @@ pub(crate) trait PackResources {
     fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError>;
 
     /// Recursive logical directory prefix, not a physical path or glob. Empty
-    /// means all paths in the namespace; otherwise valid nonempty components,
-    /// no leading/trailing slash, matching descendants under `prefix/` only.
-    /// Namespace follows existing asset-key validation. Invalid inputs are Err.
+    /// means all paths in the namespace; otherwise matching descendants under
+    /// `prefix/` only. Namespace and prefix use identifier characters, not
+    /// filesystem component rules. Invalid syntax is Err; storage containment
+    /// is the adapter's responsibility. Current adapters do not enumerate.
     /// Returns unique checked IDs, including .mcmeta files; callers may filter.
     fn list_resources(
         &self,
         namespace: &str,
         prefix: &str,
     ) -> Result<BTreeSet<ResourceId>, ResourceError>;
-}
-
-fn asset_path(assets_dir: &Path, id: &ResourceId) -> PathBuf {
-    let id = id.as_asset_id();
-    assets_dir.join(id.namespace).join(id.path)
 }
 
 /// Checks current root accessibility, not future access or descendant contents.
@@ -107,12 +104,32 @@ fn open_directory(root: &Path, origin: &ResourceOrigin) -> Result<(), ResourceEr
     })
 }
 
-fn is_source_file(root: &Path, path: &Path) -> io::Result<bool> {
-    let present = is_file(path)?;
-    if !present {
-        check_directory(root)?;
+/// Validate the source before treating missing descendants as absence.
+fn canonical_directory(root: &Path) -> io::Result<PathBuf> {
+    check_directory(root)?;
+    root.canonicalize()
+}
+
+/// Resolve symlinks and dot components before applying a component-wise gate.
+/// This is not atomic with opening: concurrent filesystem changes can race it.
+fn resolve_within(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let path = path.canonicalize()?;
+    if !path.starts_with(root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "resource resolves outside its storage boundary",
+        ));
     }
-    Ok(present)
+    Ok(path)
+}
+
+fn source_file(root: &Path, path: &Path) -> io::Result<Option<PathBuf>> {
+    let path = match resolve_within(root, path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(is_file(&path)?.then_some(path))
 }
 
 fn is_file(path: &Path) -> io::Result<bool> {
