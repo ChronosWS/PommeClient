@@ -16,7 +16,8 @@
 //! and pin a source or pathname, not immutable bytes; reopening may change or
 //! fail. Sources must retain required storage leases. Streams close on drop.
 //! Reload opens candidates before activation, then rebuilds consumers
-//! synchronously. Providers and their handles remain on the application thread.
+//! synchronously. Providers and ordinary handles remain on the application
+//! thread; content alone can opt into a transferable handle with local streams.
 
 mod filter;
 mod installed_format;
@@ -58,7 +59,9 @@ pub(crate) use pack::{
     PackCompat, PackError, PackId, PackInfo, PackProvenance, ResourcePackManager,
 };
 pub(crate) use pack_resource::embedded::{POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT};
-pub(crate) use resource::{Resource, ResourceContent, ResourceError, ResourceId};
+pub(crate) use resource::{
+    Resource, ResourceContent, ResourceError, ResourceId, ThreadSafeResourceContent,
+};
 
 /// Owned registration snapshot issued by pack management in low-to-high order.
 /// Storage, compiled filters and physical layers stay private to resources.
@@ -87,6 +90,17 @@ fn consumer_contract(
     }
     drop(manager);
     if let Some(resource) = winner {
+        let content: ThreadSafeResourceContent = resource.content().clone().into_thread_safe()?;
+        let shared = std::sync::Arc::new(content.clone());
+        let other = shared.clone();
+        // Typechecks Send + Sync; each non-Send stream stays inside its worker.
+        let _reader = std::thread::spawn(move || -> Result<(), ResourceError> {
+            let _id = shared.id();
+            let _origin = shared.origin();
+            let _stream = shared.open()?;
+            Ok(())
+        });
+        let _bounded_reader = std::thread::spawn(move || other.read_bytes(1024));
         let mut bytes = Vec::new();
         resource.content().open()?.read_to_end(&mut bytes)?;
         if let Some(metadata) = resource.metadata()? {

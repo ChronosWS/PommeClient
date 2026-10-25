@@ -1,8 +1,11 @@
 use std::io::Read;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::{fmt, io};
 
-use super::pack_resource::{ReadStream, ResourceOrigin, SharedPackResources};
+use super::pack_resource::{
+    ReadStream, ResourceOrigin, SharedPackResources, ThreadSafeResourceSource,
+};
 use crate::assets::{AssetId, identifier_chars};
 
 /// Owned logical name with nonempty namespace and path, checked only for
@@ -112,6 +115,26 @@ impl ResourceContent {
         &self.origin
     }
 
+    /// Retains the exact selected source without lookup or content I/O.
+    /// Only the resulting content handle is transferable, not resource
+    /// metadata.
+    pub(crate) fn into_thread_safe(self) -> Result<ThreadSafeResourceContent, ResourceError> {
+        let source = self
+            .source
+            .thread_safe_source()
+            .map_err(|source| ResourceError::Io {
+                operation: "prepare thread-safe resource",
+                id: Some(self.id.clone()),
+                origin: self.origin.clone(),
+                source,
+            })?;
+        Ok(ThreadSafeResourceContent {
+            id: self.id,
+            origin: self.origin,
+            source,
+        })
+    }
+
     /// Missing or changed backing content never triggers source fallback.
     /// Later Read errors are io::Error; the handle retains ID/origin context.
     pub(crate) fn open(&self) -> Result<ReadStream, ResourceError> {
@@ -128,29 +151,77 @@ impl ResourceContent {
     /// Reopens this content and reads at most one byte past the limit to
     /// detect oversized input, retaining ID/origin context on read errors.
     pub(crate) fn read_bytes(&self, limit: usize) -> Result<Vec<u8>, ResourceError> {
-        let mut bytes = Vec::new();
-        let result = self
-            .open()?
-            .take((limit as u64).saturating_add(1))
-            .read_to_end(&mut bytes);
-        let result = result.and_then(|_| {
-            if bytes.len() > limit {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "resource exceeds byte limit",
-                ))
-            } else {
-                Ok(())
-            }
-        });
-        result.map_err(|source| ResourceError::Io {
-            operation: "read resource",
-            id: Some(self.id.clone()),
-            origin: self.origin.clone(),
-            source,
-        })?;
-        Ok(bytes)
+        read_bounded(self.open()?, limit, &self.id, &self.origin)
     }
+}
+
+/// Opt-in transferable content, retaining the selected source independently of
+/// the manager. Pins a source, not immutable bytes; open repeats storage
+/// checks. Streams are created, used and dropped on the opening thread, not
+/// transferred.
+#[derive(Clone)]
+pub(crate) struct ThreadSafeResourceContent {
+    id: ResourceId,
+    origin: ResourceOrigin,
+    source: Arc<dyn ThreadSafeResourceSource>,
+}
+
+impl ThreadSafeResourceContent {
+    pub(crate) fn id(&self) -> &ResourceId {
+        &self.id
+    }
+
+    pub(crate) fn origin(&self) -> &ResourceOrigin {
+        &self.origin
+    }
+
+    /// Missing or changed backing content never triggers source fallback.
+    /// Later Read errors are io::Error; the handle retains ID/origin context.
+    pub(crate) fn open(&self) -> Result<ReadStream, ResourceError> {
+        self.source
+            .open(&self.id)
+            .map_err(|source| ResourceError::Io {
+                operation: "open resource",
+                id: Some(self.id.clone()),
+                origin: self.origin.clone(),
+                source,
+            })
+    }
+
+    /// Reopens this content and reads at most one byte past the limit to
+    /// detect oversized input, retaining ID/origin context on read errors.
+    pub(crate) fn read_bytes(&self, limit: usize) -> Result<Vec<u8>, ResourceError> {
+        read_bounded(self.open()?, limit, &self.id, &self.origin)
+    }
+}
+
+fn read_bounded(
+    stream: ReadStream,
+    limit: usize,
+    id: &ResourceId,
+    origin: &ResourceOrigin,
+) -> Result<Vec<u8>, ResourceError> {
+    let mut bytes = Vec::new();
+    let result = stream
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes);
+    let result = result.and_then(|_| {
+        if bytes.len() > limit {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "resource exceeds byte limit",
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    result.map_err(|source| ResourceError::Io {
+        operation: "read resource",
+        id: Some(id.clone()),
+        origin: origin.clone(),
+        source,
+    })?;
+    Ok(bytes)
 }
 
 /// Resolved content and lazy .mcmeta lookup, independent of the manager.

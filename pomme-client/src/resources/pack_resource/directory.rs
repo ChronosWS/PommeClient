@@ -2,15 +2,17 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, canonical_directory, check_directory,
-    enumeration_error, is_file, lookup_error, open_directory, open_file, overlay_directory,
-    resolve_within, source_file, valid_namespace, validate_query,
+    PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, canonical_directory,
+    check_directory, enumeration_error, is_file, lookup_error, open_directory, open_file,
+    overlay_directory, resolve_within, source_file, valid_namespace, validate_query,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// A namespace-containing assets directory, including extracted JARs and packs.
+#[derive(Clone)]
 pub(super) struct DirectoryPackResources {
     root: PathBuf,
     pack_root: Option<PathBuf>,
@@ -143,6 +145,10 @@ impl DirectoryPackResources {
 }
 
 impl PackResources for DirectoryPackResources {
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+        Ok(Arc::new(self.clone()))
+    }
+
     fn origin(&self) -> &ResourceOrigin {
         &self.origin
     }

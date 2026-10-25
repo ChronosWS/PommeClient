@@ -1,8 +1,12 @@
 use std::collections::BTreeSet;
 use std::io::{self, Cursor};
 use std::rc::Rc;
+use std::sync::Arc;
 
-use super::{PackResources, ReadStream, ResourceOrigin, matches_prefix, validate_query};
+use super::{
+    PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, matches_prefix,
+    validate_query,
+};
 use crate::resources::{ResourceContent, ResourceError, ResourceId};
 
 // Stable application IDs, independent of the installed Minecraft version.
@@ -23,6 +27,7 @@ const ENTRIES: &[(&str, &[u8])] = &[
     (POMME_ICON, include_bytes!("../../../assets/icon.png")),
 ];
 
+#[derive(Clone)]
 pub(super) struct EmbeddedPackResources {
     origin: ResourceOrigin,
 }
@@ -40,6 +45,10 @@ impl EmbeddedPackResources {
 }
 
 impl PackResources for EmbeddedPackResources {
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+        Ok(Arc::new(self.clone()))
+    }
+
     fn origin(&self) -> &ResourceOrigin {
         &self.origin
     }

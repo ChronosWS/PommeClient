@@ -1,33 +1,38 @@
-use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use self_cell::{MutBorrow, self_cell};
 use zip::ZipArchive;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, enumeration_error, id_from_key, lookup_error,
-    matches_prefix, overlay_directory, valid_namespace, validate_query,
+    PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, enumeration_error,
+    id_from_key, lookup_error, matches_prefix, overlay_directory, valid_namespace, validate_query,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// One opened file, with an independent logical position for each entry stream.
-/// Seeking and reading happen under the same borrow; File::try_clone alone
+/// Seeking and reading happen under the same lock; File::try_clone alone
 /// would share an OS cursor and break interleaved reads.
 #[derive(Clone)]
 struct SharedFileCursor {
-    file: Rc<RefCell<File>>,
+    file: Arc<Mutex<File>>,
     position: u64,
 }
 
 impl Read for SharedFileCursor {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let mut file = self.file.borrow_mut();
-        file.seek(SeekFrom::Start(self.position))?;
-        let read = file.read(buffer)?;
+        let read = {
+            let mut file = self
+                .file
+                .lock()
+                .map_err(|_| io::Error::other("ZIP source file lock poisoned"))?;
+            file.seek(SeekFrom::Start(self.position))?;
+            file.read(buffer)?
+        };
         self.position += read as u64;
         Ok(read)
     }
@@ -40,7 +45,8 @@ impl Seek for SharedFileCursor {
             SeekFrom::Current(offset) => self.position.checked_add_signed(offset),
             SeekFrom::End(offset) => self
                 .file
-                .borrow()
+                .lock()
+                .map_err(|_| io::Error::other("ZIP source file lock poisoned"))?
                 .metadata()?
                 .len()
                 .checked_add_signed(offset),
@@ -76,9 +82,10 @@ impl Read for OwnedZipEntry {
 /// independently. Replacing/deleting the pathname does not reopen it. In-place
 /// edits are not protected: this is an opened source view, not an immutable
 /// byte snapshot.
+#[derive(Clone)]
 pub(super) struct ZipPackResources {
     origin: ResourceOrigin,
-    archive: Rc<ZipArchive<SharedFileCursor>>,
+    archive: Arc<ZipArchive<SharedFileCursor>>,
     prefix: String,
 }
 
@@ -86,7 +93,7 @@ impl ZipPackResources {
     pub(super) fn open(path: PathBuf, origin: ResourceOrigin) -> Result<Self, ResourceError> {
         let archive = (|| -> io::Result<_> {
             let cursor = SharedFileCursor {
-                file: Rc::new(RefCell::new(File::open(path)?)),
+                file: Arc::new(Mutex::new(File::open(path)?)),
                 position: 0,
             };
             Ok(ZipArchive::new(cursor)?)
@@ -99,7 +106,7 @@ impl ZipPackResources {
         })?;
         Ok(Self {
             origin,
-            archive: Rc::new(archive),
+            archive: Arc::new(archive),
             prefix: "assets/".to_owned(),
         })
     }
@@ -192,6 +199,10 @@ impl ZipPackResources {
 }
 
 impl PackResources for ZipPackResources {
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+        Ok(Arc::new(self.clone()))
+    }
+
     fn origin(&self) -> &ResourceOrigin {
         &self.origin
     }

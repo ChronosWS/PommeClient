@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::PackId;
 use super::filter::ResourceFilter;
@@ -103,6 +104,17 @@ impl ResourcePackDescriptor {
 pub(crate) type ReadStream = Box<dyn Read + 'static>;
 pub(super) type SharedPackResources = Rc<dyn PackResources>;
 
+/// Exact-source opening only; streams remain local to the opening thread.
+pub(super) trait ThreadSafeResourceSource: Send + Sync {
+    fn open(&self, id: &ResourceId) -> io::Result<ReadStream>;
+}
+
+impl<T: PackResources + Send + Sync> ThreadSafeResourceSource for T {
+    fn open(&self, id: &ResourceId) -> io::Result<ReadStream> {
+        PackResources::open(self, id)
+    }
+}
+
 /// Logical pack provenance and diagnostic display metadata, not source
 /// identity. Compare pack_id for identity; names can change and layers can
 /// share a pack. Metadata carries its own origin, which may belong to a
@@ -142,6 +154,15 @@ pub(super) trait PackResources {
     /// Exact-source open for a located ID. NotFound after lookup is an error.
     /// The returned stream must not borrow this source or a temporary archive.
     fn open(&self, id: &ResourceId) -> io::Result<ReadStream>;
+
+    /// Cheap source retention only: no lookup, filesystem checks or entry open.
+    /// Composite sources must return child content rather than reselect here.
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "source does not support thread-safe resource content",
+        ))
+    }
 
     fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError>;
 

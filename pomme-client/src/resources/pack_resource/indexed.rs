@@ -2,18 +2,21 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, canonical_directory, enumeration_error, id_from_key,
-    lookup_error, matches_prefix, open_directory, open_file, source_file, validate_query,
+    PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, canonical_directory,
+    enumeration_error, id_from_key, lookup_error, matches_prefix, open_directory, open_file,
+    source_file, validate_query,
 };
 use crate::assets::AssetIndex;
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// An external asset-index source layer.
 /// Fallback belongs to the manager; handles retain this fixed index mapping.
+#[derive(Clone)]
 pub(super) struct IndexedPackResources {
-    asset_index: AssetIndex,
+    asset_index: Arc<AssetIndex>,
     origin: ResourceOrigin,
 }
 
@@ -24,7 +27,7 @@ impl IndexedPackResources {
     ) -> Result<Self, ResourceError> {
         open_directory(asset_index.objects_dir(), &origin)?;
         Ok(Self {
-            asset_index,
+            asset_index: Arc::new(asset_index),
             origin,
         })
     }
@@ -41,6 +44,10 @@ impl IndexedPackResources {
 }
 
 impl PackResources for IndexedPackResources {
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+        Ok(Arc::new(self.clone()))
+    }
+
     fn origin(&self) -> &ResourceOrigin {
         &self.origin
     }
