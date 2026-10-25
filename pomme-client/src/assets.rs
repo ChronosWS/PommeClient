@@ -79,29 +79,6 @@ pub fn resolve_asset_path(
     resolve_asset_path_with_packs(jar_assets_dir, asset_index, asset_key, None)
 }
 
-pub fn resource_stack_paths(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    asset_key: &str,
-    packs: Option<&ResourcePackManager>,
-) -> Vec<PathBuf> {
-    if !checked_asset_key(asset_key) {
-        return Vec::new();
-    }
-    let mut stack: Vec<_> = builtin_asset(jar_assets_dir, asset_index, asset_key)
-        .into_iter()
-        .collect();
-    if let Some(packs) = packs {
-        for root in packs.active_pack_dirs() {
-            let path = root.join("assets").join(asset_key);
-            if path.is_file() {
-                stack.push(path);
-            }
-        }
-    }
-    stack
-}
-
 pub fn resolve_asset_path_with_packs(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
@@ -248,6 +225,5 @@ mod tests {
         let root = std::env::temp_dir().join(format!("pomme-assets-{}", uuid::Uuid::new_v4()));
         let resolved = resolve_asset_path_with_packs(&root, &None, "minecraft/../../outside", None);
         assert_eq!(resolved, root.join("__invalid_asset_key__"));
-        assert!(resource_stack_paths(&root, &None, "minecraft/../../outside", None).is_empty());
     }
 }

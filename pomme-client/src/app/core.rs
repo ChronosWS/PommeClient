@@ -1459,19 +1459,14 @@ impl AppCore {
     ) -> InlineObjectContent {
         match object {
             InlineObject::AtlasSprite { atlas, sprite } => {
-                let frames = crate::ui::object_glyph::load_atlas_sprite(
-                    &self.data_dirs.jar_assets_dir,
-                    &self.asset_index,
-                    &self.resource_packs,
-                    atlas,
-                    sprite,
-                )
-                .unwrap_or_else(|| {
-                    // A sprite the atlas doesn't have keeps the missing
-                    // texture, as `TextureAtlas.missingSprite` does.
-                    let (pixels, size) = crate::ui::object_glyph::missing_tile();
-                    crate::ui::object_glyph::SpriteFrames::still(pixels, size)
-                });
+                let frames =
+                    crate::ui::object_glyph::load_atlas_sprite(&self.resources, atlas, sprite)
+                        .unwrap_or_else(|| {
+                            // A sprite the atlas doesn't have keeps the missing
+                            // texture, as `TextureAtlas.missingSprite` does.
+                            let (pixels, size) = crate::ui::object_glyph::missing_tile();
+                            crate::ui::object_glyph::SpriteFrames::still(pixels, size)
+                        });
                 InlineObjectContent::Sprite { frames, frame: 0 }
             }
             InlineObject::Player {

@@ -58,7 +58,7 @@ pub(crate) use pack::{
     PackCompat, PackError, PackId, PackInfo, PackProvenance, ResourcePackManager,
 };
 pub(crate) use pack_resource::embedded::{POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT};
-pub(crate) use resource::{ResourceContent, ResourceError, ResourceId};
+pub(crate) use resource::{Resource, ResourceContent, ResourceError, ResourceId};
 
 /// Owned registration snapshot issued by pack management in low-to-high order.
 /// Storage, compiled filters and physical layers stay private to resources.
