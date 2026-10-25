@@ -1712,7 +1712,7 @@ impl AppCore {
                     // Retire baked UVs only after sources activate, before the
                     // shared atlas is repacked. Failed activation keeps them.
                     renderer.clear_chunk_meshes();
-                    renderer.reload_assets(resource_packs, resources, menu.font_options());
+                    renderer.reload_assets(resources, menu.font_options());
                 }
                 menu.load_splash(resources);
                 if let Some(index) = installed_index {

@@ -2,15 +2,15 @@
 //! layout, from the live renderer or, for a headless run, loaded without a GPU.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
-use crate::assets::AssetIndex;
 use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_names};
 use crate::renderer::chunk::mesher::{BiomeClimate, MeshDispatcher};
 use crate::resources::ResourceManager;
 use crate::world::block::colormap::Colormaps;
-use crate::world::block::model::{BlockstateSources, CardinalLightType, ModelSources};
+use crate::world::block::model::{
+    BlockstateSources, CardinalLightType, ItemDefinitionSources, ModelSources,
+};
 use crate::world::block::render_assets::{BlockRenderAssets, OwnedBlockRenderView};
 
 pub trait MeshSource {
@@ -43,22 +43,18 @@ pub struct CpuMeshAssets {
 }
 
 impl CpuMeshAssets {
-    pub fn load(
-        jar_assets_dir: &Path,
-        asset_index: Option<AssetIndex>,
-        resources: &ResourceManager,
-    ) -> Self {
+    pub fn load(resources: &ResourceManager) -> Self {
         let blockstates = BlockstateSources::load(resources)
             .expect("failed to enumerate Minecraft blockstates for CPU mesh assets");
         let models = ModelSources::load(resources)
             .expect("failed to enumerate Minecraft geometry models for CPU mesh assets");
+        let items = ItemDefinitionSources::load(resources)
+            .expect("failed to enumerate Minecraft item definitions for CPU mesh assets");
         let render_assets = Arc::new(BlockRenderAssets::load(
-            jar_assets_dir,
-            &asset_index,
-            None,
             Colormaps::load(resources),
             blockstates,
             models,
+            items,
         ));
         let (texture_names, generated_item_textures) = atlas_texture_names(&render_assets);
         let uv_map =

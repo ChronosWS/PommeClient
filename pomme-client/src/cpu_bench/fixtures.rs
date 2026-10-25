@@ -7,7 +7,6 @@ use std::sync::Arc;
 use azalea_block::BlockState;
 use glam::DVec3;
 
-use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
 use crate::position::ChunkPos;
 use crate::renderer::chunk::mesh_source::{CpuMeshAssets, MeshSource};
@@ -29,7 +28,6 @@ impl Assets {
         version: &str,
         dirs: &DataDirs,
         block_state_table: BlockStateTable,
-        asset_index: Option<AssetIndex>,
         resources: &ResourceManager,
     ) -> Result<Self, String> {
         if !dirs.jar_assets_dir.is_dir() {
@@ -40,7 +38,7 @@ impl Assets {
         }
         eprintln!("cpu-bench: loading block models and packing the atlas...");
         Ok(Self {
-            mesh: CpuMeshAssets::load(&dirs.jar_assets_dir, asset_index, resources),
+            mesh: CpuMeshAssets::load(resources),
             block_state_table,
         })
     }

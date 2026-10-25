@@ -79,7 +79,7 @@ pub fn run(
             return 1;
         }
     };
-    let assets = CpuMeshAssets::load(&dirs.jar_assets_dir, asset_index, &resources);
+    let assets = CpuMeshAssets::load(&resources);
     let chat_options = ChatOptions::default();
     let skin_options = SkinOptions::default();
     let connection = spawn_connection(

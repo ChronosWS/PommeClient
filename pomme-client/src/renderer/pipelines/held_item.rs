@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use glam::{Mat4, Vec3};
 
 use crate::renderer::camera::CameraUniform;
@@ -8,7 +6,7 @@ use crate::renderer::pipelines::hand;
 use crate::renderer::pipelines::item_display::{DisplayResolver, DisplayTransform};
 use crate::renderer::pipelines::item_entity::{self, ItemEntityPipeline, ItemPipelineShared};
 use crate::renderer::rhi;
-use crate::world::block::model::ModelSources;
+use crate::world::block::model::{ItemDefinitionSources, ModelSources};
 
 pub struct HeldItemInfo {
     /// The item, whose model JSON gives the display transforms.
@@ -80,8 +78,8 @@ impl HeldItemPipeline {
         device: &rhi::backend::Device,
         targets: rhi::backend::PipelineTargets,
         atlas: &TextureAtlas,
-        jar_assets_dir: &Path,
         models: ModelSources,
+        items: ItemDefinitionSources,
     ) -> Self {
         let shared = ItemPipelineShared::new(device, atlas, "held_item");
         let pipeline = item_entity::create_pipeline(device, targets, shared.pipeline_layout);
@@ -89,14 +87,14 @@ impl HeldItemPipeline {
             pipeline,
             shared,
             right_display: DisplayResolver::new(
-                jar_assets_dir,
                 &["firstperson_righthand"],
                 models.clone(),
+                items.clone(),
             ),
             left_display: DisplayResolver::new(
-                jar_assets_dir,
                 &["firstperson_lefthand", "firstperson_righthand"],
                 models,
+                items,
             ),
         }
     }
@@ -106,10 +104,12 @@ impl HeldItemPipeline {
         device: &rhi::backend::Device,
         atlas: &TextureAtlas,
         models: ModelSources,
+        items: ItemDefinitionSources,
     ) {
         self.shared.rebind_atlas(device, atlas);
-        self.right_display.replace_model_sources(models.clone());
-        self.left_display.replace_model_sources(models);
+        self.right_display
+            .replace_definition_sources(models.clone(), items.clone());
+        self.left_display.replace_definition_sources(models, items);
     }
 
     #[allow(clippy::too_many_arguments)]

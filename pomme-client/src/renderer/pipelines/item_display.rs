@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 pub(crate) use crate::world::block::model::DisplayTransform;
-use crate::world::block::model::{ModelSources, first_item_model_ref, parse_display_transform};
+use crate::world::block::model::{
+    ItemDefinitionSources, ModelSources, first_item_model_ref, parse_display_transform,
+};
 
 const MODEL_PARENT_LIMIT: u32 = 16;
 
@@ -14,27 +15,31 @@ const MODEL_PARENT_LIMIT: u32 = 16;
 pub struct DisplayResolver {
     keys: &'static [&'static str],
     cache: RefCell<HashMap<String, DisplayTransform>>,
-    items_dir: PathBuf,
+    items: ItemDefinitionSources,
     models: ModelSources,
 }
 
 impl DisplayResolver {
     pub(crate) fn new(
-        jar_assets_dir: &Path,
         keys: &'static [&'static str],
         models: ModelSources,
+        items: ItemDefinitionSources,
     ) -> Self {
-        let mc_base = jar_assets_dir.join("minecraft");
         Self {
             keys,
             cache: RefCell::new(HashMap::new()),
-            items_dir: mc_base.join("items"),
+            items,
             models,
         }
     }
 
-    pub(crate) fn replace_model_sources(&mut self, models: ModelSources) {
+    pub(crate) fn replace_definition_sources(
+        &mut self,
+        models: ModelSources,
+        items: ItemDefinitionSources,
+    ) {
         self.models = models;
+        self.items = items;
         self.cache.get_mut().clear();
     }
 
@@ -42,7 +47,10 @@ impl DisplayResolver {
         if let Some(t) = self.cache.borrow().get(item_name) {
             return *t;
         }
-        let resolved = resolve_item_model_path(item_name, &self.items_dir)
+        let resolved = self
+            .items
+            .item_json(item_name)
+            .and_then(|json| first_item_model_ref(&json))
             .and_then(|path| resolve_display(&path, &self.models, self.keys))
             .unwrap_or(default);
         self.cache
@@ -50,17 +58,6 @@ impl DisplayResolver {
             .insert(item_name.to_string(), resolved);
         resolved
     }
-}
-
-fn read_json(path: &Path) -> Option<serde_json::Value> {
-    let s = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&s).ok()
-}
-
-// Modern items/*.json definitions remain on the legacy reader for now.
-fn resolve_item_model_path(name: &str, items_dir: &Path) -> Option<String> {
-    let item_json = read_json(&items_dir.join(format!("{name}.json")))?;
-    first_item_model_ref(&item_json)
 }
 
 /// The first model up the parent chain with any of `keys` in its `display`,
@@ -125,9 +122,9 @@ mod tests {
             ("item/base", mc.join("models/item/base.json")),
         ]);
         let left = DisplayResolver::new(
-            &dir,
             &["firstperson_lefthand", "firstperson_righthand"],
             models,
+            ItemDefinitionSources::from_test_files(&[("thing", mc.join("items/thing.json"))]),
         );
         let resolved = left.resolve("thing", DisplayTransform::IDENTITY);
         assert_eq!(resolved.rotation, glam::Vec3::new(0.0, 10.0, 0.0));

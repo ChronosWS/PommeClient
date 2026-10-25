@@ -96,7 +96,7 @@ fn load_assets(
             return None;
         }
     };
-    match fixtures::Assets::load(version, dirs, block_state_table, asset_index, &resources) {
+    match fixtures::Assets::load(version, dirs, block_state_table, &resources) {
         Ok(assets) => Some(assets),
         Err(error) => {
             eprintln!("cpu-bench: {error}");

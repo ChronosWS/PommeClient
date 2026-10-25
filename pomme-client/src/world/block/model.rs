@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use glam::{Mat3, Mat4, Quat, Vec3};
@@ -7,11 +6,94 @@ use serde::Deserialize;
 
 use super::colormap::Colormap;
 use super::render_assets::{FaceTextures, Tint};
-use crate::assets::{AssetId, AssetIndex, resolve_asset_path_with_packs};
+use crate::assets::AssetId;
 use crate::resources::{ResourceError, ResourceId, ResourceManager};
 
 const MAX_BLOCKSTATE_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MODEL_JSON_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ITEM_DEFINITION_JSON_BYTES: usize = 8 * 1024 * 1024;
+
+/// Winning modern item definitions shared by baking and held-display lookup.
+/// Raw owned bytes preserve the tolerant Value interpreter without retaining
+/// application-thread resource providers. Clones pin the same generation.
+#[derive(Clone, Default)]
+pub(crate) struct ItemDefinitionSources(Arc<HashMap<String, Vec<u8>>>);
+
+impl ItemDefinitionSources {
+    pub(crate) fn load(resources: &ResourceManager) -> Result<Self, ResourceError> {
+        let ids = resources.list_resource_ids("items", |id| {
+            id.path().starts_with("items/") && id.path().ends_with(".json")
+        })?;
+        let mut entries = HashMap::with_capacity(ids.len());
+        let mut total_bytes = 0;
+        for id in ids {
+            let resource = match resources.get_resource(&id) {
+                Ok(Some(resource)) => resource,
+                Ok(None) => {
+                    tracing::warn!(
+                        "{id}: item definition disappeared during acquisition; skipping"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!("{id}: failed to resolve item definition: {error}; skipping");
+                    continue;
+                }
+            };
+            let Some(path) = id
+                .path()
+                .strip_prefix("items/")
+                .and_then(|path| path.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            let Ok(key) = ResourceId::new(&format!("{}:{path}", id.namespace())) else {
+                continue;
+            };
+            match resource
+                .content()
+                .read_bytes(MAX_ITEM_DEFINITION_JSON_BYTES)
+            {
+                Ok(bytes) => {
+                    total_bytes += bytes.len();
+                    entries.insert(key.to_short_string(), bytes);
+                }
+                Err(error) => {
+                    tracing::warn!("{id}: failed to read item definition: {error}; skipping");
+                }
+            }
+        }
+        tracing::info!(
+            "Item definition catalog: {} definitions, {total_bytes} bytes",
+            entries.len()
+        );
+        Ok(Self(Arc::new(entries)))
+    }
+
+    pub(crate) fn item_json(&self, item_id: &str) -> Option<serde_json::Value> {
+        let key = ResourceId::new(item_id).ok()?.to_short_string();
+        serde_json::from_slice(self.0.get(&key)?).ok()
+    }
+
+    fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_files(files: &[(&str, std::path::PathBuf)]) -> Self {
+        Self(Arc::new(
+            files
+                .iter()
+                .map(|(id, path)| {
+                    (
+                        ResourceId::new(id).unwrap().to_short_string(),
+                        std::fs::read(path).unwrap(),
+                    )
+                })
+                .collect(),
+        ))
+    }
+}
 
 /// One immutable winning-model catalog shared by geometry and display readers.
 /// Only owned bytes cross into the worker; no provider or manager is retained.
@@ -806,32 +888,6 @@ pub enum ItemTintSource {
     Team { default: u32 },
 }
 
-/// Every `minecraft/items/*.json` name across the jar and the active packs,
-/// so a pack can add an item, not only replace one. Vanilla walks every pack
-/// in `FallbackResourceManager`.
-fn item_definition_names(
-    jar_assets_dir: &Path,
-    packs: Option<&crate::resources::ResourcePackManager>,
-) -> std::collections::BTreeSet<String> {
-    let pack_dirs = packs
-        .into_iter()
-        .flat_map(|packs| packs.active_pack_dirs())
-        .map(|dir| dir.join("assets"));
-    std::iter::once(jar_assets_dir.to_path_buf())
-        .chain(pack_dirs)
-        .filter_map(|root| std::fs::read_dir(root.join("minecraft").join("items")).ok())
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            entry
-                .file_name()
-                .to_str()?
-                .strip_suffix(".json")
-                .map(str::to_owned)
-        })
-        .collect()
-}
-
 fn opaque(color: u32) -> u32 {
     color | 0xFF00_0000
 }
@@ -942,9 +998,7 @@ fn parse_item_tint_sources(
 }
 
 pub(super) fn bake_item_models(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resources::ResourcePackManager>,
+    items: &ItemDefinitionSources,
     grass_colormap: &Colormap,
     models: &ModelSources,
 ) -> BakedItemModels {
@@ -1065,15 +1119,8 @@ pub(super) fn bake_item_models(
         }
     };
 
-    for item_name in item_definition_names(jar_assets_dir, packs) {
-        let item_name = item_name.as_str();
-        let item_asset_key = format!("minecraft/items/{item_name}.json");
-        let item_path =
-            resolve_asset_path_with_packs(jar_assets_dir, asset_index, &item_asset_key, packs);
-        let Ok(contents) = std::fs::read_to_string(item_path) else {
-            continue;
-        };
-        let Ok(json): Result<serde_json::Value, _> = serde_json::from_str(&contents) else {
+    for item_name in items.names() {
+        let Some(json) = items.item_json(item_name) else {
             continue;
         };
 
@@ -3087,7 +3134,11 @@ mod tests {
             ("item/unresolved", models.join("unresolved.json")),
             ("item/generated", models.join("generated.json")),
         ]);
-        let baked = bake_item_models(&jar, &None, None, &Colormap::fallback(), &sources);
+        let items = ItemDefinitionSources::from_test_files(&[
+            ("holey", items.join("holey.json")),
+            ("unresolved", items.join("unresolved.json")),
+        ]);
+        let baked = bake_item_models(&items, &Colormap::fallback(), &sources);
         assert_eq!(
             baked.flat_texture_keys.get("holey").map(Vec::as_slice),
             Some([Some("item/zero".to_string())].as_slice())
@@ -3199,7 +3250,23 @@ mod tests {
                 pack_models.join("replacement.json"),
             ),
         ]);
-        let baked = bake_item_models(&jar, &None, Some(&packs), &Colormap::fallback(), &sources);
+        let fixture_jar = root.join("fixture.jar");
+        let mut archive = zip::ZipWriter::new(std::fs::File::create(&fixture_jar).unwrap());
+        archive
+            .start_file(
+                "assets/minecraft/items/test_item.json",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        std::io::Write::write_all(
+            &mut archive,
+            &std::fs::read(items.join("test_item.json")).unwrap(),
+        )
+        .unwrap();
+        archive.finish().unwrap();
+        let resources = ResourceManager::new(packs.fixture_sources(&fixture_jar).unwrap()).unwrap();
+        let items = ItemDefinitionSources::load(&resources).unwrap();
+        let baked = bake_item_models(&items, &Colormap::fallback(), &sources);
         assert_eq!(
             baked.flat_texture_keys.get("test_item").map(Vec::as_slice),
             Some([Some("other:item/replacement".to_string())].as_slice())

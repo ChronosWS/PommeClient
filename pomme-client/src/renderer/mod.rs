@@ -61,7 +61,7 @@ use crate::renderer::pipelines::held_item::{HandRenderSelection, HeldHand};
 use crate::renderer::pipelines::item_entity::ItemEntityPipeline;
 use crate::ui::font::{FontOptions, FontSources};
 use crate::world::block::colormap::Colormaps;
-use crate::world::block::model::{BlockstateSources, ModelSources};
+use crate::world::block::model::{BlockstateSources, ItemDefinitionSources, ModelSources};
 use crate::world::block::render_assets::{BlockRenderAssets, BlockRenderView};
 
 /// The live atlas's layout, so meshes bake in UVs that match it.
@@ -94,6 +94,9 @@ pub enum RendererError {
 
     #[error("failed to enumerate Minecraft geometry models: {0}")]
     ModelDefinitions(String),
+
+    #[error("failed to enumerate Minecraft item definitions: {0}")]
+    ItemDefinitions(String),
 }
 
 /// The loading splash: logo, progress bar and status line.
@@ -316,20 +319,11 @@ impl Renderer {
             .map_err(|error| RendererError::Blockstates(error.to_string()))?;
         let models = ModelSources::load(resources)
             .map_err(|error| RendererError::ModelDefinitions(error.to_string()))?;
-        let render_assets_handle = {
-            let jar_assets_dir = jar_assets_dir.to_path_buf();
-            let asset_index = asset_index.clone();
-            std::thread::spawn(move || {
-                BlockRenderAssets::load(
-                    &jar_assets_dir,
-                    &asset_index,
-                    None,
-                    colormaps,
-                    blockstates,
-                    models,
-                )
-            })
-        };
+        let items = ItemDefinitionSources::load(resources)
+            .map_err(|error| RendererError::ItemDefinitions(error.to_string()))?;
+        let render_assets_handle = std::thread::spawn(move || {
+            BlockRenderAssets::load(colormaps, blockstates, models, items)
+        });
 
         let (ctx, swapchain_state, mut frames, mut menu_pipeline) =
             boot::bring_up(&window, font_sources, Some(bedrock_ui_dir), vsync)?;
@@ -471,8 +465,8 @@ impl Renderer {
             &ctx.device,
             swapchain_state.targets(),
             &atlas,
-            jar_assets_dir,
             render_assets.model_sources().clone(),
+            render_assets.item_definition_sources().clone(),
         );
 
         splash(&mut menu_pipeline, 0.95, "Caching item meshes...");
@@ -1202,7 +1196,6 @@ impl Renderer {
 
     pub fn reload_assets(
         &mut self,
-        packs: &crate::resources::ResourcePackManager,
         resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {
@@ -1224,16 +1217,23 @@ impl Renderer {
                 return;
             }
         };
+        let items = match ItemDefinitionSources::load(resources) {
+            Ok(items) => items,
+            Err(error) => {
+                tracing::warn!(
+                    "Keeping previous render assets after item definition enumeration failure: {error}"
+                );
+                return;
+            }
+        };
+        let colormaps = Colormaps::load(resources);
         self.ctx.device.wait_idle();
 
-        let colormaps = Colormaps::load(resources);
         self.render_assets = Arc::new(BlockRenderAssets::load(
-            &self.jar_assets_dir,
-            &self.asset_index,
-            Some(packs),
             colormaps,
             blockstates,
             models,
+            items,
         ));
 
         self.item_entity_pipeline.clear_meshes(&self.ctx.device);
@@ -1258,6 +1258,7 @@ impl Renderer {
             &self.ctx.device,
             &self.atlas,
             self.render_assets.model_sources().clone(),
+            self.render_assets.item_definition_sources().clone(),
         );
         self.particle_pipeline
             .rebind_atlas(&self.ctx.device, &self.atlas);
