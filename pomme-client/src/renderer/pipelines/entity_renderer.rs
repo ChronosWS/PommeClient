@@ -17,7 +17,7 @@ use crate::renderer::entity_model::{BakedEntityModel, EntityVertex};
 use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::rhi::{self, VertexFormat};
 use crate::renderer::{entity_model, shader, util};
-use crate::resources::ResourcePackManager;
+use crate::resources::{ResourceError, ResourceId, ResourceManager, ResourcePackManager};
 use crate::world::block::BedDirection;
 
 pub const MAX_OVERLAYS: usize = 4;
@@ -301,7 +301,18 @@ enum OverlayKind {
     SwirlAdditive,
 }
 
+const MAX_MOB_TEXTURE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Captured from the constructor's ordered fallback keys, not variant indices.
+struct MobTextureDefinition {
+    ids: Vec<ResourceId>,
+    fallback_size: u32,
+    sampler: rhi::backend::Sampler,
+}
+
 struct MobVariant {
+    /// Default player skins remain on the legacy path until their migration.
+    texture_definition: Option<MobTextureDefinition>,
     model: BakedEntityModel,
     vertex_buffer: rhi::backend::Buffer,
     texture: rhi::backend::Texture,
@@ -1763,6 +1774,7 @@ impl EntityRenderer {
         jar_assets_dir: &Path,
         asset_index: &Option<AssetIndex>,
         packs: &ResourcePackManager,
+        resources: &ResourceManager,
         lightmap: &Lightmap,
     ) -> Self {
         let camera_layout = rhi::backend::create_bind_group_layout(device, util::VERTEX_UNIFORM);
@@ -1825,6 +1837,7 @@ impl EntityRenderer {
                     texture_sampler_repeat,
                     jar_assets_dir,
                     asset_index,
+                    (def.kind != EntityKind::Player).then_some(resources),
                     v,
                 )
             };
@@ -1893,6 +1906,40 @@ impl EntityRenderer {
             armor_assets,
             armor_meshes,
             player_skins: HashMap::new(),
+        }
+    }
+
+    /// The caller must wait for device idle before replacing sampled images.
+    pub fn reload_mob_textures(
+        &mut self,
+        device: &rhi::backend::Device,
+        resources: &ResourceManager,
+    ) {
+        for (kind, entry) in &mut self.mobs {
+            if *kind == EntityKind::Player {
+                continue;
+            }
+            for variant in entry
+                .adult_variants
+                .iter_mut()
+                .chain(entry.baby_variants.iter_mut().flatten())
+                .chain(entry.adult_overlays.iter_mut().flatten())
+                .chain(entry.baby_overlays.iter_mut().flatten())
+            {
+                let definition = variant
+                    .texture_definition
+                    .as_ref()
+                    .expect("non-player variant has a managed texture definition");
+                let (pixels, width, height) = load_mob_texture(resources, definition);
+                let texture =
+                    util::create_sampled_texture(device, "entity_texture", &pixels, width, height);
+                variant.texture_set.replace(
+                    device,
+                    self.texture_layout,
+                    &util::texture_binding(texture.handle(), definition.sampler),
+                );
+                std::mem::replace(&mut variant.texture, texture).destroy(device);
+            }
         }
     }
 
@@ -3018,6 +3065,7 @@ fn build_variants(
     texture_sampler_repeat: rhi::backend::Sampler,
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
+    resources: Option<&ResourceManager>,
     variant: VariantDef,
 ) -> Vec<MobVariant> {
     let VariantDef {
@@ -3044,8 +3092,24 @@ fn build_variants(
                 rhi::BufferUsages::VERTEX,
             );
 
+            let texture_definition = resources.map(|_| MobTextureDefinition {
+                ids: tex_keys
+                    .iter()
+                    .map(|key| {
+                        ResourceId::new(&key.replacen('/', ":", 1))
+                            .expect("valid mob texture resource ID")
+                    })
+                    .collect(),
+                fallback_size: tex_size,
+                sampler,
+            });
+            let pixels = match (resources, &texture_definition) {
+                (Some(resources), Some(definition)) => load_mob_texture(resources, definition),
+                _ => load_default_player_texture(jar_assets_dir, asset_index, tex_keys, tex_size),
+            };
+            let (pixels, width, height) = pixels;
             let texture =
-                load_entity_texture(device, jar_assets_dir, asset_index, tex_keys, tex_size);
+                util::create_sampled_texture(device, "entity_texture", &pixels, width, height);
 
             let texture_set =
                 util::create_texture_group(device, texture_layout, texture.handle(), sampler);
@@ -3055,6 +3119,7 @@ fn build_variants(
                 vertex_buffer,
                 texture,
                 texture_set,
+                texture_definition,
                 overlay_kind,
                 invisible_outline,
                 own_pivots: false,
@@ -3063,14 +3128,50 @@ fn build_variants(
         .collect()
 }
 
-fn load_entity_texture(
-    device: &rhi::backend::Device,
+fn load_mob_texture(
+    resources: &ResourceManager,
+    definition: &MobTextureDefinition,
+) -> (Vec<u8>, u32, u32) {
+    for id in &definition.ids {
+        let image = resources
+            .get_resource(id)
+            .and_then(|resource| {
+                resource
+                    .ok_or_else(|| ResourceError::Missing(id.clone()))?
+                    .content()
+                    .read_bytes(MAX_MOB_TEXTURE_BYTES)
+            })
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                    .map(|image| image.to_rgba8())
+                    .map_err(|error| error.to_string())
+            });
+        match image {
+            Ok(image) => {
+                let (width, height) = image.dimensions();
+                return (image.into_raw(), width, height);
+            }
+            Err(error) => tracing::warn!("Failed to load mob texture {id}: {error}"),
+        }
+        // Preserve the consumer's ordered alternative-ID behavior on missing,
+        // read or decode failure. Never retry the same ID via legacy disk
+        // lookup.
+    }
+    tracing::warn!(
+        "Failed to load mob texture {:?}, using fallback",
+        definition.ids
+    );
+    fallback_texture(definition.fallback_size)
+}
+
+fn load_default_player_texture(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     asset_keys: &[&str],
     fallback_size: u32,
-) -> rhi::backend::Texture {
-    let (pixels, width, height) = asset_keys
+) -> (Vec<u8>, u32, u32) {
+    asset_keys
         .iter()
         .find_map(|key| {
             let path = resolve_asset_path(jar_assets_dir, asset_index, key);
@@ -3082,9 +3183,7 @@ fn load_entity_texture(
                 asset_keys
             );
             fallback_texture(fallback_size)
-        });
-
-    util::create_sampled_texture(device, "entity_texture", &pixels, width, height)
+        })
 }
 
 // TODO: frames in flight may still read a replaced, removed or cleared skin;

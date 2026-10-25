@@ -429,6 +429,7 @@ impl Renderer {
             jar_assets_dir,
             asset_index,
             packs,
+            resources,
             &lightmap,
         );
 
@@ -1228,6 +1229,8 @@ impl Renderer {
             .rebind_atlas(&self.ctx.device, &self.atlas);
         self.particle_pipeline
             .rebind_atlas(&self.ctx.device, &self.atlas);
+        self.entity_renderer
+            .reload_mob_textures(&self.ctx.device, resources);
         self.entity_renderer.reload_armor_assets(
             &self.ctx.device,
             &self.jar_assets_dir,
