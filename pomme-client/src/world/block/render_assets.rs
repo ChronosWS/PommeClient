@@ -92,6 +92,7 @@ struct StateRender {
 #[derive(Default)]
 pub struct BlockRenderAssets {
     colormaps: Colormaps,
+    model_sources: model::ModelSources,
     textures: HashMap<String, FaceTextures>,
     baked: HashMap<String, HashMap<String, Arc<BakedModel>>>,
     /// Per block-state table slot, every state's resolved model lookups,
@@ -152,12 +153,12 @@ impl BlockRenderAssets {
         packs: Option<&crate::resources::ResourcePackManager>,
         colormaps: Colormaps,
         blockstates: model::BlockstateSources,
+        models: model::ModelSources,
     ) -> Self {
         let blockstates = blockstates.parse();
         // The old vanilla-only disk cache had no resource-source identity and
         // could disagree with the selected blockstates used for geometry.
-        let mut textures =
-            model::load_all_block_textures(jar_assets_dir, asset_index, packs, &blockstates);
+        let mut textures = model::load_all_block_textures(&models, &blockstates);
         textures
             .entry("water".into())
             .or_insert_with(|| FaceTextures::uniform("water_still", Tint::None));
@@ -166,10 +167,14 @@ impl BlockRenderAssets {
             .or_insert_with(|| FaceTextures::uniform("lava_still", Tint::None));
         tracing::info!("Block render assets: {} blocks (built)", textures.len());
 
-        let (baked, multipart) =
-            model::bake_all_models(jar_assets_dir, asset_index, packs, &blockstates);
-        let baked_items =
-            model::bake_item_models(jar_assets_dir, asset_index, packs, colormaps.grass());
+        let (baked, multipart) = model::bake_all_models(&models, &blockstates);
+        let baked_items = model::bake_item_models(
+            jar_assets_dir,
+            asset_index,
+            packs,
+            colormaps.grass(),
+            &models,
+        );
         let item_models = baked_items.models;
         let flat_item_textures = baked_items.generated_textures;
         let flat_item_texture_keys = baked_items.flat_texture_keys;
@@ -179,6 +184,7 @@ impl BlockRenderAssets {
 
         Self {
             colormaps,
+            model_sources: models,
             textures,
             baked,
             state_render: [const { OnceLock::new() }; super::TABLE_SLOTS],
@@ -190,6 +196,10 @@ impl BlockRenderAssets {
             item_ground_transforms,
             item_tint_sources,
         }
+    }
+
+    pub(crate) fn model_sources(&self) -> &model::ModelSources {
+        &self.model_sources
     }
 
     pub(crate) fn for_version(&self, block_state_table: BlockStateTable) -> BlockRenderView<'_> {

@@ -10,7 +10,7 @@ use crate::renderer::chunk::atlas::{AtlasUVMap, TextureAtlas, atlas_texture_name
 use crate::renderer::chunk::mesher::{BiomeClimate, MeshDispatcher};
 use crate::resources::ResourceManager;
 use crate::world::block::colormap::Colormaps;
-use crate::world::block::model::{BlockstateSources, CardinalLightType};
+use crate::world::block::model::{BlockstateSources, CardinalLightType, ModelSources};
 use crate::world::block::render_assets::{BlockRenderAssets, OwnedBlockRenderView};
 
 pub trait MeshSource {
@@ -50,12 +50,15 @@ impl CpuMeshAssets {
     ) -> Self {
         let blockstates = BlockstateSources::load(resources)
             .expect("failed to enumerate Minecraft blockstates for CPU mesh assets");
+        let models = ModelSources::load(resources)
+            .expect("failed to enumerate Minecraft geometry models for CPU mesh assets");
         let render_assets = Arc::new(BlockRenderAssets::load(
             jar_assets_dir,
             &asset_index,
             None,
             Colormaps::load(resources),
             blockstates,
+            models,
         ));
         let (texture_names, generated_item_textures) = atlas_texture_names(&render_assets);
         let uv_map =

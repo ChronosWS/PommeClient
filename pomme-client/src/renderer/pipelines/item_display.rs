@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub(crate) use crate::world::block::model::DisplayTransform;
-use crate::world::block::model::{first_item_model_ref, parse_display_transform, strip_mc_prefix};
+use crate::world::block::model::{ModelSources, first_item_model_ref, parse_display_transform};
 
 const MODEL_PARENT_LIMIT: u32 = 16;
 
@@ -15,18 +15,27 @@ pub struct DisplayResolver {
     keys: &'static [&'static str],
     cache: RefCell<HashMap<String, DisplayTransform>>,
     items_dir: PathBuf,
-    models_dir: PathBuf,
+    models: ModelSources,
 }
 
 impl DisplayResolver {
-    pub fn new(jar_assets_dir: &Path, keys: &'static [&'static str]) -> Self {
+    pub(crate) fn new(
+        jar_assets_dir: &Path,
+        keys: &'static [&'static str],
+        models: ModelSources,
+    ) -> Self {
         let mc_base = jar_assets_dir.join("minecraft");
         Self {
             keys,
             cache: RefCell::new(HashMap::new()),
             items_dir: mc_base.join("items"),
-            models_dir: mc_base.join("models"),
+            models,
         }
+    }
+
+    pub(crate) fn replace_model_sources(&mut self, models: ModelSources) {
+        self.models = models;
+        self.cache.get_mut().clear();
     }
 
     pub fn resolve(&self, item_name: &str, default: DisplayTransform) -> DisplayTransform {
@@ -34,7 +43,7 @@ impl DisplayResolver {
             return *t;
         }
         let resolved = resolve_item_model_path(item_name, &self.items_dir)
-            .and_then(|path| resolve_display(&path, &self.models_dir, self.keys))
+            .and_then(|path| resolve_display(&path, &self.models, self.keys))
             .unwrap_or(default);
         self.cache
             .borrow_mut()
@@ -48,6 +57,7 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&s).ok()
 }
 
+// Modern items/*.json definitions remain on the legacy reader for now.
 fn resolve_item_model_path(name: &str, items_dir: &Path) -> Option<String> {
     let item_json = read_json(&items_dir.join(format!("{name}.json")))?;
     first_item_model_ref(&item_json)
@@ -55,7 +65,11 @@ fn resolve_item_model_path(name: &str, items_dir: &Path) -> Option<String> {
 
 /// The first model up the parent chain with any of `keys` in its `display`,
 /// and its transform for the first of them it has.
-fn resolve_display(start_path: &str, models_dir: &Path, keys: &[&str]) -> Option<DisplayTransform> {
+fn resolve_display(
+    start_path: &str,
+    models: &ModelSources,
+    keys: &[&str],
+) -> Option<DisplayTransform> {
     let mut current = Some(start_path.to_string());
     let mut depth = 0u32;
     while let Some(path) = current.take() {
@@ -64,8 +78,7 @@ fn resolve_display(start_path: &str, models_dir: &Path, keys: &[&str]) -> Option
         }
         depth += 1;
 
-        let file = models_dir.join(format!("{path}.json"));
-        let json = read_json(&file)?;
+        let json = models.model_json(&path)?;
 
         if let Some(display) = json.get("display")
             && let Some(t) = keys
@@ -78,7 +91,7 @@ fn resolve_display(start_path: &str, models_dir: &Path, keys: &[&str]) -> Option
         current = json
             .get("parent")
             .and_then(|p| p.as_str())
-            .map(|p| strip_mc_prefix(p).to_string());
+            .map(str::to_string);
     }
 
     None
@@ -107,7 +120,15 @@ mod tests {
             "models/item/base.json",
             r#"{"display": {"firstperson_lefthand": {"rotation": [0, 99, 0]}}}"#,
         );
-        let left = DisplayResolver::new(&dir, &["firstperson_lefthand", "firstperson_righthand"]);
+        let models = ModelSources::from_test_files(&[
+            ("item/thing", mc.join("models/item/thing.json")),
+            ("item/base", mc.join("models/item/base.json")),
+        ]);
+        let left = DisplayResolver::new(
+            &dir,
+            &["firstperson_lefthand", "firstperson_righthand"],
+            models,
+        );
         let resolved = left.resolve("thing", DisplayTransform::IDENTITY);
         assert_eq!(resolved.rotation, glam::Vec3::new(0.0, 10.0, 0.0));
         std::fs::remove_dir_all(dir).unwrap();

@@ -8,6 +8,7 @@ use crate::renderer::pipelines::hand;
 use crate::renderer::pipelines::item_display::{DisplayResolver, DisplayTransform};
 use crate::renderer::pipelines::item_entity::{self, ItemEntityPipeline, ItemPipelineShared};
 use crate::renderer::rhi;
+use crate::world::block::model::ModelSources;
 
 pub struct HeldItemInfo {
     /// The item, whose model JSON gives the display transforms.
@@ -75,27 +76,40 @@ pub struct HeldItemPipeline {
 }
 
 impl HeldItemPipeline {
-    pub fn new(
+    pub(crate) fn new(
         device: &rhi::backend::Device,
         targets: rhi::backend::PipelineTargets,
         atlas: &TextureAtlas,
         jar_assets_dir: &Path,
+        models: ModelSources,
     ) -> Self {
         let shared = ItemPipelineShared::new(device, atlas, "held_item");
         let pipeline = item_entity::create_pipeline(device, targets, shared.pipeline_layout);
         Self {
             pipeline,
             shared,
-            right_display: DisplayResolver::new(jar_assets_dir, &["firstperson_righthand"]),
+            right_display: DisplayResolver::new(
+                jar_assets_dir,
+                &["firstperson_righthand"],
+                models.clone(),
+            ),
             left_display: DisplayResolver::new(
                 jar_assets_dir,
                 &["firstperson_lefthand", "firstperson_righthand"],
+                models,
             ),
         }
     }
 
-    pub fn rebind_atlas(&mut self, device: &rhi::backend::Device, atlas: &TextureAtlas) {
+    pub(crate) fn rebind_assets(
+        &mut self,
+        device: &rhi::backend::Device,
+        atlas: &TextureAtlas,
+        models: ModelSources,
+    ) {
         self.shared.rebind_atlas(device, atlas);
+        self.right_display.replace_model_sources(models.clone());
+        self.left_display.replace_model_sources(models);
     }
 
     #[allow(clippy::too_many_arguments)]

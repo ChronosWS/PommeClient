@@ -61,7 +61,7 @@ use crate::renderer::pipelines::held_item::{HandRenderSelection, HeldHand};
 use crate::renderer::pipelines::item_entity::ItemEntityPipeline;
 use crate::ui::font::{FontOptions, FontSources};
 use crate::world::block::colormap::Colormaps;
-use crate::world::block::model::BlockstateSources;
+use crate::world::block::model::{BlockstateSources, ModelSources};
 use crate::world::block::render_assets::{BlockRenderAssets, BlockRenderView};
 
 /// The live atlas's layout, so meshes bake in UVs that match it.
@@ -91,6 +91,9 @@ pub enum RendererError {
 
     #[error("failed to enumerate Minecraft blockstates: {0}")]
     Blockstates(String),
+
+    #[error("failed to enumerate Minecraft geometry models: {0}")]
+    ModelDefinitions(String),
 }
 
 /// The loading splash: logo, progress bar and status line.
@@ -311,11 +314,20 @@ impl Renderer {
         let colormaps = Colormaps::load(resources);
         let blockstates = BlockstateSources::load(resources)
             .map_err(|error| RendererError::Blockstates(error.to_string()))?;
+        let models = ModelSources::load(resources)
+            .map_err(|error| RendererError::ModelDefinitions(error.to_string()))?;
         let render_assets_handle = {
             let jar_assets_dir = jar_assets_dir.to_path_buf();
             let asset_index = asset_index.clone();
             std::thread::spawn(move || {
-                BlockRenderAssets::load(&jar_assets_dir, &asset_index, None, colormaps, blockstates)
+                BlockRenderAssets::load(
+                    &jar_assets_dir,
+                    &asset_index,
+                    None,
+                    colormaps,
+                    blockstates,
+                    models,
+                )
             })
         };
 
@@ -460,6 +472,7 @@ impl Renderer {
             swapchain_state.targets(),
             &atlas,
             jar_assets_dir,
+            render_assets.model_sources().clone(),
         );
 
         splash(&mut menu_pipeline, 0.95, "Caching item meshes...");
@@ -1202,6 +1215,15 @@ impl Renderer {
                 return;
             }
         };
+        let models = match ModelSources::load(resources) {
+            Ok(models) => models,
+            Err(error) => {
+                tracing::warn!(
+                    "Keeping previous render assets after model enumeration failure: {error}"
+                );
+                return;
+            }
+        };
         self.ctx.device.wait_idle();
 
         let colormaps = Colormaps::load(resources);
@@ -1211,6 +1233,7 @@ impl Renderer {
             Some(packs),
             colormaps,
             blockstates,
+            models,
         ));
 
         self.item_entity_pipeline.clear_meshes(&self.ctx.device);
@@ -1231,8 +1254,11 @@ impl Renderer {
             .rebind_atlas(&self.ctx.device, &self.atlas);
         self.gui_item_pipeline
             .rebind_atlas(&self.ctx.device, &self.atlas);
-        self.held_item_pipeline
-            .rebind_atlas(&self.ctx.device, &self.atlas);
+        self.held_item_pipeline.rebind_assets(
+            &self.ctx.device,
+            &self.atlas,
+            self.render_assets.model_sources().clone(),
+        );
         self.particle_pipeline
             .rebind_atlas(&self.ctx.device, &self.atlas);
         old_atlas.destroy(&self.ctx.device);
