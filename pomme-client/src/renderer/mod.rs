@@ -1260,12 +1260,18 @@ impl Renderer {
             packs,
         );
 
-        self.reload_fonts(packs, resources, font_options);
-        if let Err(error) = self
-            .menu_pipeline
-            .reload_pomme_assets(&self.ctx.device, resources)
-        {
-            tracing::warn!("Keeping previous Pomme UI assets after reload failure: {error}");
+        self.reload_fonts_idle(packs, resources, font_options);
+        if let Err(error) = self.menu_pipeline.reload_gui_assets(
+            &self.ctx.device,
+            FontSources {
+                resources,
+                jar_assets_dir: &self.jar_assets_dir,
+                asset_index: &self.asset_index,
+                packs,
+                options: font_options,
+            },
+        ) {
+            tracing::warn!("Keeping previous GUI/HUD assets after reload failure: {error}");
         }
 
         warm_item_meshes(
@@ -1289,8 +1295,18 @@ impl Renderer {
         resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {
-        self.font_options = font_options;
         self.ctx.device.wait_idle();
+        self.reload_fonts_idle(packs, resources, font_options);
+    }
+
+    /// Shared by font-option changes and the already-idle full resource reload.
+    fn reload_fonts_idle(
+        &mut self,
+        packs: &crate::resources::ResourcePackManager,
+        resources: &crate::resources::ResourceManager,
+        font_options: FontOptions,
+    ) {
+        self.font_options = font_options;
         if let Err(error) = self.menu_pipeline.reload_minecraft_fonts(
             &self.ctx.device,
             FontSources {
@@ -1317,14 +1333,13 @@ impl Renderer {
 
     /// Brings the Bedrock title and button sprites into the menu atlas when
     /// their files arrived after the atlas was built.
-    pub fn load_bedrock_sprites(&mut self, bedrock_ui_dir: &Path) {
+    pub fn load_bedrock_sprites(&mut self, bedrock_ui_dir: &Path, font_sources: FontSources<'_>) {
         if self.menu_pipeline.has_sprite(SpriteId::BedrockTitle) {
             return;
         }
         self.menu_pipeline.reload_sprite_atlas(
             &self.ctx.device,
-            &self.jar_assets_dir,
-            &self.asset_index,
+            font_sources,
             Some(bedrock_ui_dir),
         );
     }

@@ -380,7 +380,7 @@ pub struct MenuGeometry {
     atlas: FontAtlas,
     pomme_logo: Vec<u8>,
     sprite_atlas: SpriteAtlas,
-    sprite_pixels: AtlasImage,
+    bedrock_ui_dir: Option<std::path::PathBuf>,
     mc_glyph_map: Option<GlyphMap>,
     obfuscation_rng: ObfuscationRng,
     favicon_regions: std::collections::HashMap<String, [f32; 4]>,
@@ -399,12 +399,7 @@ impl MenuGeometry {
     ) -> Result<(Self, MenuAtlases), String> {
         let (atlas, font) = build_font_atlas(font_sources.resources)?;
         let pomme_logo = load_pomme_logo(font_sources.resources)?;
-        let (sprite_atlas, sprites) = build_sprite_atlas(
-            font_sources.jar_assets_dir,
-            font_sources.asset_index,
-            bedrock_ui_dir,
-            &pomme_logo,
-        );
+        let (sprite_atlas, sprites) = build_sprite_atlas(font_sources, bedrock_ui_dir, &pomme_logo);
         let (mc_glyph_map, glyphs) = match GlyphMap::load(font_sources, font_layer_limit) {
             Ok((map, pixels)) => (Some(map), Some(pixels)),
             Err(error) => {
@@ -424,11 +419,7 @@ impl MenuGeometry {
             atlas,
             pomme_logo,
             sprite_atlas,
-            sprite_pixels: AtlasImage {
-                pixels: sprites.pixels.clone(),
-                width: sprites.width,
-                height: sprites.height,
-            },
+            bedrock_ui_dir: bedrock_ui_dir.map(Path::to_owned),
             mc_glyph_map,
             obfuscation_rng: ObfuscationRng::new(obfuscation_seed),
             favicon_regions: std::collections::HashMap::new(),
@@ -1703,52 +1694,18 @@ impl MenuOverlayPipeline {
         })
     }
 
-    /// Prepare both managed Pomme assets before replacing any live bindings.
-    pub fn reload_pomme_assets(
+    /// Rebuild GUI/HUD layouts and textures together, retaining Bedrock assets.
+    pub fn reload_gui_assets(
         &mut self,
         device: &rhi::backend::Device,
-        resources: &ResourceManager,
+        font_sources: FontSources<'_>,
     ) -> Result<(), String> {
-        let (atlas, font_pixels) = build_font_atlas(resources)?;
-        let pomme_logo = load_pomme_logo(resources)?;
-        let cached = &self.geometry.sprite_pixels;
-        let region = self
-            .geometry
-            .sprite_atlas
-            .regions
-            .get(&SpriteId::PommeLogo)
-            .ok_or("Pomme logo region is missing")?;
-        let x = (region.u0 * cached.width as f32).round() as u32;
-        let y = (region.v0 * cached.height as f32).round() as u32;
-        if cached.width != self.geometry.sprite_atlas.size
-            || cached.height != self.geometry.sprite_atlas.size
-            || cached.pixels.len() != cached.width as usize * cached.height as usize * 4
-            || pomme_logo.len() != (POMME_LOGO_SIZE * POMME_LOGO_SIZE * 4) as usize
-            || region.src_w != POMME_LOGO_SIZE as f32
-            || region.src_h != POMME_LOGO_SIZE as f32
-            || ((region.u1 - region.u0) * cached.width as f32).round() != POMME_LOGO_SIZE as f32
-            || ((region.v1 - region.v0) * cached.height as f32).round() != POMME_LOGO_SIZE as f32
-            || x.checked_add(POMME_LOGO_SIZE)
-                .is_none_or(|end| end > cached.width)
-            || y.checked_add(POMME_LOGO_SIZE)
-                .is_none_or(|end| end > cached.height)
-        {
-            return Err("Pomme logo region does not match the retained sprite bitmap".into());
-        }
-        let mut sprites = AtlasImage {
-            pixels: cached.pixels.clone(),
-            width: cached.width,
-            height: cached.height,
-        };
-        blit_image(
-            &mut sprites.pixels,
-            sprites.width,
+        let (atlas, font_pixels) = build_font_atlas(font_sources.resources)?;
+        let pomme_logo = load_pomme_logo(font_sources.resources)?;
+        let (sprite_atlas, sprites) = build_sprite_atlas(
+            font_sources,
+            self.geometry.bedrock_ui_dir.as_deref(),
             &pomme_logo,
-            POMME_LOGO_SIZE,
-            x,
-            y,
-            POMME_LOGO_SIZE,
-            POMME_LOGO_SIZE,
         );
 
         device.wait_idle();
@@ -1781,7 +1738,7 @@ impl MenuOverlayPipeline {
         std::mem::replace(&mut self.sprite.texture, sprite).destroy(device);
         self.geometry.atlas = atlas;
         self.geometry.pomme_logo = pomme_logo;
-        self.geometry.sprite_pixels = sprites;
+        self.geometry.sprite_atlas = sprite_atlas;
         Ok(())
     }
 
@@ -1963,22 +1920,17 @@ impl MenuOverlayPipeline {
     pub fn reload_sprite_atlas(
         &mut self,
         device: &rhi::backend::Device,
-        jar_assets_dir: &Path,
-        asset_index: &Option<AssetIndex>,
+        font_sources: FontSources<'_>,
         bedrock_ui_dir: Option<&Path>,
     ) {
-        let (atlas, sprites) = build_sprite_atlas(
-            jar_assets_dir,
-            asset_index,
-            bedrock_ui_dir,
-            &self.geometry.pomme_logo,
-        );
+        let (atlas, sprites) =
+            build_sprite_atlas(font_sources, bedrock_ui_dir, &self.geometry.pomme_logo);
         device.wait_idle();
         let texture = sprite_texture(device, &sprites);
         self.set_texture(device, 1, texture.handle(), self.sprite.sampler);
         std::mem::replace(&mut self.sprite.texture, texture).destroy(device);
         self.geometry.sprite_atlas = atlas;
-        self.geometry.sprite_pixels = sprites;
+        self.geometry.bedrock_ui_dir = bedrock_ui_dir.map(Path::to_owned);
     }
 
     pub fn update_favicon_atlas(
@@ -2646,7 +2598,6 @@ struct SpriteRegion {
 
 struct SpriteAtlas {
     regions: HashMap<SpriteId, SpriteRegion>,
-    size: u32,
 }
 
 const INV_TEX_W: u32 = 176;
@@ -2761,9 +2712,28 @@ fn bedrock_nine_slice(dir: &Path, stem: &str) -> f32 {
         .map_or(0.0, |size| size as f32)
 }
 
+/// The sprite table uses namespace/path keys; resource IDs use namespace:path.
+/// Missing, filtered, unreadable and corrupt images all use the caller's sprite
+/// fallback, never an extracted-asset lookup that could bypass the pack stack.
+fn load_gui_sprite(
+    resources: &ResourceManager,
+    asset_key: &str,
+) -> Result<image::DynamicImage, String> {
+    const MAX_SPRITE_BYTES: usize = 64 * 1024 * 1024;
+    let bytes = ResourceId::new(&asset_key.replacen('/', ":", 1))
+        .and_then(|id| {
+            resources
+                .get_resource(&id)?
+                .ok_or(ResourceError::Missing(id))?
+                .content()
+                .read_bytes(MAX_SPRITE_BYTES)
+        })
+        .map_err(|error| error.to_string())?;
+    image::load_from_memory(&bytes).map_err(|error| error.to_string())
+}
+
 fn build_sprite_atlas(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
+    font_sources: FontSources<'_>,
     bedrock_ui_dir: Option<&Path>,
     pomme_logo: &[u8],
 ) -> (SpriteAtlas, AtlasImage) {
@@ -3717,8 +3687,7 @@ fn build_sprite_atlas(
         .chain(effect_icons)
         .chain(boss_bar_sprites)
     {
-        let path = resolve_asset_path(jar_assets_dir, asset_index, &asset_key);
-        match crate::assets::load_image(&path) {
+        match load_gui_sprite(font_sources.resources, &asset_key) {
             Ok(img) => {
                 let rgba = img.to_rgba8();
                 let w = rgba.width();
@@ -3733,12 +3702,10 @@ fn build_sprite_atlas(
     }
 
     // Steve head: 8x8 face composited with the 8x8 hat overlay from the wide skin.
-    let steve_path = resolve_asset_path(
-        jar_assets_dir,
-        asset_index,
+    match load_gui_sprite(
+        font_sources.resources,
         "minecraft/textures/entity/player/wide/steve.png",
-    );
-    match crate::assets::load_image(&steve_path) {
+    ) {
         Ok(img) => {
             let rgba = img.to_rgba8();
             match extract_face_8x8(rgba.as_raw(), rgba.width(), rgba.height()) {
@@ -3757,12 +3724,10 @@ fn build_sprite_atlas(
 
     // Locator bar background: pre-tile the 12x5 nine-slice (borders L/R 5,
     // 2px center repeated) to its fixed 182x5 draw size.
-    let locator_bg_path = resolve_asset_path(
-        jar_assets_dir,
-        asset_index,
+    match load_gui_sprite(
+        font_sources.resources,
         "minecraft/textures/gui/sprites/hud/locator_bar_background.png",
-    );
-    match crate::assets::load_image(&locator_bg_path) {
+    ) {
         Ok(img) => {
             let rgba = img.to_rgba8();
             if rgba.width() == 12 && rgba.height() == 5 {
@@ -3815,8 +3780,7 @@ fn build_sprite_atlas(
             "minecraft/textures/gui/sprites/hud/locator_bar_arrow_down.png",
         ),
     ] {
-        let path = resolve_asset_path(jar_assets_dir, asset_index, asset_key);
-        let frames = match crate::assets::load_image(&path) {
+        let frames = match load_gui_sprite(font_sources.resources, asset_key) {
             Ok(img) => {
                 let rgba = img.to_rgba8();
                 if rgba.width() == 7 && rgba.height() == 10 {
@@ -3970,14 +3934,30 @@ fn build_sprite_atlas(
             16,
         ),
     ] {
-        let path = resolve_asset_path(jar_assets_dir, asset_index, path);
-        match crate::assets::load_image(&path) {
+        // The portal camera overlay shares this allocation, but remains a
+        // legacy consumer until the camera-overlay category is migrated.
+        let image = if id == SpriteId::NetherPortal {
+            crate::assets::load_image(&resolve_asset_path(
+                font_sources.jar_assets_dir,
+                font_sources.asset_index,
+                path,
+            ))
+            .map_err(|error| error.to_string())
+        } else {
+            load_gui_sprite(font_sources.resources, path)
+        };
+        match image {
             Ok(img) => {
                 let rgba = img.to_rgba8();
                 let (src_x, src_y) = src;
                 let full_w = rgba.width();
                 let crop_w = max_w.min(full_w.saturating_sub(src_x));
                 let crop_h = max_h.min(rgba.height().saturating_sub(src_y));
+                if crop_w == 0 || crop_h == 0 {
+                    tracing::warn!("Sprite {id:?} is too small for crop at {src:?}");
+                    images.push((id, vec![255, 0, 255, 255], 1, 1, 0.0));
+                    continue;
+                }
                 let mut cropped = vec![0u8; (crop_w * crop_h * 4) as usize];
                 for y in 0..crop_h {
                     let src_off = (((src_y + y) * full_w + src_x) * 4) as usize;
@@ -4002,8 +3982,7 @@ fn build_sprite_atlas(
                 let asset_key = format!(
                     "minecraft/textures/gui/sprites/container/creative_inventory/tab_{row_name}_{state_name}_{col}.png"
                 );
-                let path = resolve_asset_path(jar_assets_dir, asset_index, &asset_key);
-                match crate::assets::load_image(&path) {
+                match load_gui_sprite(font_sources.resources, &asset_key) {
                     Ok(img) => {
                         let rgba = img.to_rgba8();
                         let w = rgba.width();
@@ -4036,8 +4015,7 @@ fn build_sprite_atlas(
             14,
         ),
     ] {
-        let path = resolve_asset_path(jar_assets_dir, asset_index, asset_key);
-        match crate::assets::load_image(&path) {
+        match load_gui_sprite(font_sources.resources, asset_key) {
             Ok(img) => {
                 let rgba = img.to_rgba8();
                 let (w, h) = (rgba.width(), rgba.height());
@@ -4148,10 +4126,7 @@ fn build_sprite_atlas(
     // the staging buffer's length, so `pixels` has to stay sized off the packed
     // `atlas_size` above; feeding the upload a size of its own would read past it.
     (
-        SpriteAtlas {
-            regions,
-            size: atlas_size,
-        },
+        SpriteAtlas { regions },
         AtlasImage {
             pixels,
             width: atlas_size,

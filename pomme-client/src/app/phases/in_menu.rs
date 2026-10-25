@@ -195,7 +195,7 @@ pub fn update_menu(
                 .reload_panorama(&theme.panorama_dir(&core.data_dirs));
             if theme == PanoramaTheme::Bedrock {
                 gfx.renderer
-                    .load_bedrock_sprites(&core.data_dirs.bedrock_ui_dir());
+                    .load_bedrock_sprites(&core.data_dirs.bedrock_ui_dir(), core.font_sources());
             }
             core.menu.start_transition_open();
         }
