@@ -394,21 +394,13 @@ impl Renderer {
             asset_index,
         );
 
-        let weather_pipeline = WeatherPipeline::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
-        );
+        let weather_pipeline =
+            WeatherPipeline::new(&ctx.device, swapchain_state.targets(), resources);
 
         let particle_pipeline =
             ParticlePipeline::new(&ctx.device, swapchain_state.targets(), &atlas);
 
-        let cloud_pipeline = CloudPipeline::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            resources,
-        );
+        let cloud_pipeline = CloudPipeline::new(&ctx.device, swapchain_state.targets(), resources);
 
         let panorama_pipeline = PanoramaPipeline::new(
             &ctx.device,
@@ -1278,6 +1270,8 @@ impl Renderer {
             .reload_camera_overlays(&self.ctx.device, resources);
         self.reload_panorama_resources(resources);
         self.cloud_pipeline.reload_resources(resources);
+        self.weather_pipeline
+            .reload_textures(&self.ctx.device, resources);
 
         warm_item_meshes(
             &self.ctx.device,
