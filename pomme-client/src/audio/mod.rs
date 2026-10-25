@@ -16,7 +16,7 @@ use self::openal::{Buffer, Context, Source, SourceState};
 use self::sounds::{SoundVariant, SoundsIndex};
 use crate::assets::AssetIndex;
 use crate::entity::components::Position;
-use crate::resources::ResourcePackManager;
+use crate::resources::{ResourceManager, ResourcePackManager};
 
 const MENU_MUSIC_EVENT: &str = "music.menu";
 const UI_CLICK_EVENT: &str = "ui.button.click";
@@ -214,12 +214,19 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     pub fn new(
+        resources: &ResourceManager,
         jar_assets_dir: &Path,
         asset_index: Option<AssetIndex>,
         packs: &ResourcePackManager,
         volumes: [f32; SoundCategory::COUNT],
     ) -> Self {
-        let sounds = SoundsIndex::load(jar_assets_dir, &asset_index, packs);
+        let sounds = match SoundsIndex::load(resources, jar_assets_dir, &asset_index, packs) {
+            Ok(sounds) => sounds,
+            Err(error) => {
+                tracing::warn!(%error, "audio disabled: failed to load sound registry");
+                return Self::disabled();
+            }
+        };
         let (command_tx, command_rx) = crossbeam_channel::unbounded();
         // The worker reports with `try_send`, and a dropped `Finished` would
         // park the menu-music delay at `i32::MAX` forever.
@@ -282,6 +289,20 @@ impl AudioEngine {
         )
     }
 
+    /// Bootstrap without installed sources must not open a device or worker.
+    pub(crate) fn disabled() -> Self {
+        let (_, event_rx) = crossbeam_channel::unbounded();
+        Self::attached(
+            None,
+            event_rx,
+            None,
+            PathBuf::new(),
+            None,
+            SoundsIndex::default(),
+            [1.0; SoundCategory::COUNT],
+        )
+    }
+
     /// Wraps an already-running (or absent) worker.
     fn attached(
         command_tx: Option<Sender<AudioCommand>>,
@@ -339,8 +360,22 @@ impl AudioEngine {
 
     /// Rebuilds the sound-event registry against the current resource-pack
     /// stack and clears native sources/buffers that may reference old assets.
-    pub fn reload_assets(&mut self, packs: &ResourcePackManager) {
-        self.sounds = SoundsIndex::load(&self.jar_assets_dir, &self.asset_index, packs);
+    pub fn reload_assets(&mut self, resources: &ResourceManager, packs: &ResourcePackManager) {
+        let sounds = match SoundsIndex::load(
+            resources,
+            &self.jar_assets_dir,
+            &self.asset_index,
+            packs,
+        ) {
+            Ok(sounds) => sounds,
+            Err(error) => {
+                tracing::warn!(%error, "failed to reload sound registry; retaining previous audio state");
+                return;
+            }
+        };
+        // A valid empty registry replaces the old one too. Lookup failure above
+        // leaves both live selections and the worker's sources/cache untouched.
+        self.sounds = sounds;
         self.forget_active_sounds();
         self.send(AudioCommand::ReloadAssets);
     }

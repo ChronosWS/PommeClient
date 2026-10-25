@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::assets::{AssetIndex, resolve_asset_path};
-use crate::resources::ResourcePackManager;
+use crate::assets::AssetIndex;
+use crate::resources::{
+    ResourceContent, ResourceError, ResourceId, ResourceManager, ResourcePackManager,
+};
 use crate::util::JavaRandom;
 
 /// Vanilla `SoundEventRegistrationSerializer`'s `attenuation_distance` default.
 const DEFAULT_ATTENUATION_DISTANCE: i32 = 16;
+
+const MAX_SOUNDS_JSON_BYTES: usize = 8 * 1024 * 1024;
 
 /// A single playable file variant from `sounds.json` after resolving any
 /// `type: "event"` indirection.
@@ -51,19 +55,22 @@ pub struct SoundsIndex {
 }
 
 impl SoundsIndex {
-    /// Loads the built-in `minecraft/sounds.json`, then applies every active
-    /// resource-pack `sounds.json` from low to high priority. Higher packs
-    /// append by default and reset an event only when `replace: true`,
-    /// matching Vanilla.
+    /// Applies each namespace's `sounds.json` stack from low to high priority.
+    /// The manager supplies built-in and selected layers, including filters.
+    /// Higher packs append by default and reset an event only when
+    /// `replace: true`, matching Vanilla.
     pub fn load(
+        resources: &ResourceManager,
         jar_assets_dir: &Path,
         asset_index: &Option<AssetIndex>,
         packs: &ResourcePackManager,
-    ) -> Self {
+    ) -> Result<Self, ResourceError> {
         let mut index = Self {
             events: HashMap::new(),
         };
 
+        // Stage 1 migrates only registry JSON. OGG paths still use the legacy
+        // resolver until stage 2; only owned paths reach the audio worker.
         let resolve_sound = |name: &str| {
             let asset_key = sound_asset_key(name);
             if let Some(path) = packs.resolve_asset(&asset_key) {
@@ -76,29 +83,14 @@ impl SoundsIndex {
             path.is_file().then_some(path)
         };
 
-        let base = resolve_asset_path(jar_assets_dir, asset_index, "minecraft/sounds.json");
-        index.apply_file("minecraft", &base, &resolve_sound);
-
-        for pack_dir in packs.active_pack_dirs() {
-            let assets_dir = pack_dir.join("assets");
-            let Ok(entries) = std::fs::read_dir(&assets_dir) else {
-                continue;
-            };
-            let mut namespaces: Vec<_> = entries
-                .flatten()
-                .filter(|entry| entry.path().is_dir())
-                .collect();
-            namespaces.sort_by_key(|entry| entry.file_name());
-            for namespace in namespaces {
-                let namespace_name = namespace.file_name().to_string_lossy().into_owned();
-                let sounds_path = namespace.path().join("sounds.json");
-                if sounds_path.is_file() {
-                    index.apply_file(&namespace_name, &sounds_path, &resolve_sound);
-                }
+        for namespace in resources.namespaces()? {
+            let id = ResourceId::new(&format!("{namespace}:sounds.json"))?;
+            for resource in resources.get_resource_stack(&id)? {
+                index.apply_content(&namespace, resource.content(), &resolve_sound);
             }
         }
 
-        index
+        Ok(index)
     }
 
     /// Resolves an event to a concrete file using Vanilla's weighted selection
@@ -141,22 +133,28 @@ impl SoundsIndex {
             .as_deref()
     }
 
-    fn apply_file(
+    fn apply_content(
         &mut self,
         namespace: &str,
-        path: &Path,
+        content: &ResourceContent,
         resolve_sound: &impl Fn(&str) -> Option<PathBuf>,
     ) {
-        let Ok(content) = std::fs::read_to_string(path) else {
-            tracing::warn!("sounds.json not found at {}", path.display());
-            return;
+        let bytes = match content.read_bytes(MAX_SOUNDS_JSON_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, "failed to read sounds.json layer");
+                return;
+            }
         };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-            tracing::warn!("failed to parse sounds.json at {}", path.display());
-            return;
+        let json = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(json) => json,
+            Err(error) => {
+                tracing::warn!(id = %content.id(), origin = ?content.origin(), %error, "failed to parse sounds.json layer");
+                return;
+            }
         };
         if let Err(error) = self.apply_value(namespace, &json, resolve_sound) {
-            tracing::warn!("invalid sounds.json at {}: {error}", path.display());
+            tracing::warn!(id = %content.id(), origin = ?content.origin(), %error, "invalid sounds.json layer");
         }
     }
 

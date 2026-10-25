@@ -935,24 +935,6 @@ fn cursor_step(grabbed: bool, stale: bool, want: bool, focused: bool) -> (Cursor
     }
 }
 
-/// The asset index and the audio engine, which `AppCore`
-/// builds from the version's assets.
-fn load_assets(
-    data_dirs: &DataDirs,
-    version: &str,
-    resource_packs: &ResourcePackManager,
-    menu: &mut MainMenu,
-) -> (Option<AssetIndex>, crate::audio::AudioEngine) {
-    let asset_index = AssetIndex::load(&data_dirs.indexes_dir, &data_dirs.objects_dir, version);
-    let audio = crate::audio::AudioEngine::new(
-        &data_dirs.jar_assets_dir,
-        asset_index.clone(),
-        resource_packs,
-        menu.category_volumes(),
-    );
-    (asset_index, audio)
-}
-
 /// `LocalPlayerResolver`: a `Dynamic` profile resolves through the tab list
 /// first (by name, ignoring case), and only then through the Mojang API. A
 /// `Static` profile resolves to itself.
@@ -1003,8 +985,10 @@ impl AppCore {
 
         let display_mode = menu.display_mode;
 
-        let (asset_index, audio) = load_assets(&data_dirs, &version, &resource_packs, &mut menu);
-        if data_dirs.is_installed(&version) {
+        let asset_index =
+            AssetIndex::load(&data_dirs.indexes_dir, &data_dirs.objects_dir, &version);
+        let installed = data_dirs.is_installed(&version);
+        if installed {
             resource_packs.register_installation(asset_index.clone());
         }
         let resources = crate::resources::ResourceManager::new(
@@ -1013,6 +997,17 @@ impl AppCore {
                 .expect("failed to describe startup resources"),
         )
         .expect("failed to open startup resources");
+        let audio = if installed {
+            crate::audio::AudioEngine::new(
+                &resources,
+                &data_dirs.jar_assets_dir,
+                asset_index.clone(),
+                &resource_packs,
+                menu.category_volumes(),
+            )
+        } else {
+            crate::audio::AudioEngine::disabled()
+        };
         menu.load_splash(&resources);
         let (player_skin_tx, player_skin_rx) = crossbeam_channel::unbounded();
         let (head_tx, head_rx) = crossbeam_channel::unbounded();
@@ -1712,13 +1707,14 @@ impl AppCore {
                 if let Some(index) = installed_index {
                     *asset_index = index;
                     *audio = crate::audio::AudioEngine::new(
+                        resources,
                         &data_dirs.jar_assets_dir,
                         asset_index.clone(),
                         resource_packs,
                         menu.category_volumes(),
                     );
                 } else {
-                    audio.reload_assets(resource_packs);
+                    audio.reload_assets(resources, resource_packs);
                 }
                 // A pack swap changes what the sprites look like, so they reload.
                 inline_objects

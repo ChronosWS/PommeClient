@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use crate::resources::ResourcePackManager;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,14 +72,9 @@ pub fn load_image(path: &Path) -> Result<image::DynamicImage, image::ImageError>
     })
 }
 
-pub fn resolve_asset_path(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    asset_key: &str,
-) -> PathBuf {
-    resolve_asset_path_with_packs(jar_assets_dir, asset_index, asset_key, None)
-}
-
+// Retained for the legacy path-safety regression test; production consumers
+// no longer acquire resources through this helper.
+#[cfg(test)]
 pub fn resolve_asset_path_with_packs(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
@@ -94,6 +90,7 @@ pub fn resolve_asset_path_with_packs(
         .unwrap_or_else(|| jar_assets_dir.join(asset_key))
 }
 
+#[cfg(test)]
 fn checked_asset_key(asset_key: &str) -> bool {
     let valid = valid_asset_key(asset_key);
     if !valid {
@@ -103,6 +100,7 @@ fn checked_asset_key(asset_key: &str) -> bool {
 }
 
 /// The jar and the asset index are one built-in pack, the index first.
+#[cfg(test)]
 fn builtin_asset(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,

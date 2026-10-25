@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use super::{MAX_FRAMES_IN_FLIGHT, rhi};
-use crate::assets::{AssetIndex, resolve_asset_path};
 
 /// A texture holding `pixels`, ready for shaders to read.
 pub fn create_sampled_texture(
@@ -20,23 +19,6 @@ pub fn create_sampled_texture(
         height,
         &format!("{label}_staging"),
     );
-    texture
-}
-
-/// The texture at `key`, or a 16x16 white one if it won't load.
-pub fn load_asset_texture(
-    device: &rhi::backend::Device,
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    key: &str,
-) -> rhi::backend::Texture {
-    let path = resolve_asset_path(jar_assets_dir, asset_index, key);
-    let (pixels, w, h) = load_png(&path).unwrap_or_else(|| {
-        tracing::warn!("Failed to load {key}, using fallback");
-        (vec![255u8; 16 * 16 * 4], 16, 16)
-    });
-    let texture = create_sampled_texture(device, key, &pixels, w, h);
-    tracing::info!("Loaded {key} ({w}x{h})");
     texture
 }
 
