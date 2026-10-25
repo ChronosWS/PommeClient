@@ -246,6 +246,7 @@ pub struct Renderer {
     camera: Camera,
 
     render_assets: Arc<BlockRenderAssets>,
+    client_jar: PathBuf,
     jar_assets_dir: PathBuf,
     asset_index: Option<AssetIndex>,
 
@@ -303,6 +304,7 @@ impl Renderer {
         bedrock_ui_dir: &Path,
     ) -> Result<Self, RendererError> {
         let FontSources {
+            client_jar,
             jar_assets_dir,
             asset_index,
             packs,
@@ -514,6 +516,7 @@ impl Renderer {
             swapchain: swapchain_state,
             camera,
             render_assets,
+            client_jar: client_jar.to_path_buf(),
             jar_assets_dir: jar_assets_dir.to_path_buf(),
             asset_index: asset_index.clone(),
             atlas,
@@ -1285,6 +1288,7 @@ impl Renderer {
         if let Err(error) = self.menu_pipeline.reload_minecraft_fonts(
             &self.ctx.device,
             FontSources {
+                client_jar: &self.client_jar,
                 jar_assets_dir: &self.jar_assets_dir,
                 asset_index: &self.asset_index,
                 packs,

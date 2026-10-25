@@ -11,7 +11,7 @@ use crate::resource_pack::PackId;
 
 pub(crate) struct BuiltinResources<'a> {
     pub(crate) pack_id: &'a PackId,
-    pub(crate) jar_assets_dir: &'a Path,
+    pub(crate) client_jar: &'a Path,
     pub(crate) asset_index: Option<&'a AssetIndex>,
 }
 
@@ -28,9 +28,7 @@ impl ResourceManager {
         builtin_resources: BuiltinResources<'_>,
         selected_resource_packs: impl IntoIterator<Item = ResourcePackDescriptor>,
     ) -> Result<Self, ResourceError> {
-        let mut storage = vec![PackStorage::Directory(
-            builtin_resources.jar_assets_dir.to_path_buf(),
-        )];
+        let mut storage = vec![PackStorage::Zip(builtin_resources.client_jar.to_path_buf())];
         if let Some(index) = builtin_resources.asset_index {
             storage.push(PackStorage::Indexed(index.clone()));
         }

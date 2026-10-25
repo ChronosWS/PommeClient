@@ -32,6 +32,7 @@ pub(crate) struct FontOptions {
 
 #[derive(Clone, Copy)]
 pub(crate) struct FontSources<'a> {
+    pub client_jar: &'a Path,
     pub jar_assets_dir: &'a Path,
     pub asset_index: &'a Option<AssetIndex>,
     pub packs: &'a ResourcePackManager,
@@ -617,7 +618,7 @@ impl LoadContext<'_> {
                 ResourceManager::from_packs(
                     BuiltinResources {
                         pack_id: self.sources.packs.builtin_pack_id(),
-                        jar_assets_dir: self.sources.jar_assets_dir,
+                        client_jar: self.sources.client_jar,
                         asset_index: self.sources.asset_index.as_ref(),
                     },
                     self.sources.packs.active_pack_descriptors()?,
@@ -1634,6 +1635,7 @@ mod tests {
     /// A temp dir with an empty pack manager, removed on drop.
     struct Fixture {
         root: PathBuf,
+        client_jar: PathBuf,
         packs: ResourcePackManager,
     }
 
@@ -1641,11 +1643,45 @@ mod tests {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!("pomme-font-{}", uuid::Uuid::new_v4()));
             let packs = ResourcePackManager::new(&root.join("instance"), "fixture");
-            Self { root, packs }
+            let client_jar = root.join("fixture.jar");
+            Self {
+                root,
+                client_jar,
+                packs,
+            }
         }
 
         fn jar(&self) -> PathBuf {
             self.root.join("jar_assets")
+        }
+
+        /// Snapshot the existing extracted fixture into the direct JAR source.
+        fn client_jar_from(&self, assets: &Path) -> &Path {
+            use std::io::Write;
+
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            let mut pending = vec![assets.to_path_buf()];
+            while let Some(dir) = pending.pop() {
+                if !dir.is_dir() {
+                    continue;
+                }
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        pending.push(path);
+                    } else if path != self.client_jar {
+                        let name = path.strip_prefix(assets).unwrap().to_str().unwrap();
+                        zip.start_file(
+                            format!("assets/{}", name.replace('\\', "/")),
+                            zip::write::SimpleFileOptions::default(),
+                        )
+                        .unwrap();
+                        zip.write_all(&std::fs::read(path).unwrap()).unwrap();
+                    }
+                }
+            }
+            self.write("fixture.jar", zip.finish().unwrap().into_inner());
+            &self.client_jar
         }
 
         fn write(&self, path: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
@@ -1663,6 +1699,7 @@ mod tests {
         fn load(&self) -> Result<(GlyphMap, GlyphAtlasPixels), String> {
             GlyphMap::load(
                 FontSources {
+                    client_jar: self.client_jar_from(&self.jar()),
                     jar_assets_dir: &self.jar(),
                     asset_index: &None,
                     packs: &self.packs,
@@ -1675,6 +1712,7 @@ mod tests {
         fn context(&self) -> LoadContext<'_> {
             LoadContext {
                 sources: FontSources {
+                    client_jar: self.client_jar_from(&self.root),
                     jar_assets_dir: self.root.as_path(),
                     asset_index: &None,
                     packs: &self.packs,
@@ -2050,6 +2088,7 @@ mod tests {
 
         let (map, _) = GlyphMap::load(
             FontSources {
+                client_jar: fixture.client_jar_from(&fixture.jar()),
                 jar_assets_dir: &fixture.jar(),
                 asset_index: &None,
                 packs: &packs,
@@ -2100,6 +2139,7 @@ mod tests {
         let load = |packs: &ResourcePackManager| {
             GlyphMap::load(
                 FontSources {
+                    client_jar: fixture.client_jar_from(&fixture.jar()),
                     jar_assets_dir: &fixture.jar(),
                     asset_index: &None,
                     packs,

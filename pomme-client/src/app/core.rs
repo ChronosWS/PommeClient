@@ -1628,6 +1628,7 @@ impl AppCore {
     /// pending toggles they stand for are covered by the reload we just did.
     pub(crate) fn font_sources(&self) -> crate::ui::font::FontSources<'_> {
         crate::ui::font::FontSources {
+            client_jar: &self.data_dirs.client_jar,
             jar_assets_dir: &self.data_dirs.jar_assets_dir,
             asset_index: &self.asset_index,
             packs: &self.resource_packs,
