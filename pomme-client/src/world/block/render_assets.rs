@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 const BLOCK_CACHE_FILE: &str = "block_cache_v4.json";
 
 use super::block_state_table::BlockStateTable;
+use super::colormap::Colormaps;
 use super::model;
 use super::model::BakedModel;
 use crate::assets::AssetIndex;
@@ -92,6 +93,7 @@ struct StateRender {
 
 #[derive(Default)]
 pub struct BlockRenderAssets {
+    colormaps: Colormaps,
     textures: HashMap<String, FaceTextures>,
     baked: HashMap<String, HashMap<String, Arc<BakedModel>>>,
     /// Per block-state table slot, every state's resolved model lookups,
@@ -125,6 +127,10 @@ pub(crate) struct OwnedBlockRenderView {
 }
 
 impl OwnedBlockRenderView {
+    pub(crate) fn colormaps(&self) -> &Colormaps {
+        &self.assets.colormaps
+    }
+
     pub(crate) fn block_state_table(&self) -> BlockStateTable {
         self.block_state_table
     }
@@ -147,6 +153,7 @@ impl BlockRenderAssets {
         asset_index: &Option<AssetIndex>,
         cache_dir: Option<&Path>,
         packs: Option<&crate::resources::ResourcePackManager>,
+        colormaps: Colormaps,
     ) -> Self {
         // Only vanilla textures are cached, so a cache shared between
         // profiles never carries one profile's resource packs into another.
@@ -180,7 +187,8 @@ impl BlockRenderAssets {
         });
 
         let (baked, multipart) = model::bake_all_models(jar_assets_dir, asset_index, packs);
-        let baked_items = model::bake_item_models(jar_assets_dir, asset_index, packs);
+        let baked_items =
+            model::bake_item_models(jar_assets_dir, asset_index, packs, colormaps.grass());
         let item_models = baked_items.models;
         let flat_item_textures = baked_items.generated_textures;
         let flat_item_texture_keys = baked_items.flat_texture_keys;
@@ -189,6 +197,7 @@ impl BlockRenderAssets {
         let item_tint_sources = baked_items.tint_sources;
 
         Self {
+            colormaps,
             textures,
             baked,
             state_render: [const { OnceLock::new() }; super::TABLE_SLOTS],

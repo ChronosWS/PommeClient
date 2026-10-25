@@ -12,6 +12,7 @@ use crate::dirs::DataDirs;
 use crate::position::ChunkPos;
 use crate::renderer::chunk::mesh_source::{CpuMeshAssets, MeshSource};
 use crate::renderer::chunk::mesher::MeshDispatcher;
+use crate::resources::ResourceManager;
 use crate::world::block::BlockStateTable;
 use crate::world::block::model::CardinalLightType;
 use crate::world::block::render_assets::OwnedBlockRenderView;
@@ -28,6 +29,8 @@ impl Assets {
         version: &str,
         dirs: &DataDirs,
         block_state_table: BlockStateTable,
+        asset_index: Option<AssetIndex>,
+        resources: &ResourceManager,
     ) -> Result<Self, String> {
         if !dirs.jar_assets_dir.is_dir() {
             return Err(format!(
@@ -36,9 +39,8 @@ impl Assets {
             ));
         }
         eprintln!("cpu-bench: loading block models and packing the atlas...");
-        let asset_index = AssetIndex::load(&dirs.indexes_dir, &dirs.objects_dir, version);
         Ok(Self {
-            mesh: CpuMeshAssets::load(&dirs.jar_assets_dir, asset_index),
+            mesh: CpuMeshAssets::load(&dirs.jar_assets_dir, asset_index, resources),
             block_state_table,
         })
     }
@@ -48,7 +50,6 @@ impl Assets {
         self.mesh.create_mesh_dispatcher(
             OwnedBlockRenderView::new(self.mesh.render_assets.clone(), self.block_state_table),
             Arc::new(HashMap::new()),
-            None,
             CardinalLightType::Default,
         )
     }

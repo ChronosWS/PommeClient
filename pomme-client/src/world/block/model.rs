@@ -5,9 +5,9 @@ use std::sync::{Arc, LazyLock, RwLock};
 use glam::{Mat3, Mat4, Quat, Vec3};
 use serde::Deserialize;
 
+use super::colormap::Colormap;
 use super::render_assets::{FaceTextures, Tint};
 use crate::assets::{AssetId, AssetIndex, resolve_asset_path_with_packs};
-use crate::renderer::chunk::mesher::Colormap;
 
 #[derive(Deserialize)]
 struct BlockstateFile {
@@ -813,6 +813,7 @@ pub fn bake_item_models(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     packs: Option<&crate::resources::ResourcePackManager>,
+    grass_colormap: &Colormap,
 ) -> BakedItemModels {
     let mut item_models: HashMap<String, BakedModel> = HashMap::new();
     let mut flat_item_textures: HashSet<String> = HashSet::new();
@@ -820,12 +821,6 @@ pub fn bake_item_models(
     let mut gui_transforms: HashMap<String, DisplayTransform> = HashMap::new();
     let mut ground_transforms: HashMap<String, Mat4> = HashMap::new();
     let mut tint_sources: HashMap<String, Vec<ItemTintSource>> = HashMap::new();
-    let grass_colormap = Colormap::load(
-        jar_assets_dir,
-        asset_index,
-        "minecraft/textures/colormap/grass.png",
-        packs,
-    );
     let mut model_cache: HashMap<String, ModelFile> = HashMap::new();
 
     let mut bake = |name: &str, parts: &[ModelPart]| {
@@ -870,7 +865,7 @@ pub fn bake_item_models(
                     part.path
                 ),
             }
-            let part_tints = match parse_item_tint_sources(&part.tints, &grass_colormap) {
+            let part_tints = match parse_item_tint_sources(&part.tints, grass_colormap) {
                 Ok(tints) => tints,
                 Err(error) => {
                     tracing::error!("Couldn't parse item model '{name}': {error}");
@@ -3066,7 +3061,7 @@ mod tests {
         .unwrap();
         std::fs::write(models.join("generated.json"), r#"{}"#).unwrap();
 
-        let baked = bake_item_models(&jar, &None, None);
+        let baked = bake_item_models(&jar, &None, None, &Colormap::fallback());
         assert_eq!(
             baked.flat_texture_keys.get("holey").map(Vec::as_slice),
             Some([Some("item/zero".to_string())].as_slice())
@@ -3166,7 +3161,7 @@ mod tests {
             &root.join("fixture.jar"),
         );
         packs.enable_local_pack("test_pack");
-        let baked = bake_item_models(&jar, &None, Some(&packs));
+        let baked = bake_item_models(&jar, &None, Some(&packs), &Colormap::fallback());
         assert_eq!(
             baked.flat_texture_keys.get("test_item").map(Vec::as_slice),
             Some([Some("other:item/replacement".to_string())].as_slice())

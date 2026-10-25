@@ -195,7 +195,6 @@ fn start_connecting(
     let connection = spawn_connection(&core.tokio_rt, connect_args);
     let game = GameState::new(
         &*gfx.renderer,
-        Some(&core.resource_packs),
         core.menu.render_distance,
         world.is_some(),
         core.menu.chat_options,

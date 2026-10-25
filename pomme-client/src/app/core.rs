@@ -429,7 +429,6 @@ impl GameState {
         self.mesh_dispatcher = mesh_source.create_mesh_dispatcher(
             self.block_registry.owned_render_view(),
             Arc::clone(&self.biome_climate),
-            None,
             cardinal_light,
         );
         self.reset_mesh_columns();
@@ -1607,7 +1606,6 @@ impl AppCore {
         let mesh_dispatcher = renderer.create_mesh_dispatcher(
             game.block_registry.owned_render_view(),
             Arc::clone(&game.biome_climate),
-            Some(&self.resource_packs),
             game.cardinal_light,
         );
         let (grass, foliage, dry_foliage) = mesh_dispatcher.colormaps();

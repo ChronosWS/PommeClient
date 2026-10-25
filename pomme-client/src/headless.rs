@@ -21,6 +21,7 @@ use crate::net::connection::{ConnectArgs, ConnectionHandle, Transport, spawn_con
 use crate::position::ChunkPos;
 use crate::renderer::RenderTimings;
 use crate::renderer::chunk::mesh_source::CpuMeshAssets;
+use crate::resources::{ResourceManager, ResourcePackManager};
 use crate::singleplayer::World;
 use crate::ui::chat::ChatOptions;
 use crate::ui::menu::{SkinOptions, saved_chunk_detail};
@@ -59,6 +60,18 @@ pub fn run(
     dirs: &DataDirs,
     rt: &tokio::runtime::Runtime,
 ) -> i32 {
+    let asset_index = AssetIndex::load(&dirs.indexes_dir, &dirs.objects_dir, version);
+    let resources = match ResourceManager::new(ResourcePackManager::builtin_sources(
+        version,
+        &dirs.client_jar,
+        asset_index.as_ref(),
+    )) {
+        Ok(resources) => resources,
+        Err(error) => {
+            tracing::error!(%error, jar = %dirs.client_jar.display(), "Failed to open headless resources");
+            return 1;
+        }
+    };
     let (transport, mut world) = match open(play, dirs, rd) {
         Ok(opened) => opened,
         Err(reason) => {
@@ -66,10 +79,7 @@ pub fn run(
             return 1;
         }
     };
-    let assets = CpuMeshAssets::load(
-        &dirs.jar_assets_dir,
-        AssetIndex::load(&dirs.indexes_dir, &dirs.objects_dir, version),
-    );
+    let assets = CpuMeshAssets::load(&dirs.jar_assets_dir, asset_index, &resources);
     let chat_options = ChatOptions::default();
     let skin_options = SkinOptions::default();
     let connection = spawn_connection(
@@ -86,7 +96,6 @@ pub fn run(
     );
     let mut game = GameState::new(
         &assets,
-        None,
         rd,
         world.is_some(),
         chat_options,

@@ -97,16 +97,7 @@ impl ResourcePackManager {
         let mut mgr = Self {
             embedded_pack_id: PackId::new(PackIdentity::Pomme, None),
             installed_resources: None,
-            builtin_pack_id: PackId::new(
-                PackIdentity::Builtin {
-                    version: asset_version.to_owned(),
-                },
-                Some(KnownPack {
-                    namespace: "minecraft".to_owned(),
-                    id: "core".to_owned(),
-                    version: asset_version.to_owned(),
-                }),
-            ),
+            builtin_pack_id: new_builtin_pack_id(asset_version),
             asset_version: asset_version.to_owned(),
             client_jar: client_jar.to_owned(),
             target_format: None,
@@ -148,30 +139,30 @@ impl ResourcePackManager {
     /// selections. No installation is needed to open the embedded bootstrap
     /// stack.
     pub(crate) fn sources(&self) -> Result<ResourceSources, ResourceError> {
-        let mut sources = vec![ResourcePackDescriptor {
-            storage: vec![PackStorage::Embedded],
-            origin: ResourceOrigin {
-                pack_id: self.embedded_pack_id.clone(),
-                name: "Pomme embedded assets".to_owned(),
-            },
-            filter: Default::default(),
-        }];
-        if let Some(installed) = &self.installed_resources {
-            let mut storage = vec![PackStorage::Zip(self.client_jar.clone())];
-            if let Some(index) = &installed.index {
-                storage.push(PackStorage::Indexed(index.clone()));
-            }
-            sources.push(ResourcePackDescriptor {
-                storage,
-                origin: ResourceOrigin {
-                    pack_id: self.builtin_pack_id().clone(),
-                    name: "Minecraft built-in assets".to_owned(),
-                },
-                filter: Default::default(),
-            });
-        }
+        let mut sources = builtin_descriptors(
+            self.embedded_pack_id.clone(),
+            self.builtin_pack_id.clone(),
+            self.installed_resources
+                .as_ref()
+                .map(|installed| (self.client_jar.as_path(), installed.index.as_ref())),
+        );
         sources.extend(self.active_pack_descriptors()?);
         Ok(ResourceSources(sources))
+    }
+
+    /// Vanilla-only CPU/headless mode registration. Does not create profile
+    /// directories, discover packs, or change selections. Opening/validating
+    /// these installed sources belongs to the mode's resource manager.
+    pub(crate) fn builtin_sources(
+        asset_version: &str,
+        client_jar: &Path,
+        index: Option<&crate::assets::AssetIndex>,
+    ) -> ResourceSources {
+        ResourceSources(builtin_descriptors(
+            PackId::new(PackIdentity::Pomme, None),
+            new_builtin_pack_id(asset_version),
+            Some((client_jar, index)),
+        ))
     }
 
     /// The recognized built-in pack, even before its storage is
@@ -530,6 +521,50 @@ impl ResourcePackManager {
         sources.extend(self.active_pack_descriptors()?);
         Ok(ResourceSources(sources))
     }
+}
+
+fn new_builtin_pack_id(asset_version: &str) -> PackId {
+    PackId::new(
+        PackIdentity::Builtin {
+            version: asset_version.to_owned(),
+        },
+        Some(KnownPack {
+            namespace: "minecraft".to_owned(),
+            id: "core".to_owned(),
+            version: asset_version.to_owned(),
+        }),
+    )
+}
+
+/// Common low-to-high registration for bootstrap, GUI and vanilla-only modes.
+fn builtin_descriptors(
+    embedded_pack_id: PackId,
+    builtin_pack_id: PackId,
+    installation: Option<(&Path, Option<&crate::assets::AssetIndex>)>,
+) -> Vec<ResourcePackDescriptor> {
+    let mut sources = vec![ResourcePackDescriptor {
+        storage: vec![PackStorage::Embedded],
+        origin: ResourceOrigin {
+            pack_id: embedded_pack_id,
+            name: "Pomme embedded assets".to_owned(),
+        },
+        filter: Default::default(),
+    }];
+    if let Some((client_jar, index)) = installation {
+        let mut storage = vec![PackStorage::Zip(client_jar.to_owned())];
+        if let Some(index) = index {
+            storage.push(PackStorage::Indexed(index.clone()));
+        }
+        sources.push(ResourcePackDescriptor {
+            storage,
+            origin: ResourceOrigin {
+                pack_id: builtin_pack_id,
+                name: "Minecraft built-in assets".to_owned(),
+            },
+            filter: Default::default(),
+        });
+    }
+    sources
 }
 
 #[derive(Debug)]

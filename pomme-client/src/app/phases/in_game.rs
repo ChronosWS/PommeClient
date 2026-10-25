@@ -48,7 +48,6 @@ use crate::renderer::pipelines::lightmap::LightmapInfo;
 use crate::renderer::pipelines::menu_overlay::MenuElement;
 use crate::renderer::pipelines::post_effect::PostEffect;
 use crate::renderer::{Renderer, SkyState};
-use crate::resources::ResourcePackManager;
 use crate::ui::chat::{ChatState, ChatUiAction};
 use crate::ui::death::{self, DeathAction};
 use crate::ui::pause::{self, PauseAction, PauseScreen};
@@ -436,7 +435,6 @@ impl GameState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mesh_source: &impl MeshSource,
-        resource_packs: Option<&ResourcePackManager>,
         render_distance: u32,
         singleplayer: bool,
         chat_options: crate::ui::chat::ChatOptions,
@@ -455,7 +453,6 @@ impl GameState {
         let mesh_dispatcher = mesh_source.create_mesh_dispatcher(
             block_registry.owned_render_view(),
             biome_climate,
-            resource_packs,
             Default::default(),
         );
 

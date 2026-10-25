@@ -13,7 +13,9 @@ mod occlusion;
 
 use criterion::Criterion;
 
+use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
+use crate::resources::{ResourceManager, ResourcePackManager};
 
 /// Runs every bench whose id contains `filter` (all when `None`); returns the
 /// process exit code.
@@ -80,7 +82,25 @@ fn load_assets(
     dirs: &DataDirs,
     block_state_table: crate::world::block::BlockStateTable,
 ) -> Option<fixtures::Assets> {
-    fixtures::Assets::load(version, dirs, block_state_table)
-        .inspect_err(|e| eprintln!("cpu-bench: {e}"))
-        .ok()
+    let asset_index = AssetIndex::load(&dirs.indexes_dir, &dirs.objects_dir, version);
+    // Resource ownership stays on the calling thread; workers receive only
+    // owned CPU mesh assets. Packet-only benchmarks never open these sources.
+    let resources = match ResourceManager::new(ResourcePackManager::builtin_sources(
+        version,
+        &dirs.client_jar,
+        asset_index.as_ref(),
+    )) {
+        Ok(resources) => resources,
+        Err(error) => {
+            eprintln!("cpu-bench: failed to open {}: {error}", dirs.client_jar.display());
+            return None;
+        }
+    };
+    match fixtures::Assets::load(version, dirs, block_state_table, asset_index, &resources) {
+        Ok(assets) => Some(assets),
+        Err(error) => {
+            eprintln!("cpu-bench: {error}");
+            None
+        }
+    }
 }

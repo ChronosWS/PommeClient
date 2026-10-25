@@ -60,6 +60,7 @@ use crate::renderer::pipelines::chunk_borders::ChunkBorderPipeline;
 use crate::renderer::pipelines::held_item::{HandRenderSelection, HeldHand};
 use crate::renderer::pipelines::item_entity::ItemEntityPipeline;
 use crate::ui::font::{FontOptions, FontSources};
+use crate::world::block::colormap::Colormaps;
 use crate::world::block::render_assets::{BlockRenderAssets, BlockRenderView};
 
 /// The live atlas's layout, so meshes bake in UVs that match it.
@@ -70,14 +71,6 @@ impl MeshSource for Renderer {
 
     fn uv_map(&self) -> &AtlasUVMap {
         &self.atlas.uv_map
-    }
-
-    fn jar_assets_dir(&self) -> &Path {
-        &self.jar_assets_dir
-    }
-
-    fn asset_index(&self) -> &Option<AssetIndex> {
-        &self.asset_index
     }
 }
 
@@ -309,12 +302,21 @@ impl Renderer {
             asset_index,
             options: font_options,
         } = font_sources;
+        // Providers are application-thread-only. The model worker receives
+        // decoded, Arc-owned CPU pixels, never the resource manager/handles.
+        let colormaps = Colormaps::load(resources);
         let render_assets_handle = {
             let jar_assets_dir = jar_assets_dir.to_path_buf();
             let asset_index = asset_index.clone();
             let cache_dir = cache_dir.to_path_buf();
             std::thread::spawn(move || {
-                BlockRenderAssets::load(&jar_assets_dir, &asset_index, Some(&cache_dir), None)
+                BlockRenderAssets::load(
+                    &jar_assets_dir,
+                    &asset_index,
+                    Some(&cache_dir),
+                    None,
+                    colormaps,
+                )
             })
         };
 
@@ -1196,11 +1198,13 @@ impl Renderer {
     ) {
         self.ctx.device.wait_idle();
 
+        let colormaps = Colormaps::load(resources);
         self.render_assets = Arc::new(BlockRenderAssets::load(
             &self.jar_assets_dir,
             &self.asset_index,
             None,
             Some(packs),
+            colormaps,
         ));
 
         self.item_entity_pipeline.clear_meshes(&self.ctx.device);
