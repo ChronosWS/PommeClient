@@ -440,8 +440,7 @@ impl Renderer {
         let block_entity_pipeline = BlockEntityPipeline::new(
             &ctx.device,
             swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
+            resources,
             &lightmap,
         );
 
@@ -1263,6 +1262,8 @@ impl Renderer {
             .reload_texture(&self.ctx.device, resources);
         self.book_preview
             .reload_texture(&self.ctx.device, resources);
+        self.block_entity_pipeline
+            .reload_textures(&self.ctx.device, resources);
 
         warm_item_meshes(
             &self.ctx.device,
