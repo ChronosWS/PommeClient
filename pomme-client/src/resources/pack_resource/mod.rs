@@ -12,6 +12,7 @@ use crate::resource_pack::PackId;
 mod directory;
 pub(crate) mod embedded;
 mod indexed;
+mod overlay;
 mod zip;
 
 pub(crate) use directory::DirectoryPackResources;
@@ -23,6 +24,14 @@ pub(crate) enum PackStorage {
     /// Namespace-containing directory, normally `<pack root>/assets`.
     Directory(PathBuf),
     Zip(PathBuf),
+    DirectoryPack {
+        root: PathBuf,
+        overlays: Vec<String>,
+    },
+    ZipPack {
+        path: PathBuf,
+        overlays: Vec<String>,
+    },
     Indexed(AssetIndex),
     Embedded,
 }
@@ -53,6 +62,28 @@ impl ResourcePackDescriptor {
                         Rc::new(DirectoryPackResources::open(root, origin)?)
                     }
                     PackStorage::Zip(path) => Rc::new(ZipPackResources::open(path, origin)?),
+                    PackStorage::DirectoryPack { root, overlays } => {
+                        let mut children: Vec<SharedPackResources> = vec![Rc::new(
+                            DirectoryPackResources::open_pack(root.clone(), None, origin.clone())?,
+                        )];
+                        for directory in overlays {
+                            children.push(Rc::new(DirectoryPackResources::open_pack(
+                                root.clone(),
+                                Some(&directory),
+                                origin.clone(),
+                            )?));
+                        }
+                        Rc::new(overlay::OverlayPackResources::new(origin, children))
+                    }
+                    PackStorage::ZipPack { path, overlays } => {
+                        let base = Rc::new(ZipPackResources::open(path, origin.clone())?);
+                        base.check_pack_root()?;
+                        let mut children: Vec<SharedPackResources> = vec![base.clone()];
+                        for directory in overlays {
+                            children.push(Rc::new(base.overlay(&directory)?));
+                        }
+                        Rc::new(overlay::OverlayPackResources::new(origin, children))
+                    }
                     PackStorage::Indexed(index) => {
                         Rc::new(IndexedPackResources::open(index, origin)?)
                     }
@@ -129,6 +160,21 @@ fn open_directory(root: &Path, origin: &ResourceOrigin) -> Result<(), ResourceEr
         origin: origin.clone(),
         source,
     })
+}
+
+fn overlay_directory(directory: &str) -> io::Result<&str> {
+    if directory.is_empty()
+        || directory == ".."
+        || !directory
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "overlay directory escapes pack root or is invalid",
+        ));
+    }
+    Ok(if directory == "." { "" } else { directory })
 }
 
 /// Validate the source before treating missing descendants as absence.

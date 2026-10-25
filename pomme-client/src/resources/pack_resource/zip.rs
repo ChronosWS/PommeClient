@@ -10,7 +10,7 @@ use zip::ZipArchive;
 
 use super::{
     PackResources, ReadStream, ResourceOrigin, enumeration_error, id_from_key, lookup_error,
-    matches_prefix, valid_namespace, validate_query,
+    matches_prefix, overlay_directory, valid_namespace, validate_query,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
@@ -78,7 +78,8 @@ impl Read for OwnedZipEntry {
 /// byte snapshot.
 pub(crate) struct ZipPackResources {
     origin: ResourceOrigin,
-    archive: ZipArchive<SharedFileCursor>,
+    archive: Rc<ZipArchive<SharedFileCursor>>,
+    prefix: String,
 }
 
 impl ZipPackResources {
@@ -96,16 +97,62 @@ impl ZipPackResources {
             origin: origin.clone(),
             source,
         })?;
-        Ok(Self { origin, archive })
+        Ok(Self {
+            origin,
+            archive: Rc::new(archive),
+            prefix: "assets/".to_owned(),
+        })
     }
 
-    fn entry_name(id: &ResourceId) -> String {
+    pub(super) fn overlay(&self, directory: &str) -> Result<Self, ResourceError> {
+        let directory = overlay_directory(directory)
+            .map_err(|source| enumeration_error(&self.origin, "open ZIP overlay", source))?;
+        let prefix = if directory.is_empty() {
+            "assets/".to_owned()
+        } else {
+            format!("{directory}/assets/")
+        };
+        let view = Self {
+            origin: self.origin.clone(),
+            archive: self.archive.clone(),
+            prefix,
+        };
+        view.check_pack_root()?;
+        Ok(view)
+    }
+
+    pub(super) fn check_pack_root(&self) -> Result<(), ResourceError> {
+        let check = || -> io::Result<()> {
+            let mut path = String::new();
+            for component in self.prefix.trim_end_matches('/').split('/') {
+                path.push_str(component);
+                for name in [&path, &format!("{path}/")] {
+                    if let Some(index) = self.archive.index_for_name(name) {
+                        let entry = self.archive.by_index_data(index)?;
+                        if !entry.is_dir()
+                            || !matches!(entry.unix_mode().unwrap_or(0) & 0o170000, 0 | 0o040000)
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("ZIP pack root is not a directory: {name}"),
+                            ));
+                        }
+                    }
+                }
+                path.push('/');
+            }
+            Ok(())
+        };
+        check().map_err(|source| enumeration_error(&self.origin, "open ZIP pack root", source))
+    }
+
+    fn entry_name(&self, id: &ResourceId) -> String {
         let id = id.as_asset_id();
-        format!("assets/{}/{}", id.namespace, id.path)
+        format!("{}{}/{}", self.prefix, id.namespace, id.path)
     }
 
     fn open_entry(&self, name: &str) -> io::Result<Option<OwnedZipEntry>> {
-        let archive = &self.archive;
+        let archive = self.archive.as_ref();
         let Some(index) = archive.index_for_name(name) else {
             // Check explicit directory entries through the cached name index.
             // Implicit prefixes alone are not entries; do not scan descendants.
@@ -154,14 +201,14 @@ impl PackResources for ZipPackResources {
         id: &ResourceId,
     ) -> Result<Option<ResourceContent>, ResourceError> {
         let present = self
-            .open_entry(&Self::entry_name(id))
+            .open_entry(&self.entry_name(id))
             .map_err(|source| lookup_error(id, &self.origin, source))?
             .is_some();
         Ok(present.then(|| ResourceContent::new(id.clone(), self)))
     }
 
     fn open(&self, id: &ResourceId) -> io::Result<ReadStream> {
-        self.open_entry(&Self::entry_name(id))?
+        self.open_entry(&self.entry_name(id))?
             .map(|entry| Box::new(entry) as ReadStream)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ZIP resource is absent"))
     }
@@ -171,7 +218,7 @@ impl PackResources for ZipPackResources {
             let mut namespaces = BTreeSet::new();
             for name in self.archive.file_names() {
                 let name = name?;
-                if let Some(key) = name.strip_prefix("assets/")
+                if let Some(key) = name.strip_prefix(&self.prefix)
                     && let Some((namespace, _)) = key.split_once('/')
                     && valid_namespace(namespace)
                 {
@@ -194,7 +241,7 @@ impl PackResources for ZipPackResources {
             let mut resources = BTreeSet::new();
             for name in self.archive.file_names() {
                 let name = name?;
-                let Some(id) = name.strip_prefix("assets/").and_then(id_from_key) else {
+                let Some(id) = name.strip_prefix(&self.prefix).and_then(id_from_key) else {
                     continue;
                 };
                 if id.namespace() != namespace || !matches_prefix(id.path(), prefix) {

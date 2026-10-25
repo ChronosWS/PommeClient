@@ -25,10 +25,38 @@ mod pack_format;
 mod pack_resource;
 mod resource;
 
+/// Well-known metadata filenames and schema keys, shared by pack consumers.
+pub(crate) mod metadata {
+    pub(crate) const PACK_METADATA_FILE: &str = "pack.mcmeta";
+    pub(crate) const PACK_SECTION: &str = "pack";
+    pub(crate) const PACK_DESCRIPTION: &str = "description";
+    pub(crate) const FILTER_SECTION: &str = "filter";
+    pub(crate) const OVERLAYS_SECTION: &str = "overlays";
+    pub(crate) const OVERLAY_ENTRIES: &str = "entries";
+    pub(crate) const OVERLAY_DIRECTORY: &str = "directory";
+    pub(crate) const OVERLAY_FORMATS: &str = "formats";
+
+    // Format fields in pack.mcmeta's pack section and overlay entries.
+    pub(crate) const PACK_FORMAT: &str = "pack_format";
+    pub(crate) const PACK_SUPPORTED_FORMATS: &str = "supported_formats";
+    pub(crate) const PACK_MIN_FORMAT: &str = "min_format";
+    pub(crate) const PACK_MAX_FORMAT: &str = "max_format";
+    pub(crate) const FORMAT_MIN_INCLUSIVE: &str = "min_inclusive";
+    pub(crate) const FORMAT_MAX_INCLUSIVE: &str = "max_inclusive";
+
+    // Installed JAR version.json, distinct from selected-pack metadata.
+    pub(crate) const VERSION_METADATA_FILE: &str = "version.json";
+    pub(crate) const VERSION_RESOURCE_FORMAT: &str = "resource";
+    pub(crate) const VERSION_RESOURCE_MAJOR: &str = "resource_major";
+    pub(crate) const VERSION_RESOURCE_MINOR: &str = "resource_minor";
+}
+
 pub(crate) use filter::{ResourceFilter, ResourceFilterSpec};
 pub(crate) use installed_format::read_installed_pack_format;
 pub(crate) use manager::ResourceManager;
-pub(crate) use pack_format::{PackFormat, PackFormatRange, parse_resource_pack_range};
+pub(crate) use pack_format::{
+    PackFormat, PackFormatRange, parse_resource_pack_range, select_resource_overlays,
+};
 pub(crate) use pack_resource::embedded::{POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT};
 pub(crate) use pack_resource::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
 pub(crate) use resource::{ResourceContent, ResourceError, ResourceId};

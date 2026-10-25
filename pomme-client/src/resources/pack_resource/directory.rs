@@ -4,26 +4,79 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, canonical_directory, enumeration_error, is_file,
-    lookup_error, open_directory, open_file, resolve_within, source_file, valid_namespace,
-    validate_query,
+    PackResources, ReadStream, ResourceOrigin, canonical_directory, check_directory,
+    enumeration_error, is_file, lookup_error, open_directory, open_file, overlay_directory,
+    resolve_within, source_file, valid_namespace, validate_query,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// A namespace-containing assets directory, including extracted JARs and packs.
 pub(crate) struct DirectoryPackResources {
     root: PathBuf,
+    pack_root: Option<PathBuf>,
     origin: ResourceOrigin,
 }
 
 impl DirectoryPackResources {
     pub(crate) fn open(root: PathBuf, origin: ResourceOrigin) -> Result<Self, ResourceError> {
         open_directory(&root, &origin)?;
-        Ok(Self { root, origin })
+        Ok(Self {
+            root,
+            pack_root: None,
+            origin,
+        })
+    }
+
+    pub(super) fn open_pack(
+        pack_root: PathBuf,
+        overlay: Option<&str>,
+        origin: ResourceOrigin,
+    ) -> Result<Self, ResourceError> {
+        let directory = overlay
+            .map(overlay_directory)
+            .transpose()
+            .map_err(|source| enumeration_error(&origin, "open overlay directory", source))?;
+        let root = pack_root.join(directory.unwrap_or_default()).join("assets");
+        let source = Self {
+            root,
+            pack_root: Some(pack_root),
+            origin,
+        };
+        source.assets_root().map_err(|error| {
+            enumeration_error(&source.origin, "open pack assets directory", error)
+        })?;
+        Ok(source)
+    }
+
+    fn assets_root(&self) -> io::Result<Option<PathBuf>> {
+        let Some(pack_root) = &self.pack_root else {
+            return canonical_directory(&self.root).map(Some);
+        };
+        let boundary = canonical_directory(pack_root)?;
+        let relative = self
+            .root
+            .strip_prefix(pack_root)
+            .map_err(io::Error::other)?;
+        let mut current = boundary.clone();
+        // Validate each ancestor, including overlay roots and dangling links,
+        // before accepting an absent assets tree. Recheck on every operation.
+        for component in relative.components() {
+            current.push(component);
+            match std::fs::symlink_metadata(&current) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            }
+            current = resolve_within(&boundary, &current)?;
+            check_directory(&current)?;
+        }
+        Ok(Some(current))
     }
 
     fn locate(&self, id: &ResourceId) -> io::Result<Option<PathBuf>> {
-        let root = canonical_directory(&self.root)?;
+        let Some(root) = self.assets_root()? else {
+            return Ok(None);
+        };
         // Only the final resolved resource is confined to the source assets root.
         source_file(&root, &root.join(id.namespace()).join(id.path()))
     }
@@ -113,8 +166,10 @@ impl PackResources for DirectoryPackResources {
 
     fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError> {
         let enumerate = || -> io::Result<_> {
-            let root = canonical_directory(&self.root)?;
             let mut namespaces = BTreeSet::new();
+            let Some(root) = self.assets_root()? else {
+                return Ok(namespaces);
+            };
             for entry in std::fs::read_dir(&root)? {
                 let entry = entry?;
                 let name = entry.file_name();
@@ -140,8 +195,10 @@ impl PackResources for DirectoryPackResources {
     ) -> Result<BTreeSet<ResourceId>, ResourceError> {
         validate_query(Some(namespace), prefix)?;
         let enumerate = || -> io::Result<_> {
-            let root = canonical_directory(&self.root)?;
             let mut resources = BTreeSet::new();
+            let Some(root) = self.assets_root()? else {
+                return Ok(resources);
+            };
             if let Some((directory, metadata)) =
                 Self::entry_within(&root, &root.join(namespace).join(prefix))?
                 && metadata.is_dir()

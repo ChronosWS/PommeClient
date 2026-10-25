@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::metadata;
 use super::pack_format::{PackFormat, format_component};
 
 // Same startup bound as the installer's readiness check, without coupling APIs.
@@ -55,7 +56,7 @@ fn read_format(path: &Path, expected_version: &str) -> Result<PackFormat, Format
     }
 
     let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
-    let entry = archive.by_name("version.json")?;
+    let entry = archive.by_name(metadata::VERSION_METADATA_FILE)?;
     if entry.size() > MAX_VERSION_JSON_SIZE {
         return Err(FormatReadError::TooLarge);
     }
@@ -77,11 +78,15 @@ fn read_format(path: &Path, expected_version: &str) -> Result<PackFormat, Format
             .and_then(format_component)
             .ok_or(FormatReadError::InvalidFormat(key))
     };
-    let (major, minor) =
-        if version.get("resource_major").is_some() || version.get("resource_minor").is_some() {
-            (component("resource_major")?, component("resource_minor")?)
-        } else {
-            (component("resource")?, 0)
-        };
+    let (major, minor) = if version.get(metadata::VERSION_RESOURCE_MAJOR).is_some()
+        || version.get(metadata::VERSION_RESOURCE_MINOR).is_some()
+    {
+        (
+            component(metadata::VERSION_RESOURCE_MAJOR)?,
+            component(metadata::VERSION_RESOURCE_MINOR)?,
+        )
+    } else {
+        (component(metadata::VERSION_RESOURCE_FORMAT)?, 0)
+    };
     PackFormat::new(major, minor).ok_or(FormatReadError::InvalidFormat("resource components"))
 }

@@ -7,7 +7,8 @@ use pomme_protocol::KnownPack;
 
 use crate::resources::{
     PackFormat, PackFormatRange, PackStorage, ResourceError, ResourceFilter, ResourceFilterSpec,
-    ResourceOrigin, ResourcePackDescriptor, parse_resource_pack_range, read_installed_pack_format,
+    ResourceOrigin, ResourcePackDescriptor, metadata, parse_resource_pack_range,
+    read_installed_pack_format, select_resource_overlays,
 };
 
 /// Logical pack identity issued by discovery/management, not by source opening.
@@ -276,47 +277,45 @@ impl ResourcePackManager {
                 pack_id: pack.info.pack_id.clone(),
                 name: pack.info.name.clone(),
             };
-            let descriptor = match &pack.archive {
-                Some(path) => ResourcePackDescriptor {
-                    storage: vec![PackStorage::Zip(path.clone())],
-                    filter: read_resource_filter(&pack.dir, Some(path), &origin),
-                    origin,
+            if pack.archive.is_none() {
+                Self::validate_directory_pack_root(&pack.dir, &origin)?;
+            }
+            let metadata =
+                read_resource_metadata(&pack.dir, pack.archive.as_deref()).map_err(|source| {
+                    ResourceError::Io {
+                        operation: "read pack.mcmeta",
+                        id: None,
+                        origin: origin.clone(),
+                        source,
+                    }
+                })?;
+            let overlays = select_resource_overlays(
+                metadata.get(metadata::OVERLAYS_SECTION),
+                self.target_format,
+            )
+            .map_err(|source| ResourceError::Io {
+                operation: "validate pack overlays",
+                id: None,
+                origin: origin.clone(),
+                source,
+            })?;
+            let storage = match &pack.archive {
+                Some(path) => PackStorage::ZipPack {
+                    path: path.clone(),
+                    overlays,
                 },
-                None => Self::directory_pack_descriptor(&pack.dir, origin)?,
+                None => PackStorage::DirectoryPack {
+                    root: pack.dir.clone(),
+                    overlays,
+                },
             };
-            descriptors.push(descriptor);
+            descriptors.push(ResourcePackDescriptor {
+                storage: vec![storage],
+                filter: read_resource_filter(&metadata, &origin),
+                origin,
+            });
         }
         Ok(descriptors)
-    }
-
-    /// Metadata-only packs still contribute their filter; unusable roots error.
-    fn directory_pack_descriptor(
-        root: &Path,
-        origin: ResourceOrigin,
-    ) -> Result<ResourcePackDescriptor, ResourceError> {
-        Self::validate_directory_pack_root(root, &origin)?;
-        let assets_dir = root.join("assets");
-        // Dangling assets symlinks are present entries, validated on source open.
-        let storage = match std::fs::symlink_metadata(&assets_dir) {
-            Ok(_) => vec![PackStorage::Directory(assets_dir)],
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Self::validate_directory_pack_root(root, &origin)?;
-                Vec::new()
-            }
-            Err(source) => {
-                return Err(ResourceError::Io {
-                    operation: "inspect pack assets directory",
-                    id: None,
-                    origin,
-                    source,
-                });
-            }
-        };
-        Ok(ResourcePackDescriptor {
-            storage,
-            filter: read_resource_filter(root, None, &origin),
-            origin,
-        })
     }
 
     fn validate_directory_pack_root(
@@ -454,7 +453,7 @@ impl ResourcePackManager {
             );
 
             if path.is_dir() {
-                if path.join("pack.mcmeta").exists() {
+                if path.join(metadata::PACK_METADATA_FILE).exists() {
                     let already_active = self
                         .active_packs
                         .iter()
@@ -495,7 +494,7 @@ impl ResourcePackManager {
             return;
         };
         let path = self.packs_dir.join(name);
-        if path.is_dir() && path.join("pack.mcmeta").exists() {
+        if path.is_dir() && path.join(metadata::PACK_METADATA_FILE).exists() {
             self.active_packs.retain(|p| p.id != name);
             let info = parse_pack_meta_dir(&path, name, pack_id, self.target_format);
             self.active_packs.push(ActivePack {
@@ -604,28 +603,40 @@ fn validate_hash(data: &[u8], expected: &str) -> Result<(), PackError> {
 
 /// Read only root metadata from the same location as the resource provider.
 /// Local ZIPs use the original archive, not the legacy extraction cache.
-fn read_resource_filter(
+fn read_resource_metadata(
     root: &Path,
     archive: Option<&Path>,
+) -> io::Result<serde_json::Map<String, serde_json::Value>> {
+    fn decode(metadata: impl io::Read) -> io::Result<serde_json::Map<String, serde_json::Value>> {
+        serde_json::from_reader(metadata).map_err(io::Error::from)
+    }
+    if let Some(path) = archive {
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+        match archive.by_name(metadata::PACK_METADATA_FILE) {
+            Ok(metadata) => decode(metadata),
+            Err(zip::result::ZipError::FileNotFound) => Ok(Default::default()),
+            Err(error) => Err(error.into()),
+        }
+    } else {
+        match std::fs::File::open(root.join(metadata::PACK_METADATA_FILE)) {
+            Ok(metadata) => decode(metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn read_resource_filter(
+    metadata: &serde_json::Map<String, serde_json::Value>,
     origin: &ResourceOrigin,
 ) -> ResourceFilter {
     let result = (|| -> io::Result<ResourceFilter> {
-        if let Some(path) = archive {
-            let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
-            match archive.by_name("pack.mcmeta") {
-                Ok(metadata) => decode_resource_filter(metadata),
-                Err(zip::result::ZipError::FileNotFound) => Ok(ResourceFilter::default()),
-                Err(error) => Err(error.into()),
-            }
-        } else {
-            match std::fs::File::open(root.join("pack.mcmeta")) {
-                Ok(metadata) => decode_resource_filter(metadata),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    Ok(ResourceFilter::default())
-                }
-                Err(error) => Err(error),
-            }
-        }
+        let Some(section) = metadata.get(metadata::FILTER_SECTION) else {
+            return Ok(ResourceFilter::default());
+        };
+        let spec: ResourceFilterSpec = serde_json::from_value(section.clone())?;
+        spec.compile()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     })();
     match result {
         Ok(filter) => filter,
@@ -644,24 +655,14 @@ fn read_resource_filter(
     }
 }
 
-fn decode_resource_filter(metadata: impl io::Read) -> io::Result<ResourceFilter> {
-    let mut root: serde_json::Map<String, serde_json::Value> = serde_json::from_reader(metadata)?;
-    let Some(section) = root.remove("filter") else {
-        return Ok(ResourceFilter::default());
-    };
-    let spec: ResourceFilterSpec = serde_json::from_value(section)?;
-    spec.compile()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
 fn parse_meta_value(
     v: &serde_json::Value,
     fallback: &str,
 ) -> (String, String, Option<PackFormatRange>) {
-    let pack = v.get("pack");
+    let pack = v.get(metadata::PACK_SECTION);
 
     let description = pack
-        .and_then(|p| p.get("description"))
+        .and_then(|p| p.get(metadata::PACK_DESCRIPTION))
         .and_then(|d| d.as_str())
         .unwrap_or(fallback)
         .to_owned();
@@ -681,7 +682,7 @@ fn parse_pack_meta_dir(
     pack_id: PackId,
     target_format: Option<PackFormat>,
 ) -> PackInfo {
-    let meta_path = dir.join("pack.mcmeta");
+    let meta_path = dir.join(metadata::PACK_METADATA_FILE);
     let Some(v) = std::fs::read_to_string(&meta_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -718,7 +719,7 @@ fn parse_pack_meta_zip(
     let data = std::fs::read(path).ok()?;
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).ok()?;
-    let mut mcmeta = archive.by_name("pack.mcmeta").ok()?;
+    let mut mcmeta = archive.by_name(metadata::PACK_METADATA_FILE).ok()?;
     let mut contents = String::new();
     std::io::Read::read_to_string(&mut mcmeta, &mut contents).ok()?;
     let v: serde_json::Value = serde_json::from_str(&contents).ok()?;
