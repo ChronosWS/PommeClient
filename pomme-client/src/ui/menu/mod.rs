@@ -765,8 +765,9 @@ pub struct MainMenu {
     /// The options were saved, so the game should broadcast them.
     options_saved: bool,
     bench_render_distance: crate::benchmark::BenchRenderDistance,
-    /// The title screen's splash line, rolled at launch and on every return
-    /// from a world like vanilla's fresh `TitleScreen`. `None` renders nothing.
+    /// The title screen's splash line, rolled at launch, on resource reload
+    /// and on every return from a world like vanilla's fresh `TitleScreen`.
+    /// `None` renders nothing.
     pub splash: Option<String>,
     menu_open_time: Option<Instant>,
     last_favicon_count: usize,
@@ -1271,17 +1272,12 @@ impl MainMenu {
     }
 
     /// Picks the title screen's splash line. Separate from `new` because the
-    /// asset index it reads through isn't built until after the menu is.
-    pub fn load_splash(
-        &mut self,
-        jar_assets_dir: &Path,
-        asset_index: &Option<crate::assets::AssetIndex>,
-    ) {
+    /// resource manager it reads through isn't built until after the menu is.
+    pub fn load_splash(&mut self, resources: &crate::resources::ResourceManager) {
         let now =
             time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
         self.splash = splash::pick(
-            jar_assets_dir,
-            asset_index,
+            resources,
             &self.username,
             now.month() as u32,
             u32::from(now.day()),

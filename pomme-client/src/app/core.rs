@@ -936,7 +936,7 @@ fn cursor_step(grabbed: bool, stale: bool, want: bool, focused: bool) -> (Cursor
     }
 }
 
-/// The asset index, the menu's splash and the audio engine, which `AppCore`
+/// The asset index and the audio engine, which `AppCore`
 /// builds from the version's assets.
 fn load_assets(
     data_dirs: &DataDirs,
@@ -945,7 +945,6 @@ fn load_assets(
     menu: &mut MainMenu,
 ) -> (Option<AssetIndex>, crate::audio::AudioEngine) {
     let asset_index = AssetIndex::load(&data_dirs.indexes_dir, &data_dirs.objects_dir, version);
-    menu.load_splash(&data_dirs.jar_assets_dir, &asset_index);
     let audio = crate::audio::AudioEngine::new(
         &data_dirs.jar_assets_dir,
         asset_index.clone(),
@@ -1015,6 +1014,7 @@ impl AppCore {
                 .expect("failed to describe startup resources"),
         )
         .expect("failed to open startup resources");
+        menu.load_splash(&resources);
         let (player_skin_tx, player_skin_rx) = crossbeam_channel::unbounded();
         let (head_tx, head_rx) = crossbeam_channel::unbounded();
 
@@ -1183,8 +1183,7 @@ impl AppCore {
             p.set_in_menu(&self.version);
         }
         self.apply_cursor_grab(&gfx.window, None);
-        self.menu
-            .load_splash(&self.data_dirs.jar_assets_dir, &self.asset_index);
+        self.menu.load_splash(&self.resources);
     }
 
     /// Releases the cursor, warping it to the window center only when it was
@@ -1717,9 +1716,9 @@ impl AppCore {
                     renderer.clear_chunk_meshes();
                     renderer.reload_assets(resource_packs, resources, menu.font_options());
                 }
+                menu.load_splash(resources);
                 if let Some(index) = installed_index {
                     *asset_index = index;
-                    menu.load_splash(&data_dirs.jar_assets_dir, asset_index);
                     *audio = crate::audio::AudioEngine::new(
                         &data_dirs.jar_assets_dir,
                         asset_index.clone(),
