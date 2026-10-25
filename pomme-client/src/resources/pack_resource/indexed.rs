@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, canonical_directory, lookup_error, open_directory,
-    open_file, source_file, unsupported,
+    PackResources, ReadStream, ResourceOrigin, canonical_directory, enumeration_error, id_from_key,
+    lookup_error, matches_prefix, open_directory, open_file, source_file, validate_query,
 };
 use crate::assets::AssetIndex;
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
@@ -63,14 +63,40 @@ impl PackResources for IndexedPackResources {
     }
 
     fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError> {
-        Err(unsupported(&self.origin, "enumerate namespaces"))
+        canonical_directory(self.asset_index.objects_dir())
+            .map_err(|source| enumeration_error(&self.origin, "enumerate namespaces", source))?;
+        Ok(self
+            .asset_index
+            .keys()
+            .filter_map(id_from_key)
+            .map(|id| id.namespace().to_owned())
+            .collect())
     }
 
     fn list_resources(
         &self,
-        _namespace: &str,
-        _prefix: &str,
+        namespace: &str,
+        prefix: &str,
     ) -> Result<BTreeSet<ResourceId>, ResourceError> {
-        Err(unsupported(&self.origin, "list resources"))
+        validate_query(Some(namespace), prefix)?;
+        let enumerate = || -> io::Result<_> {
+            let root = canonical_directory(self.asset_index.objects_dir())?;
+            let mut resources = BTreeSet::new();
+            for key in self.asset_index.keys() {
+                let Some(id) = id_from_key(key) else {
+                    continue;
+                };
+                if id.namespace() != namespace || !matches_prefix(id.path(), prefix) {
+                    continue;
+                }
+                if let Some(path) = self.asset_index.resolve_checked(key)?
+                    && source_file(&root, &path)?.is_some()
+                {
+                    resources.insert(id);
+                }
+            }
+            Ok(resources)
+        };
+        enumerate().map_err(|source| enumeration_error(&self.origin, "list resources", source))
     }
 }

@@ -1,6 +1,6 @@
 use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(feature = "ttf-fonts")]
 use std::ffi::CStr;
 use std::io::{BufRead, BufReader, Cursor, Read};
@@ -512,10 +512,13 @@ impl GlyphMap {
             resources: OnceCell::new(),
         };
 
-        let font_ids = discover_font_ids(&sources);
+        let font_ids = discover_fonts(&ctx)?;
         let unresolved: HashMap<String, Vec<UnresolvedProvider>> = font_ids
             .iter()
-            .map(|id| (id.clone(), load_unresolved_font(id, &ctx, &mut atlases)))
+            .map(|id| {
+                let providers = load_unresolved_font(id, &ctx, &mut atlases);
+                (id.clone(), providers)
+            })
             .collect();
 
         let mut resolved_cache = HashMap::new();
@@ -647,77 +650,18 @@ fn font_resource_id(id: &str) -> Result<ResourceId, String> {
     ResourceId::new(&format!("{namespace}:font/{path}.json")).map_err(|error| error.to_string())
 }
 
-fn font_id_from_asset_key(asset_key: &str) -> Option<String> {
-    let (namespace, rest) = asset_key.split_once('/')?;
-    let path = rest.strip_prefix("font/")?.strip_suffix(".json")?;
-    Some(format!("{namespace}:{path}"))
-}
-
-/// Every font id in the jar, the asset index and the active packs, sorted.
-fn discover_font_ids(sources: &FontSources<'_>) -> Vec<String> {
-    let mut ids = HashSet::new();
-    let asset_roots = std::iter::once(sources.jar_assets_dir.to_path_buf()).chain(
-        sources
-            .packs
-            .active_pack_dirs()
-            .map(|root| root.join("assets")),
-    );
-    for assets in asset_roots {
-        let Ok(namespaces) = std::fs::read_dir(assets) else {
-            continue;
-        };
-        for namespace in namespaces.flatten() {
-            if namespace.file_type().is_ok_and(|kind| kind.is_dir()) {
-                let namespace_name = namespace.file_name().to_string_lossy().into_owned();
-                collect_font_ids_from_dir(
-                    &namespace.path().join("font"),
-                    &namespace_name,
-                    "",
-                    &mut ids,
-                );
-            }
-        }
-    }
-    if let Some(index) = sources.asset_index {
-        ids.extend(index.keys().filter_map(font_id_from_asset_key));
-    }
-
-    let mut ids: Vec<_> = ids.into_iter().collect();
-    ids.sort();
-    ids
-}
-
-fn collect_font_ids_from_dir(dir: &Path, namespace: &str, prefix: &str, out: &mut HashSet<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            let next_prefix = if prefix.is_empty() {
-                entry.file_name().to_string_lossy().into_owned()
-            } else {
-                format!("{prefix}/{}", entry.file_name().to_string_lossy())
-            };
-            collect_font_ids_from_dir(&path, namespace, &next_prefix, out);
-            continue;
-        }
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-        let font_path = if prefix.is_empty() {
-            stem.to_owned()
-        } else {
-            format!("{prefix}/{stem}")
-        };
-        out.insert(format!("{namespace}:{font_path}"));
-    }
+fn discover_fonts(ctx: &LoadContext<'_>) -> Result<BTreeSet<String>, String> {
+    let ids = ctx
+        .resource_manager()?
+        .list_resource_ids("font", |id| id.path().ends_with(".json"))
+        .map_err(|error| format!("Unable to discover font resources: {error}"))?;
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| {
+            let path = id.path().strip_prefix("font/")?.strip_suffix(".json")?;
+            Some(format!("{}:{path}", id.namespace()))
+        })
+        .collect())
 }
 
 /// A provider definition as decoded by vanilla's `GlyphProviderDefinition`

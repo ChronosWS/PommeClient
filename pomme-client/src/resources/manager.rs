@@ -3,7 +3,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use super::pack_resource::{
-    PackStorage, ResourceOrigin, ResourcePackDescriptor, SharedPackResources,
+    PackStorage, ResourceOrigin, ResourcePackDescriptor, SharedPackResources, validate_query,
 };
 use super::resource::{Resource, ResourceError, ResourceId};
 use crate::assets::AssetIndex;
@@ -16,8 +16,7 @@ pub(crate) struct BuiltinResources<'a> {
 }
 
 /// Fixed selected-source view; input order is low-to-high priority.
-/// Discovery and selection belong to the caller. Exact and stack lookup are
-/// implemented; namespace and listing methods are prototype contracts.
+/// Pack discovery and selection belong to the caller.
 pub(crate) struct ResourceManager {
     sources: Vec<SharedPackResources>,
 }
@@ -60,7 +59,11 @@ impl ResourceManager {
     }
 
     pub(crate) fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError> {
-        unimplemented!("interface only: union of selected source namespaces")
+        let mut namespaces = BTreeSet::new();
+        for source in &self.sources {
+            namespaces.extend(source.namespaces()?);
+        }
+        Ok(namespaces)
     }
 
     /// Highest-priority match for a checked ID; access errors never fall back.
@@ -114,28 +117,57 @@ impl ResourceManager {
         Ok(resources)
     }
 
-    /// Validated recursive query as defined by PackResources, with
-    /// deterministic namespace-then-path ordering (not resource-pack
-    /// priority) and one winner per ID using get_resource's metadata
-    /// policy.
+    /// Recursive query across all namespaces, excluding .mcmeta sidecars.
+    /// Keys have namespace-then-path ordering, with get_resource's winner and
+    /// lazy metadata policy. Enumeration is not an atomic storage snapshot.
     pub(crate) fn list_resources(
         &self,
-        namespace: &str,
         prefix: &str,
+        selector: impl Fn(&ResourceId) -> bool,
     ) -> Result<BTreeMap<ResourceId, Resource>, ResourceError> {
-        let _ = (namespace, prefix);
-        unimplemented!("interface only: enumerate and resolve winners")
+        let mut resources = BTreeMap::new();
+        for id in self.list_resource_ids(prefix, selector)? {
+            if let Some(resource) = self.get_resource(&id)? {
+                resources.insert(id, resource);
+            }
+        }
+        Ok(resources)
     }
 
-    /// Recursive query: keys in deterministic namespace-then-path order (not
-    /// resource-pack priority) and nonempty low-to-high stacks.
+    /// All-namespace query without sidecars: keys in namespace-then-path order
+    /// (not resource-pack priority) and nonempty low-to-high stacks.
     /// Shares get_resource_stack's lazy, same-source metadata policy.
     pub(crate) fn list_resource_stacks(
         &self,
-        namespace: &str,
         prefix: &str,
+        selector: impl Fn(&ResourceId) -> bool,
     ) -> Result<BTreeMap<ResourceId, Vec<Resource>>, ResourceError> {
-        let _ = (namespace, prefix);
-        unimplemented!("interface only: enumerate and resolve stacks")
+        let mut resources = BTreeMap::new();
+        for id in self.list_resource_ids(prefix, selector)? {
+            let stack = self.get_resource_stack(&id)?;
+            if !stack.is_empty() {
+                resources.insert(id, stack);
+            }
+        }
+        Ok(resources)
+    }
+
+    /// All-namespace query without sidecars, in namespace-then-path order.
+    /// Enumerates IDs without resolving resources; enumeration errors
+    /// propagate.
+    pub(crate) fn list_resource_ids(
+        &self,
+        prefix: &str,
+        selector: impl Fn(&ResourceId) -> bool,
+    ) -> Result<BTreeSet<ResourceId>, ResourceError> {
+        validate_query(None, prefix)?;
+        let mut ids = BTreeSet::new();
+        for source in &self.sources {
+            for namespace in source.namespaces()? {
+                ids.extend(source.list_resources(&namespace, prefix)?);
+            }
+        }
+        ids.retain(|id| !id.path().ends_with(".mcmeta") && selector(id));
+        Ok(ids)
     }
 }

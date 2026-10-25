@@ -1,6 +1,7 @@
 //! Resource bytes, independent of particles, render assets and the GPU.
-//! Exact lookup serves bitmap-font textures; other consumers remain legacy.
-//! Current adapters access assets; server-data domains are not implemented.
+//! Lists font definitions and locates bitmap-font textures; other consumers
+//! remain legacy. Current adapters access assets; server-data domains are not
+//! implemented.
 //!
 //! Discovery, selection, downloads and legacy extraction belong to the caller.
 //! Root pack.mcmeta belongs to pack management; resource sidecars stay here.
@@ -30,7 +31,6 @@ fn consumer_contract(
     builtin_external: Option<SharedPackResources>,
     selected_low_to_high: Vec<SharedPackResources>,
     requested: &str,
-    namespace: &str,
     prefix: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Read;
@@ -43,14 +43,12 @@ fn consumer_contract(
     let winner = manager.get_resource(&id)?;
     let _stack_low_to_high = manager.get_resource_stack(&id)?;
     let _namespaces = manager.namespaces()?;
-    let winners = manager.list_resources(namespace, prefix)?;
-    let _stacks = manager.list_resource_stacks(namespace, prefix)?;
+    let winners = manager.list_resources(prefix, |id| id.path().ends_with(".json"))?;
+    let _stacks = manager.list_resource_stacks(prefix, |_| true)?;
     // Callers can filter logical IDs without inspecting active pack directories.
-    for (id, resource) in winners {
-        if id.as_asset_id().path.ends_with(".json") {
-            let _origin = resource.content().origin();
-            let _stream = resource.content().open()?;
-        }
+    for resource in winners.into_values() {
+        let _origin = resource.content().origin();
+        let _stream = resource.content().open()?;
     }
     drop(manager);
     if let Some(resource) = winner {

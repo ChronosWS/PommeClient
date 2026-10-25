@@ -8,7 +8,10 @@ use std::rc::Rc;
 use self_cell::{MutBorrow, self_cell};
 use zip::ZipArchive;
 
-use super::{PackResources, ReadStream, ResourceOrigin, lookup_error, unsupported};
+use super::{
+    PackResources, ReadStream, ResourceOrigin, enumeration_error, id_from_key, lookup_error,
+    matches_prefix, valid_namespace, validate_query,
+};
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// One opened file, with an independent logical position for each entry stream.
@@ -68,7 +71,7 @@ impl Read for OwnedZipEntry {
     }
 }
 
-/// Exact lookup in an opened ZIP with a parsed central directory. Handles
+/// Resources in an opened ZIP with a parsed central directory. Handles
 /// retain this source; streams retain their archive and the opened file
 /// independently. Replacing/deleting the pathname does not reopen it. In-place
 /// edits are not protected: this is an opened source view, not an immutable
@@ -102,12 +105,6 @@ impl ZipPackResources {
     }
 
     fn open_entry(&self, name: &str) -> io::Result<Option<OwnedZipEntry>> {
-        let non_file = || {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("ZIP resource is not a file: {name}"),
-            )
-        };
         let archive = &self.archive;
         let Some(index) = archive.index_for_name(name) else {
             // Check explicit directory entries through the cached name index.
@@ -115,17 +112,12 @@ impl ZipPackResources {
             if archive.index_for_name(&format!("{name}/")).is_some()
                 || archive.index_for_name(&format!("{name}\\")).is_some()
             {
-                return Err(non_file());
+                return Err(Self::non_file(name));
             }
             return Ok(None);
         };
         let metadata = archive.by_index_data(index)?;
-        // An unspecified file type is common in ZIPs. Otherwise require
-        // S_IFREG, rejecting symlinks, directories and all special Unix kinds.
-        let file_type = metadata.unix_mode().unwrap_or(0) & 0o170000;
-        if metadata.is_dir() || !matches!(file_type, 0 | 0o100000) {
-            return Err(non_file());
-        }
+        Self::check_file(name, metadata.is_dir(), metadata.unix_mode())?;
         // No content is decoded here. zip owns codec/integrity checks during
         // Read. Archive-borrowed entries do not drain remaining bytes on drop.
         // Clones share central-directory metadata and the file, but own cursors.
@@ -134,6 +126,21 @@ impl ZipPackResources {
         })
         .map(Some)
         .map_err(Into::into)
+    }
+
+    fn non_file(name: &str) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("ZIP resource is not a file: {name}"),
+        )
+    }
+
+    fn check_file(name: &str, is_dir: bool, mode: Option<u32>) -> io::Result<()> {
+        // Unspecified file types are common in ZIPs; otherwise require S_IFREG.
+        if is_dir || !matches!(mode.unwrap_or(0) & 0o170000, 0 | 0o100000) {
+            return Err(Self::non_file(name));
+        }
+        Ok(())
     }
 }
 
@@ -160,14 +167,55 @@ impl PackResources for ZipPackResources {
     }
 
     fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError> {
-        Err(unsupported(&self.origin, "enumerate namespaces"))
+        let enumerate = || -> io::Result<_> {
+            let mut namespaces = BTreeSet::new();
+            for name in self.archive.file_names() {
+                let name = name?;
+                if let Some(key) = name.strip_prefix("assets/")
+                    && let Some((namespace, _)) = key.split_once('/')
+                    && valid_namespace(namespace)
+                {
+                    namespaces.insert(namespace.to_owned());
+                }
+            }
+            Ok(namespaces)
+        };
+        enumerate()
+            .map_err(|source| enumeration_error(&self.origin, "enumerate namespaces", source))
     }
 
     fn list_resources(
         &self,
-        _namespace: &str,
-        _prefix: &str,
+        namespace: &str,
+        prefix: &str,
     ) -> Result<BTreeSet<ResourceId>, ResourceError> {
-        Err(unsupported(&self.origin, "list resources"))
+        validate_query(Some(namespace), prefix)?;
+        let enumerate = || -> io::Result<_> {
+            let mut resources = BTreeSet::new();
+            for name in self.archive.file_names() {
+                let name = name?;
+                let Some(id) = name.strip_prefix("assets/").and_then(id_from_key) else {
+                    continue;
+                };
+                if id.namespace() != namespace || !matches_prefix(id.path(), prefix) {
+                    continue;
+                }
+                // Use the same name index as exact lookup, including duplicate
+                // names. Only central-directory metadata is read, not contents.
+                let Some(index) = self.archive.index_for_name(&name) else {
+                    continue;
+                };
+                let metadata = self.archive.by_index_data(index)?;
+                if metadata.is_dir() {
+                    continue;
+                }
+                // Symlinks and special entries are errors, not an opportunity
+                // to silently fall back to a lower-priority resource.
+                Self::check_file(&name, false, metadata.unix_mode())?;
+                resources.insert(id);
+            }
+            Ok(resources)
+        };
+        enumerate().map_err(|source| enumeration_error(&self.origin, "list resources", source))
     }
 }

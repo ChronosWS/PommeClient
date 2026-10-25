@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use super::resource::{ResourceContent, ResourceError, ResourceId};
-use crate::assets::AssetIndex;
+use crate::assets::{AssetIndex, identifier_chars};
 use crate::resource_pack::PackId;
 
 mod directory;
@@ -81,7 +81,7 @@ pub(crate) trait PackResources {
     /// means all paths in the namespace; otherwise matching descendants under
     /// `prefix/` only. Namespace and prefix use identifier characters, not
     /// filesystem component rules. Invalid syntax is Err; storage containment
-    /// is the adapter's responsibility. Current adapters do not enumerate.
+    /// is the adapter's responsibility. Nonempty prefixes cannot end in `/`.
     /// Returns unique checked IDs, including .mcmeta files; callers may filter.
     fn list_resources(
         &self,
@@ -157,12 +157,46 @@ fn lookup_error(id: &ResourceId, origin: &ResourceOrigin, source: io::Error) -> 
     }
 }
 
-/// Enumeration is unsupported, not absent.
-fn unsupported(origin: &ResourceOrigin, operation: &'static str) -> ResourceError {
+fn enumeration_error(
+    origin: &ResourceOrigin,
+    operation: &'static str,
+    source: io::Error,
+) -> ResourceError {
     ResourceError::Io {
         operation,
         id: None,
         origin: origin.clone(),
-        source: io::Error::new(io::ErrorKind::Unsupported, "exact-lookup adapter only"),
+        source,
     }
+}
+
+fn valid_namespace(namespace: &str) -> bool {
+    !namespace.is_empty() && identifier_chars(namespace, false)
+}
+
+pub(super) fn validate_query(namespace: Option<&str>, prefix: &str) -> Result<(), ResourceError> {
+    if namespace.is_some_and(|namespace| !valid_namespace(namespace))
+        || !identifier_chars(prefix, true)
+        || prefix.ends_with('/')
+    {
+        return Err(ResourceError::InvalidQuery {
+            namespace: namespace.unwrap_or_default().to_owned(),
+            prefix: prefix.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn matches_prefix(path: &str, prefix: &str) -> bool {
+    prefix.is_empty()
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Index and archive keys are external input; malformed logical names are
+/// ignored.
+fn id_from_key(key: &str) -> Option<ResourceId> {
+    let (namespace, path) = key.split_once('/')?;
+    ResourceId::new(&format!("{namespace}:{path}")).ok()
 }
