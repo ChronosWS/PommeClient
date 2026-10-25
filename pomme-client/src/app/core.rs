@@ -997,6 +997,9 @@ impl AppCore {
                 .expect("failed to describe startup resources"),
         )
         .expect("failed to open startup resources");
+        if let Err(error) = crate::lang::reload(&resources) {
+            tracing::warn!(%error, "Keeping previous language table after startup load failure");
+        }
         let audio = if installed {
             crate::audio::AudioEngine::new(&resources, menu.category_volumes())
         } else {
@@ -1642,7 +1645,6 @@ impl AppCore {
     pub(crate) fn font_sources(&self) -> crate::ui::font::FontSources<'_> {
         crate::ui::font::FontSources {
             resources: &self.resources,
-            jar_assets_dir: &self.data_dirs.jar_assets_dir,
             options: self.menu.font_options(),
         }
     }
@@ -1689,6 +1691,9 @@ impl AppCore {
         }
         let result = resource_packs.sources().and_then(|sources| {
             resources.reload(sources, |resources| {
+                if let Err(error) = crate::lang::reload(resources) {
+                    tracing::warn!(%error, "Keeping previous language table after reload failure");
+                }
                 menu.available_packs = resource_packs.available_local_packs().to_vec();
                 menu.active_packs = resource_packs.active_pack_info();
                 if let Some(renderer) = renderer {

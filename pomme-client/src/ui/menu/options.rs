@@ -644,7 +644,7 @@ impl MainMenu {
                     && common::hit_test(row_cursor, [change_x, y, change_w, btn_h])
                 {
                     let text = crate::lang::translate("controls.keybinds.duplicateKeybinds")
-                        .unwrap_or("This key is also used for:\n%s")
+                        .unwrap_or_else(|| "This key is also used for:\n%s".to_owned())
                         .replace("%s", &collisions.join(", "));
                     let width0 = |spans: &[TextSpan]| {
                         spans

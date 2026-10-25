@@ -30,7 +30,6 @@ pub(crate) struct FontOptions {
 #[derive(Clone, Copy)]
 pub(crate) struct FontSources<'a> {
     pub resources: &'a ResourceManager,
-    pub jar_assets_dir: &'a std::path::Path,
     pub options: FontOptions,
 }
 
@@ -1660,7 +1659,6 @@ mod tests {
             GlyphMap::load(
                 FontSources {
                     resources: &self.resource_manager(&self.packs, &self.jar()),
-                    jar_assets_dir: &self.jar(),
                     options: FontOptions::default(),
                 },
                 u32::MAX,
@@ -1673,7 +1671,6 @@ mod tests {
                     resources: self
                         .resources
                         .get_or_init(|| self.resource_manager(&self.packs, &self.root)),
-                    jar_assets_dir: self.root.as_path(),
                     options: FontOptions::default(),
                 },
                 missing: Arc::new(space_glyph(6.0)),
@@ -2057,7 +2054,6 @@ mod tests {
         let (map, _) = GlyphMap::load(
             FontSources {
                 resources: &fixture.resource_manager(&packs, &fixture.jar()),
-                jar_assets_dir: &fixture.jar(),
                 options: FontOptions::default(),
             },
             u32::MAX,
@@ -2110,7 +2106,6 @@ mod tests {
             GlyphMap::load(
                 FontSources {
                     resources: &fixture.resource_manager(packs, &fixture.jar()),
-                    jar_assets_dir: &fixture.jar(),
                     options: FontOptions::default(),
                 },
                 u32::MAX,

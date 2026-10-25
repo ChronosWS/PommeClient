@@ -3848,7 +3848,8 @@ pub fn update_game(
                 20.0 * gs,
                 gs,
                 common::FONT_SIZE * gs,
-                crate::lang::translate("multiplayer.stopSleeping").unwrap_or("Leave Bed"),
+                &crate::lang::translate("multiplayer.stopSleeping")
+                    .unwrap_or_else(|| "Leave Bed".to_owned()),
                 true,
             );
             if hovered && core.input.left_just_pressed() && !chat_takes_click {

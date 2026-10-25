@@ -1180,8 +1180,8 @@ impl MenuGeometry {
         let rows = items.len().min(12).div_ceil(4) as i32;
         let empty_lines = if items.is_empty() {
             let description = crate::lang::translate("item.minecraft.bundle.empty.description")
-                .unwrap_or("Can hold a mixed stack of items");
-            self.wrap_tooltip_text(description, scale, 96.0 * px)
+                .unwrap_or_else(|| "Can hold a mixed stack of items".to_owned());
+            self.wrap_tooltip_text(&description, scale, 96.0 * px)
         } else {
             Vec::new()
         };
@@ -1372,8 +1372,8 @@ impl MenuGeometry {
             None
         };
         if let Some(label) = label {
-            let label_x = centered(label, left + 48.0 * px);
-            let spans = [TextSpan::new(label.to_owned(), white)];
+            let label_x = centered(&label, left + 48.0 * px);
+            let spans = [TextSpan::new(label, white)];
             text(
                 vertices,
                 drawn_objects,
@@ -1611,7 +1611,6 @@ impl MenuOverlayPipeline {
             sampler: rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST),
         };
 
-        crate::lang::load(font_sources.jar_assets_dir);
         let (mc_font, mc_font_color) = create_font_textures(device, atlases.glyphs.as_ref())?;
 
         let favicon = TextureResources {

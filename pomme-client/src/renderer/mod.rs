@@ -248,7 +248,6 @@ pub struct Renderer {
     camera: Camera,
 
     render_assets: Arc<BlockRenderAssets>,
-    jar_assets_dir: PathBuf,
 
     chunk_pipeline: ChunkPipeline,
     lightmap: Lightmap,
@@ -306,7 +305,6 @@ impl Renderer {
     ) -> Result<Self, RendererError> {
         let FontSources {
             resources,
-            jar_assets_dir,
             options: font_options,
         } = font_sources;
         // Providers are application-thread-only. The model worker receives
@@ -488,7 +486,6 @@ impl Renderer {
             swapchain: swapchain_state,
             camera,
             render_assets,
-            jar_assets_dir: jar_assets_dir.to_path_buf(),
             atlas,
             chunk_pipeline,
             lightmap,
@@ -1284,7 +1281,6 @@ impl Renderer {
             &self.ctx.device,
             FontSources {
                 resources,
-                jar_assets_dir: &self.jar_assets_dir,
                 options: font_options,
             },
         ) {
@@ -1342,7 +1338,6 @@ impl Renderer {
             &self.ctx.device,
             FontSources {
                 resources,
-                jar_assets_dir: &self.jar_assets_dir,
                 options: font_options,
             },
         ) {
