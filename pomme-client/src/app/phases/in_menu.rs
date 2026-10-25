@@ -160,8 +160,10 @@ pub fn update_menu(
         core.menu.available_packs = core.resource_packs.available_local_packs().to_vec();
     }
 
-    if core.menu.reload_assets {
-        core.reload_pack_assets(&mut gfx.renderer);
+    if core.menu.reload_assets
+        && let Err(error) = core.reload_pack_assets(&mut gfx.renderer)
+    {
+        tracing::error!(%error, "Failed to reload selected packs; resource sources unchanged");
     }
     core.apply_font_options(&mut gfx.renderer);
 

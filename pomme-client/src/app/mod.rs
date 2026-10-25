@@ -435,11 +435,25 @@ fn create_window(
     core: &AppCore,
 ) -> Result<Arc<Window>, winit::error::OsError> {
     let window_icon = {
-        let img =
-            image::load_from_memory(crate::assets::POMME_ICON_PNG).expect("failed to decode icon");
-        let rgba = img.to_rgba8();
-        let (w, h) = (rgba.width(), rgba.height());
-        winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
+        crate::resources::ResourceId::new(crate::resources::POMME_ICON)
+            .and_then(|id| {
+                core.resources
+                    .get_resource(&id)?
+                    .ok_or(crate::resources::ResourceError::Missing(id))?
+                    .content()
+                    .read_bytes(32 * 1024 * 1024)
+            })
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| image::load_from_memory(&bytes).map_err(|error| error.to_string()))
+            .map(|img| {
+                let rgba = img.to_rgba8();
+                let (w, h) = (rgba.width(), rgba.height());
+                winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
+            })
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "Failed to load window icon");
+                None
+            })
     };
     let monitor = event_loop
         .primary_monitor()
@@ -577,13 +591,12 @@ impl ApplicationHandler for App {
         if let Some(install) = &mut self.install {
             match event {
                 WindowEvent::RedrawRequested => {
-                    let step = install.frame(&self.core);
+                    let step = install.frame(&mut self.core);
                     if matches!(step, install::Step::Relaunched) {
                         event_loop.exit();
                     }
                     if let install::Step::Done(window) = step {
                         self.install = None;
-                        self.core.reload_installed_assets();
                         self.installed_window = Some(window);
                         // In the background there's no surface to build the
                         // renderer on; the real `resumed` builds it.

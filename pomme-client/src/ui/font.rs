@@ -1,4 +1,3 @@
-use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(feature = "ttf-fonts")]
@@ -6,6 +5,7 @@ use std::ffi::CStr;
 use std::io::{BufRead, BufReader, Cursor, Read};
 #[cfg(feature = "ttf-fonts")]
 use std::os::raw::c_char;
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "ttf-fonts")]
 use std::ptr;
@@ -13,11 +13,9 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::assets::{AssetId, AssetIndex, resolve_asset_path_with_packs};
+use crate::assets::{AssetId, AssetIndex};
 use crate::resource_pack::ResourcePackManager;
-use crate::resources::{
-    BuiltinResources, ResourceContent, ResourceError, ResourceId, ResourceManager,
-};
+use crate::resources::{ResourceContent, ResourceError, ResourceId, ResourceManager};
 
 #[cfg(feature = "ttf-fonts")]
 unsafe extern "C" {
@@ -32,22 +30,11 @@ pub(crate) struct FontOptions {
 
 #[derive(Clone, Copy)]
 pub(crate) struct FontSources<'a> {
-    pub client_jar: &'a Path,
-    pub jar_assets_dir: &'a Path,
+    pub resources: &'a ResourceManager,
+    pub jar_assets_dir: &'a std::path::Path,
     pub asset_index: &'a Option<AssetIndex>,
     pub packs: &'a ResourcePackManager,
     pub options: FontOptions,
-}
-
-impl FontSources<'_> {
-    fn resolve(&self, asset_key: &str) -> PathBuf {
-        resolve_asset_path_with_packs(
-            self.jar_assets_dir,
-            self.asset_index,
-            asset_key,
-            Some(self.packs),
-        )
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -112,33 +99,6 @@ const MAX_UNIHEX_ENTRY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_UNIHEX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_UNIHEX_LINE_BYTES: usize = 512;
 const MAX_PROVIDER_GLYPHS: usize = 262_144;
-
-#[cfg(any(feature = "ttf-fonts", test))]
-fn read_file_bounded(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8>, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|error| format!("failed to open {kind} {}: {error}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("failed to stat {kind} {}: {error}", path.display()))?;
-    if metadata.len() > max_bytes as u64 {
-        return Err(format!(
-            "{kind} {} is {} bytes, exceeding the {max_bytes}-byte limit",
-            path.display(),
-            metadata.len()
-        ));
-    }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(max_bytes as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("failed to read {kind} {}: {error}", path.display()))?;
-    if bytes.len() > max_bytes {
-        return Err(format!(
-            "{kind} {} exceeds the {max_bytes}-byte limit",
-            path.display()
-        ));
-    }
-    Ok(bytes)
-}
 
 fn read_text_resource_bounded(
     content: &ResourceContent,
@@ -510,7 +470,6 @@ impl GlyphMap {
         let ctx = LoadContext {
             sources,
             missing: missing_glyph.clone(),
-            resources: OnceCell::new(),
         };
 
         let font_ids = discover_fonts(&ctx)?;
@@ -606,27 +565,6 @@ impl GlyphMap {
 struct LoadContext<'a> {
     sources: FontSources<'a>,
     missing: Arc<GlyphInfo>,
-    /// Local to this load pass/thread; FontSources remains Copy and Send.
-    /// Shared by font definitions and bitmap textures; metadata is not read.
-    resources: OnceCell<Result<ResourceManager, ResourceError>>,
-}
-
-impl LoadContext<'_> {
-    fn resource_manager(&self) -> Result<&ResourceManager, String> {
-        self.resources
-            .get_or_init(|| {
-                ResourceManager::from_packs(
-                    BuiltinResources {
-                        pack_id: self.sources.packs.builtin_pack_id(),
-                        client_jar: self.sources.client_jar,
-                        asset_index: self.sources.asset_index.as_ref(),
-                    },
-                    self.sources.packs.active_pack_descriptors()?,
-                )
-            })
-            .as_ref()
-            .map_err(|error| format!("failed to initialize font resources: {error}"))
-    }
 }
 
 /// The asset key of resource `id` under `prefix` (`Identifier.withPrefix`).
@@ -653,7 +591,8 @@ fn font_resource_id(id: &str) -> Result<ResourceId, String> {
 
 fn discover_fonts(ctx: &LoadContext<'_>) -> Result<BTreeSet<String>, String> {
     let ids = ctx
-        .resource_manager()?
+        .sources
+        .resources
         .list_resource_ids("font", |id| id.path().ends_with(".json"))
         .map_err(|error| format!("Unable to discover font resources: {error}"))?;
     Ok(ids
@@ -917,11 +856,12 @@ fn load_unresolved_font(
         Ok(id) => id,
         Err(error) => return vec![UnresolvedProvider::Invalid(error)],
     };
-    let stack = match ctx.resource_manager().and_then(|manager| {
-        manager
-            .get_resource_stack(&id)
-            .map_err(|error| error.to_string())
-    }) {
+    let stack = match ctx
+        .sources
+        .resources
+        .get_resource_stack(&id)
+        .map_err(|error| error.to_string())
+    {
         Ok(stack) => stack,
         Err(error) => {
             let error = format!("Unable to load font `{font_id}` resource {id}: {error}");
@@ -1107,7 +1047,7 @@ fn load_bitmap_provider(
     let AssetId { namespace, path } = AssetId::parse(&definition.file);
     let id = ResourceId::new(&format!("{namespace}:textures/{path}"))
         .map_err(|error| error.to_string())?;
-    let manager = ctx.resource_manager()?;
+    let manager = ctx.sources.resources;
     let resource = manager
         .get_resource(&id)
         .map_err(|error| error.to_string())?
@@ -1195,8 +1135,19 @@ fn load_unihex_provider(
     ctx: &LoadContext<'_>,
     atlas: &mut AtlasBuilder,
 ) -> Result<LoadedProvider, String> {
-    let path = ctx.sources.resolve(&asset_key(hex_file, "")?);
-    let unihex = load_unihex_zip(&path, overrides)?;
+    let id =
+        ResourceId::new(&normalize_resource_id(hex_file)?).map_err(|error| error.to_string())?;
+    let resource = ctx
+        .sources
+        .resources
+        .get_resource(&id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| ResourceError::Missing(id).to_string())?;
+    let bytes = resource
+        .content()
+        .read_bytes(MAX_UNIHEX_ZIP_BYTES as usize)
+        .map_err(|error| error.to_string())?;
+    let unihex = load_unihex_zip(bytes, overrides)?;
     let mut glyphs = HashMap::with_capacity(unihex.len());
     for glyph in &unihex {
         let placement = atlas.place(glyph.pixel_width(), 16)?;
@@ -1226,38 +1177,43 @@ fn load_ttf_provider(
         return Err(format!("invalid ttf oversample {oversample}"));
     }
 
-    let path = ctx.sources.resolve(&asset_key(&definition.file, "font/")?);
-    let bytes = read_file_bounded(&path, MAX_TTF_BYTES, "TTF font")?;
+    asset_key(&definition.file, "font/")?;
+    let AssetId { namespace, path } = AssetId::parse(&definition.file);
+    let id =
+        ResourceId::new(&format!("{namespace}:font/{path}")).map_err(|error| error.to_string())?;
+    let resource = ctx
+        .sources
+        .resources
+        .get_resource(&id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| ResourceError::Missing(id.clone()).to_string())?;
+    let bytes = resource
+        .content()
+        .read_bytes(MAX_TTF_BYTES)
+        .map_err(|error| error.to_string())?;
     let library = freetype::Library::init()
         .map_err(|error| format!("failed to initialize FreeType: {error:?}"))?;
     let mut face = library
         .new_memory_face(bytes, 0)
-        .map_err(|error| format!("failed to parse ttf font {}: {error:?}", path.display()))?;
+        .map_err(|error| format!("failed to parse ttf font {id}: {error:?}"))?;
     let face_ptr = face.raw_mut() as freetype::ffi::FT_Face;
 
     let format_ptr = unsafe { FT_Get_Font_Format(face_ptr) };
     if format_ptr.is_null() {
-        return Err(format!(
-            "could not determine font format for {}",
-            path.display()
-        ));
+        return Err(format!("could not determine font format for {id}"));
     }
     let format = unsafe { CStr::from_ptr(format_ptr) }
         .to_string_lossy()
         .into_owned();
     if format != "TrueType" {
-        return Err(format!(
-            "font {} is not in TTF format, was {format}",
-            path.display()
-        ));
+        return Err(format!("font {id} is not in TTF format, was {format}"));
     }
 
     let charmap_error =
         unsafe { freetype::ffi::FT_Select_Charmap(face_ptr, freetype::ffi::FT_ENCODING_UNICODE) };
     if charmap_error != freetype::ffi::FT_Err_Ok {
         return Err(format!(
-            "failed to select Unicode charmap for {}: FreeType error {charmap_error}",
-            path.display()
+            "failed to select Unicode charmap for {id}: FreeType error {charmap_error}"
         ));
     }
 
@@ -1287,8 +1243,7 @@ fn load_ttf_provider(
         }
         if supported_entries.len() >= MAX_PROVIDER_GLYPHS {
             return Err(format!(
-                "TTF provider {} exposes more than {MAX_PROVIDER_GLYPHS} Unicode glyphs",
-                path.display()
+                "TTF provider {id} exposes more than {MAX_PROVIDER_GLYPHS} Unicode glyphs"
             ));
         }
         supported_entries.push((ch, index.get()));
@@ -1409,10 +1364,13 @@ fn json_codepoint(value: &serde_json::Value) -> Option<u32> {
     chars.next().is_none().then_some(codepoint)
 }
 
-fn load_unihex_zip(path: &Path, overrides: &[UnihexOverride]) -> Result<Vec<UnihexGlyph>, String> {
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let zip_bytes = file.metadata().map_err(|error| error.to_string())?.len();
-    let mut archive = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
+fn load_unihex_zip(
+    bytes: Vec<u8>,
+    overrides: &[UnihexOverride],
+) -> Result<Vec<UnihexGlyph>, String> {
+    let zip_bytes = bytes.len() as u64;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|error| error.to_string())?;
     validate_unihex_archive_header(zip_bytes, archive.len())?;
 
     let mut raw: HashMap<u32, ([u32; 16], u8)> = HashMap::new();
@@ -1630,13 +1588,17 @@ fn actual_glyph_width(image: &image::RgbaImage, cell: (u32, u32, u32, u32)) -> u
 
 #[cfg(test)]
 mod tests {
+    use std::cell::OnceCell;
+
     use super::*;
+    use crate::resources::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
 
     /// A temp dir with an empty pack manager, removed on drop.
     struct Fixture {
         root: PathBuf,
         client_jar: PathBuf,
         packs: ResourcePackManager,
+        resources: OnceCell<ResourceManager>,
     }
 
     impl Fixture {
@@ -1648,6 +1610,7 @@ mod tests {
                 root,
                 client_jar,
                 packs,
+                resources: OnceCell::new(),
             }
         }
 
@@ -1699,7 +1662,7 @@ mod tests {
         fn load(&self) -> Result<(GlyphMap, GlyphAtlasPixels), String> {
             GlyphMap::load(
                 FontSources {
-                    client_jar: self.client_jar_from(&self.jar()),
+                    resources: &self.resource_manager(&self.packs, &self.jar()),
                     jar_assets_dir: &self.jar(),
                     asset_index: &None,
                     packs: &self.packs,
@@ -1712,15 +1675,31 @@ mod tests {
         fn context(&self) -> LoadContext<'_> {
             LoadContext {
                 sources: FontSources {
-                    client_jar: self.client_jar_from(&self.root),
+                    resources: self
+                        .resources
+                        .get_or_init(|| self.resource_manager(&self.packs, &self.root)),
                     jar_assets_dir: self.root.as_path(),
                     asset_index: &None,
                     packs: &self.packs,
                     options: FontOptions::default(),
                 },
                 missing: Arc::new(space_glyph(6.0)),
-                resources: OnceCell::new(),
             }
+        }
+
+        fn resource_manager(&self, packs: &ResourcePackManager, assets: &Path) -> ResourceManager {
+            let builtin = ResourcePackDescriptor {
+                storage: vec![PackStorage::Zip(self.client_jar_from(assets).to_owned())],
+                origin: ResourceOrigin {
+                    pack_id: packs.builtin_pack_id().clone(),
+                    name: "Fixture".to_owned(),
+                },
+                filter: Default::default(),
+            };
+            ResourceManager::new(
+                std::iter::once(builtin).chain(packs.active_pack_descriptors().unwrap()),
+            )
+            .unwrap()
         }
     }
 
@@ -1762,12 +1741,14 @@ mod tests {
     }
 
     #[test]
-    fn bounded_file_reader_rejects_input_past_limit() {
+    fn bounded_resource_reader_rejects_input_past_limit() {
         let fixture = Fixture::new();
-        fixture.write("budget", b"12345");
-        let path = fixture.root.join("budget");
-        assert_eq!(read_file_bounded(&path, 5, "test").unwrap(), b"12345");
-        assert!(read_file_bounded(&path, 4, "test").is_err());
+        fixture.write("jar_assets/minecraft/budget", b"12345");
+        let resources = fixture.resource_manager(&fixture.packs, &fixture.jar());
+        let id = ResourceId::new("minecraft:budget").unwrap();
+        let resource = resources.get_resource(&id).unwrap().unwrap();
+        assert_eq!(resource.content().read_bytes(5).unwrap(), b"12345");
+        assert!(resource.content().read_bytes(4).is_err());
     }
 
     #[test]
@@ -2092,7 +2073,7 @@ mod tests {
 
         let (map, _) = GlyphMap::load(
             FontSources {
-                client_jar: fixture.client_jar_from(&fixture.jar()),
+                resources: &fixture.resource_manager(&packs, &fixture.jar()),
                 jar_assets_dir: &fixture.jar(),
                 asset_index: &None,
                 packs: &packs,
@@ -2147,7 +2128,7 @@ mod tests {
         let load = |packs: &ResourcePackManager| {
             GlyphMap::load(
                 FontSources {
-                    client_jar: fixture.client_jar_from(&fixture.jar()),
+                    resources: &fixture.resource_manager(packs, &fixture.jar()),
                     jar_assets_dir: &fixture.jar(),
                     asset_index: &None,
                     packs,

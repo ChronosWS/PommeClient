@@ -246,7 +246,6 @@ pub struct Renderer {
     camera: Camera,
 
     render_assets: Arc<BlockRenderAssets>,
-    client_jar: PathBuf,
     jar_assets_dir: PathBuf,
     asset_index: Option<AssetIndex>,
 
@@ -304,7 +303,7 @@ impl Renderer {
         bedrock_ui_dir: &Path,
     ) -> Result<Self, RendererError> {
         let FontSources {
-            client_jar,
+            resources: _,
             jar_assets_dir,
             asset_index,
             packs,
@@ -516,7 +515,6 @@ impl Renderer {
             swapchain: swapchain_state,
             camera,
             render_assets,
-            client_jar: client_jar.to_path_buf(),
             jar_assets_dir: jar_assets_dir.to_path_buf(),
             asset_index: asset_index.clone(),
             atlas,
@@ -1219,6 +1217,7 @@ impl Renderer {
     pub fn reload_assets(
         &mut self,
         packs: &crate::resource_pack::ResourcePackManager,
+        resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {
         self.ctx.device.wait_idle();
@@ -1261,7 +1260,13 @@ impl Renderer {
             packs,
         );
 
-        self.reload_fonts(packs, font_options);
+        self.reload_fonts(packs, resources, font_options);
+        if let Err(error) = self
+            .menu_pipeline
+            .reload_pomme_assets(&self.ctx.device, resources)
+        {
+            tracing::warn!("Keeping previous Pomme UI assets after reload failure: {error}");
+        }
 
         warm_item_meshes(
             &self.ctx.device,
@@ -1281,6 +1286,7 @@ impl Renderer {
     pub fn reload_fonts(
         &mut self,
         packs: &crate::resource_pack::ResourcePackManager,
+        resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {
         self.font_options = font_options;
@@ -1288,7 +1294,7 @@ impl Renderer {
         if let Err(error) = self.menu_pipeline.reload_minecraft_fonts(
             &self.ctx.device,
             FontSources {
-                client_jar: &self.client_jar,
+                resources,
                 jar_assets_dir: &self.jar_assets_dir,
                 asset_index: &self.asset_index,
                 packs,

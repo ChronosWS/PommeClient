@@ -47,6 +47,7 @@ impl Hash for PackId {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum PackIdentity {
+    Pomme,
     // The discovered selection, not its archive/extraction/source location.
     Local {
         directory: PathBuf,
@@ -113,8 +114,14 @@ struct ActivePack {
     info: PackInfo,
 }
 
+struct InstalledResources {
+    index: Option<crate::assets::AssetIndex>,
+}
+
 pub struct ResourcePackManager {
+    embedded_pack_id: PackId,
     builtin_pack_id: PackId,
+    installed_resources: Option<InstalledResources>,
     asset_version: String,
     client_jar: PathBuf,
     target_format: Option<PackFormat>,
@@ -125,14 +132,16 @@ pub struct ResourcePackManager {
 }
 
 impl ResourcePackManager {
-    /// `asset_version` is the installed version ID used for the JAR and asset
-    /// index.
+    /// `asset_version` is the selected version, which need not be installed
+    /// yet.
     pub(crate) fn new(instance_dir: &Path, asset_version: &str, client_jar: &Path) -> Self {
         let packs_dir = instance_dir.join("resourcepacks");
         let server_cache_dir = packs_dir.join(".server_cache");
         let _ = std::fs::create_dir_all(&packs_dir);
         let _ = std::fs::create_dir_all(&server_cache_dir);
         let mut mgr = Self {
+            embedded_pack_id: Self::issue_pack_id(PackIdentity::Pomme, None),
+            installed_resources: None,
             builtin_pack_id: Self::issue_pack_id(
                 PackIdentity::Builtin {
                     version: asset_version.to_owned(),
@@ -151,15 +160,20 @@ impl ResourcePackManager {
             active_packs: Vec::new(),
             available_local: Vec::new(),
         };
-        mgr.refresh_pack_format();
         mgr.scan_local_packs();
         mgr
     }
 
-    /// Refresh compatibility from the installed JAR without changing pack
-    /// selection. Unavailable installation metadata leaves compatibility
-    /// unknown.
-    pub(crate) fn refresh_pack_format(&mut self) {
+    /// Register installed Minecraft storage and its compatibility metadata.
+    /// Called once installation is ready, not during embedded bootstrap.
+    pub(crate) fn register_installation(&mut self, index: Option<crate::assets::AssetIndex>) {
+        if self
+            .installed_resources
+            .replace(InstalledResources { index })
+            .is_some()
+        {
+            return;
+        }
         let target_format = read_installed_pack_format(&self.client_jar, &self.asset_version)
             .map_err(|error| {
                 tracing::debug!(%error, "Installed pack format unavailable; compatibility is unknown");
@@ -180,6 +194,36 @@ impl ResourcePackManager {
             identity,
             known_pack,
         }))
+    }
+
+    /// Owned snapshot, low-to-high: Pomme, Minecraft (JAR then index),
+    /// selections. No installation is needed to open the embedded bootstrap
+    /// stack.
+    pub(crate) fn source_descriptors(&self) -> Result<Vec<ResourcePackDescriptor>, ResourceError> {
+        let mut sources = vec![ResourcePackDescriptor {
+            storage: vec![PackStorage::Embedded],
+            origin: ResourceOrigin {
+                pack_id: self.embedded_pack_id.clone(),
+                name: "Pomme embedded assets".to_owned(),
+            },
+            filter: Default::default(),
+        }];
+        if let Some(installed) = &self.installed_resources {
+            let mut storage = vec![PackStorage::Zip(self.client_jar.clone())];
+            if let Some(index) = &installed.index {
+                storage.push(PackStorage::Indexed(index.clone()));
+            }
+            sources.push(ResourcePackDescriptor {
+                storage,
+                origin: ResourceOrigin {
+                    pack_id: self.builtin_pack_id().clone(),
+                    name: "Minecraft built-in assets".to_owned(),
+                },
+                filter: Default::default(),
+            });
+        }
+        sources.extend(self.active_pack_descriptors()?);
+        Ok(sources)
     }
 
     /// The recognized built-in pack, even before its storage is

@@ -10,6 +10,7 @@ use crate::assets::{AssetIndex, identifier_chars};
 use crate::resource_pack::PackId;
 
 mod directory;
+pub(crate) mod embedded;
 mod indexed;
 mod zip;
 
@@ -23,6 +24,7 @@ pub(crate) enum PackStorage {
     Directory(PathBuf),
     Zip(PathBuf),
     Indexed(AssetIndex),
+    Embedded,
 }
 
 /// One logical pack, with zero or more physical layers in low-to-high order.
@@ -54,6 +56,7 @@ impl ResourcePackDescriptor {
                     PackStorage::Indexed(index) => {
                         Rc::new(IndexedPackResources::open(index, origin)?)
                     }
+                    PackStorage::Embedded => Rc::new(embedded::EmbeddedPackResources::new(origin)),
                 };
                 Ok(source)
             })
@@ -83,7 +86,7 @@ pub(crate) struct ResourceOrigin {
 /// Filesystem adapters must check resolved storage paths at lookup and open.
 /// Current adapters access the assets tree; other resource domains are not
 /// wired. Access failures must not become absence or empty results.
-/// Threading requirements remain undecided.
+/// Providers and resource acquisition stay on the application thread.
 pub(crate) trait PackResources {
     fn origin(&self) -> &ResourceOrigin;
 

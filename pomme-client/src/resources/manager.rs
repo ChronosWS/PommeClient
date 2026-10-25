@@ -1,50 +1,41 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 use std::rc::Rc;
 
-use super::pack_resource::{
-    OpenedResourcePack, PackStorage, ResourceOrigin, ResourcePackDescriptor, validate_query,
-};
+use super::pack_resource::{OpenedResourcePack, ResourcePackDescriptor, validate_query};
 use super::resource::{Resource, ResourceError, ResourceId};
-use crate::assets::AssetIndex;
-use crate::resource_pack::PackId;
 
-pub(crate) struct BuiltinResources<'a> {
-    pub(crate) pack_id: &'a PackId,
-    pub(crate) client_jar: &'a Path,
-    pub(crate) asset_index: Option<&'a AssetIndex>,
-}
-
-/// Fixed selected-pack view; input order is low-to-high priority.
+/// App-lifetime owner of the active source stack, ordered low-to-high priority.
 /// Pack discovery and selection belong to the caller.
 pub(crate) struct ResourceManager {
     packs: Vec<OpenedResourcePack>,
 }
 
 impl ResourceManager {
-    /// Built-in layers below selected packs, ordered JAR then external index.
-    /// Selected descriptors retain the caller's low-to-high order.
-    pub(crate) fn from_packs(
-        builtin_resources: BuiltinResources<'_>,
-        selected_resource_packs: impl IntoIterator<Item = ResourcePackDescriptor>,
+    pub(crate) fn new(
+        sources: impl IntoIterator<Item = ResourcePackDescriptor>,
     ) -> Result<Self, ResourceError> {
-        let mut storage = vec![PackStorage::Zip(builtin_resources.client_jar.to_path_buf())];
-        if let Some(index) = builtin_resources.asset_index {
-            storage.push(PackStorage::Indexed(index.clone()));
-        }
-        let builtin = ResourcePackDescriptor {
-            storage,
-            origin: ResourceOrigin {
-                pack_id: builtin_resources.pack_id.clone(),
-                name: "Minecraft built-in assets".to_owned(),
-            },
-            filter: Default::default(),
-        };
-        let packs = std::iter::once(builtin)
-            .chain(selected_resource_packs)
+        let packs = sources
+            .into_iter()
             .map(ResourcePackDescriptor::open)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { packs })
+    }
+
+    /// Open every candidate before activation; failure preserves the active
+    /// sources and skips the callback. Existing handles retain old providers,
+    /// not immutable filesystem bytes. Consumer failures do not roll back.
+    pub(crate) fn reload(
+        &mut self,
+        sources: impl IntoIterator<Item = ResourcePackDescriptor>,
+        rebuild: impl FnOnce(&Self),
+    ) -> Result<(), ResourceError> {
+        let candidate = Self::new(sources)?;
+        self.packs = candidate.packs;
+        // Vanilla stores PreparableReloadListener objects and coordinates async
+        // prepare/apply. Pomme supplies a synchronous callback so consumers stay
+        // app-owned without ownership cycles.
+        rebuild(self);
+        Ok(())
     }
 
     pub(crate) fn namespaces(&self) -> Result<BTreeSet<String>, ResourceError> {

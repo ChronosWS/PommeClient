@@ -772,12 +772,15 @@ pub struct MainMenu {
     menu_open_time: Option<Instant>,
     last_favicon_count: usize,
     favicon_dirty_since: Option<Instant>,
+    /// The selected packs; a failed reload can leave the active sources
+    /// unchanged.
     pub active_packs: Vec<crate::resource_pack::PackInfo>,
     pub available_packs: Vec<crate::resource_pack::PackInfo>,
     pub packs_dir: PathBuf,
     pub pack_toggle: Option<(crate::resource_pack::PackId, bool)>,
     pub rescan_packs: bool,
     pub reload_assets: bool,
+    pub resource_reload_failed: bool,
     /// Set by a Font Settings toggle, applied by `AppCore::apply_font_options`.
     pub reload_fonts: bool,
     pack_search: TextFieldState,
@@ -933,6 +936,7 @@ impl MainMenu {
             pack_toggle: None,
             rescan_packs: false,
             reload_assets: false,
+            resource_reload_failed: false,
             reload_fonts: false,
             pack_search: TextFieldState::new(MAX_SEARCH),
         };

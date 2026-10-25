@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::rc::Rc;
 use std::{fmt, io};
 
@@ -67,6 +68,8 @@ impl fmt::Debug for ResourceId {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ResourceError {
+    #[error("missing resource: {0}")]
+    Missing(ResourceId),
     #[error("invalid resource identifier: {0}")]
     InvalidId(String),
     #[error("invalid resource enumeration namespace/prefix: {namespace:?}/{prefix:?}")]
@@ -120,6 +123,33 @@ impl ResourceContent {
                 origin: self.origin.clone(),
                 source,
             })
+    }
+
+    /// Reopens this content and reads at most one byte past the limit to
+    /// detect oversized input, retaining ID/origin context on read errors.
+    pub(crate) fn read_bytes(&self, limit: usize) -> Result<Vec<u8>, ResourceError> {
+        let mut bytes = Vec::new();
+        let result = self
+            .open()?
+            .take((limit as u64).saturating_add(1))
+            .read_to_end(&mut bytes);
+        let result = result.and_then(|_| {
+            if bytes.len() > limit {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "resource exceeds byte limit",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        result.map_err(|source| ResourceError::Io {
+            operation: "read resource",
+            id: Some(self.id.clone()),
+            origin: self.origin.clone(),
+            source,
+        })?;
+        Ok(bytes)
     }
 }
 

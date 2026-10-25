@@ -1,11 +1,12 @@
 //! Resource bytes, independent of particles, render assets and the GPU.
-//! Lists font definitions and locates bitmap-font textures; other consumers
-//! remain legacy. Current adapters access assets; server-data domains are not
+//! Supplies Pomme UI assets and Minecraft fonts; other consumers remain
+//! legacy. Current adapters access assets; server-data domains are not
 //! implemented.
 //!
 //! Discovery, selection, downloads and legacy extraction belong to the caller.
 //! Root pack.mcmeta belongs to pack management; resource sidecars stay here.
-//! Source priority: selected packs above the optional external index above JAR.
+//! Source priority: selected packs above the optional external index above JAR
+//! above embedded Pomme resources. Bootstrap needs only the embedded pack.
 //! Built-ins are separate layers of one pack, not a composite source.
 //! Filters apply between logical packs, not within their physical layers.
 //! Overlays belong in source composition, not loaders. This layer
@@ -14,7 +15,8 @@
 //! A manager fixes source order, not filesystem contents. Handles outlive it
 //! and pin a source or pathname, not immutable bytes; reopening may change or
 //! fail. Sources must retain required storage leases. Streams close on drop.
-//! Atomic reload is not guaranteed; threading requirements remain undecided.
+//! Reload opens candidates before activation, then rebuilds consumers
+//! synchronously. Providers and their handles remain on the application thread.
 
 mod filter;
 mod installed_format;
@@ -25,21 +27,21 @@ mod resource;
 
 pub(crate) use filter::{ResourceFilter, ResourceFilterSpec};
 pub(crate) use installed_format::read_installed_pack_format;
-pub(crate) use manager::{BuiltinResources, ResourceManager};
+pub(crate) use manager::ResourceManager;
 pub(crate) use pack_format::{PackFormat, PackFormatRange, parse_resource_pack_range};
+pub(crate) use pack_resource::embedded::{POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT};
 pub(crate) use pack_resource::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
 pub(crate) use resource::{ResourceContent, ResourceError, ResourceId};
 
 /// Uncalled, typechecked consumer contract; selection supplies the sources.
 fn consumer_contract(
-    builtin: BuiltinResources<'_>,
-    selected_low_to_high: Vec<ResourcePackDescriptor>,
+    sources_low_to_high: Vec<ResourcePackDescriptor>,
     requested: &str,
     prefix: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Read;
 
-    let manager = ResourceManager::from_packs(builtin, selected_low_to_high)?;
+    let manager = ResourceManager::new(sources_low_to_high)?;
     let id = ResourceId::new(requested)?;
     let winner = manager.get_resource(&id)?;
     let _stack_low_to_high = manager.get_resource_stack(&id)?;

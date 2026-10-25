@@ -4,13 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, packing, rhi, shader, util};
+use crate::resources::{
+    POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT, ResourceError, ResourceId, ResourceManager,
+};
 use crate::ui::font::{FontSources, GLYPH_ATLAS_SIZE, GlyphAtlasPixels, GlyphInfo, GlyphMap};
 use crate::ui::text::{InlineObject, PREFIX_CODE, TextSpan, font_spans};
 
-const FONT_BYTES: &[u8] = include_bytes!("../fonts/Montserrat-Medium.ttf");
-const ICON_FONT_BYTES: &[u8] = include_bytes!("../fonts/fa-solid-900.ttf");
 const ATLAS_SIZE: u32 = 512;
 const RASTER_PX: f32 = 48.0;
+const POMME_LOGO_SIZE: u32 = 256;
 
 /// menu_overlay.frag's texture slots: slot `n` binds its texture at `n` and
 /// its sampler at `TEXTURE_SLOTS + n`.
@@ -161,11 +163,35 @@ struct FontAtlas {
     glyphs: HashMap<char, GlyphEntry>,
 }
 
-fn build_font_atlas() -> (FontAtlas, AtlasImage) {
-    let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
-        .expect("failed to parse Montserrat font");
-    let icon_font = fontdue::Font::from_bytes(ICON_FONT_BYTES, fontdue::FontSettings::default())
-        .expect("failed to parse Font Awesome font");
+fn pomme_bytes(resources: &ResourceManager, name: &str) -> Result<Vec<u8>, String> {
+    ResourceId::new(name)
+        .and_then(|id| {
+            resources
+                .get_resource(&id)?
+                .ok_or(ResourceError::Missing(id))?
+                .content()
+                .read_bytes(32 * 1024 * 1024)
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn load_pomme_logo(resources: &ResourceManager) -> Result<Vec<u8>, String> {
+    let bytes = pomme_bytes(resources, POMME_ICON)?;
+    let img = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
+    Ok(downscale_straight_alpha(&img.to_rgba8(), POMME_LOGO_SIZE, POMME_LOGO_SIZE).into_raw())
+}
+
+fn build_font_atlas(resources: &ResourceManager) -> Result<(FontAtlas, AtlasImage), String> {
+    let font = fontdue::Font::from_bytes(
+        pomme_bytes(resources, POMME_UI_FONT)?,
+        fontdue::FontSettings::default(),
+    )
+    .map_err(|error| format!("failed to parse UI font: {error}"))?;
+    let icon_font = fontdue::Font::from_bytes(
+        pomme_bytes(resources, POMME_ICONS_FONT)?,
+        fontdue::FontSettings::default(),
+    )
+    .map_err(|error| format!("failed to parse icon font: {error}"))?;
 
     let mut glyphs = HashMap::new();
     let mut pixels = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize];
@@ -243,14 +269,14 @@ fn build_font_atlas() -> (FontAtlas, AtlasImage) {
         cursor_x += metrics.width as u32 + 1;
     }
 
-    (
+    Ok((
         FontAtlas { glyphs },
         AtlasImage {
             pixels,
             width: ATLAS_SIZE,
             height: ATLAS_SIZE,
         },
-    )
+    ))
 }
 
 /// Extract an 8x8 RGBA player face (front face at (8,8) with the hat layer at
@@ -352,7 +378,9 @@ struct MenuMesh {
 /// measurement, and vertex building.
 pub struct MenuGeometry {
     atlas: FontAtlas,
+    pomme_logo: Vec<u8>,
     sprite_atlas: SpriteAtlas,
+    sprite_pixels: AtlasImage,
     mc_glyph_map: Option<GlyphMap>,
     obfuscation_rng: ObfuscationRng,
     favicon_regions: std::collections::HashMap<String, [f32; 4]>,
@@ -368,12 +396,14 @@ impl MenuGeometry {
         font_sources: FontSources<'_>,
         bedrock_ui_dir: Option<&Path>,
         font_layer_limit: u32,
-    ) -> (Self, MenuAtlases) {
-        let (atlas, font) = build_font_atlas();
+    ) -> Result<(Self, MenuAtlases), String> {
+        let (atlas, font) = build_font_atlas(font_sources.resources)?;
+        let pomme_logo = load_pomme_logo(font_sources.resources)?;
         let (sprite_atlas, sprites) = build_sprite_atlas(
             font_sources.jar_assets_dir,
             font_sources.asset_index,
             bedrock_ui_dir,
+            &pomme_logo,
         );
         let (mc_glyph_map, glyphs) = match GlyphMap::load(font_sources, font_layer_limit) {
             Ok((map, pixels)) => (Some(map), Some(pixels)),
@@ -392,7 +422,13 @@ impl MenuGeometry {
 
         let geometry = Self {
             atlas,
+            pomme_logo,
             sprite_atlas,
+            sprite_pixels: AtlasImage {
+                pixels: sprites.pixels.clone(),
+                width: sprites.width,
+                height: sprites.height,
+            },
             mc_glyph_map,
             obfuscation_rng: ObfuscationRng::new(obfuscation_seed),
             favicon_regions: std::collections::HashMap::new(),
@@ -406,7 +442,7 @@ impl MenuGeometry {
             glyphs,
             camera_overlay,
         };
-        (geometry, atlases)
+        Ok((geometry, atlases))
     }
 
     /// Builds the vertices and draw batches for `elements`.
@@ -1524,7 +1560,8 @@ impl MenuOverlayPipeline {
         bedrock_ui_dir: Option<&Path>,
         font_layer_limit: u32,
     ) -> Result<Self, String> {
-        let (geometry, atlases) = MenuGeometry::new(font_sources, bedrock_ui_dir, font_layer_limit);
+        let (geometry, atlases) =
+            MenuGeometry::new(font_sources, bedrock_ui_dir, font_layer_limit)?;
 
         let globals_layout =
             rhi::backend::create_bind_group_layout(device, util::VERTEX_FRAGMENT_UNIFORM);
@@ -1664,6 +1701,88 @@ impl MenuOverlayPipeline {
             overlay,
             underwater,
         })
+    }
+
+    /// Prepare both managed Pomme assets before replacing any live bindings.
+    pub fn reload_pomme_assets(
+        &mut self,
+        device: &rhi::backend::Device,
+        resources: &ResourceManager,
+    ) -> Result<(), String> {
+        let (atlas, font_pixels) = build_font_atlas(resources)?;
+        let pomme_logo = load_pomme_logo(resources)?;
+        let cached = &self.geometry.sprite_pixels;
+        let region = self
+            .geometry
+            .sprite_atlas
+            .regions
+            .get(&SpriteId::PommeLogo)
+            .ok_or("Pomme logo region is missing")?;
+        let x = (region.u0 * cached.width as f32).round() as u32;
+        let y = (region.v0 * cached.height as f32).round() as u32;
+        if cached.width != self.geometry.sprite_atlas.size
+            || cached.height != self.geometry.sprite_atlas.size
+            || cached.pixels.len() != cached.width as usize * cached.height as usize * 4
+            || pomme_logo.len() != (POMME_LOGO_SIZE * POMME_LOGO_SIZE * 4) as usize
+            || region.src_w != POMME_LOGO_SIZE as f32
+            || region.src_h != POMME_LOGO_SIZE as f32
+            || ((region.u1 - region.u0) * cached.width as f32).round() != POMME_LOGO_SIZE as f32
+            || ((region.v1 - region.v0) * cached.height as f32).round() != POMME_LOGO_SIZE as f32
+            || x.checked_add(POMME_LOGO_SIZE)
+                .is_none_or(|end| end > cached.width)
+            || y.checked_add(POMME_LOGO_SIZE)
+                .is_none_or(|end| end > cached.height)
+        {
+            return Err("Pomme logo region does not match the retained sprite bitmap".into());
+        }
+        let mut sprites = AtlasImage {
+            pixels: cached.pixels.clone(),
+            width: cached.width,
+            height: cached.height,
+        };
+        blit_image(
+            &mut sprites.pixels,
+            sprites.width,
+            &pomme_logo,
+            POMME_LOGO_SIZE,
+            x,
+            y,
+            POMME_LOGO_SIZE,
+            POMME_LOGO_SIZE,
+        );
+
+        device.wait_idle();
+        let font = create_ui_texture(
+            device,
+            &font_pixels,
+            rhi::TextureFormat::Rgba8Unorm,
+            "pomme_font_reload",
+        )?;
+        let sprite = match create_ui_texture(
+            device,
+            &sprites,
+            rhi::TextureFormat::Rgba8UnormSrgb,
+            "sprite_reload",
+        ) {
+            Ok(sprite) => sprite,
+            Err(error) => {
+                font.destroy(device);
+                return Err(error);
+            }
+        };
+        let old_font = self.font.texture.handle();
+        self.tex_slots[0] = (font.handle(), self.font.sampler);
+        self.tex_slots[1] = (sprite.handle(), self.sprite.sampler);
+        if self.tex_slots[4].0 == old_font {
+            self.tex_slots[4].0 = font.handle();
+        }
+        self.rebind_textures(device);
+        std::mem::replace(&mut self.font.texture, font).destroy(device);
+        std::mem::replace(&mut self.sprite.texture, sprite).destroy(device);
+        self.geometry.atlas = atlas;
+        self.geometry.pomme_logo = pomme_logo;
+        self.geometry.sprite_pixels = sprites;
+        Ok(())
     }
 
     /// Rebuilds the glyph atlases from the current pack stack. Call with the
@@ -1848,13 +1967,18 @@ impl MenuOverlayPipeline {
         asset_index: &Option<AssetIndex>,
         bedrock_ui_dir: Option<&Path>,
     ) {
-        let (atlas, sprites) = build_sprite_atlas(jar_assets_dir, asset_index, bedrock_ui_dir);
+        let (atlas, sprites) = build_sprite_atlas(
+            jar_assets_dir,
+            asset_index,
+            bedrock_ui_dir,
+            &self.geometry.pomme_logo,
+        );
         device.wait_idle();
-        std::mem::replace(&mut self.sprite.texture, sprite_texture(device, &sprites))
-            .destroy(device);
+        let texture = sprite_texture(device, &sprites);
+        self.set_texture(device, 1, texture.handle(), self.sprite.sampler);
+        std::mem::replace(&mut self.sprite.texture, texture).destroy(device);
         self.geometry.sprite_atlas = atlas;
-        let (texture, sampler) = self.sprite.slot();
-        self.set_texture(device, 1, texture, sampler);
+        self.geometry.sprite_pixels = sprites;
     }
 
     pub fn update_favicon_atlas(
@@ -2522,6 +2646,7 @@ struct SpriteRegion {
 
 struct SpriteAtlas {
     regions: HashMap<SpriteId, SpriteRegion>,
+    size: u32,
 }
 
 const INV_TEX_W: u32 = 176;
@@ -2640,6 +2765,7 @@ fn build_sprite_atlas(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     bedrock_ui_dir: Option<&Path>,
+    pomme_logo: &[u8],
 ) -> (SpriteAtlas, AtlasImage) {
     let sprites: &[(SpriteId, &str, f32)] = &[
         (
@@ -3931,20 +4057,13 @@ fn build_sprite_atlas(
     // 176 at 1080p, 264 at 1440p, 396 at 4K on the default auto scale. The
     // atlas sampler is NEAREST, so 256 is the size that straddles that range
     // with the least resampling either way.
-    const POMME_LOGO_SIZE: u32 = 256;
-    match image::load_from_memory(crate::assets::POMME_ICON_PNG) {
-        Ok(img) => {
-            images.push((
-                SpriteId::PommeLogo,
-                downscale_straight_alpha(&img.to_rgba8(), POMME_LOGO_SIZE, POMME_LOGO_SIZE)
-                    .into_raw(),
-                POMME_LOGO_SIZE,
-                POMME_LOGO_SIZE,
-                0.0,
-            ));
-        }
-        Err(e) => tracing::warn!("Failed to load pomme logo: {e}"),
-    }
+    images.push((
+        SpriteId::PommeLogo,
+        pomme_logo.to_vec(),
+        POMME_LOGO_SIZE,
+        POMME_LOGO_SIZE,
+        0.0,
+    ));
 
     // The Bedrock title draws at 55% of the screen width, 1056 px at 1080p, so
     // 1024 keeps the NEAREST sampler close to 1:1 there.
@@ -4029,7 +4148,10 @@ fn build_sprite_atlas(
     // the staging buffer's length, so `pixels` has to stay sized off the packed
     // `atlas_size` above; feeding the upload a size of its own would read past it.
     (
-        SpriteAtlas { regions },
+        SpriteAtlas {
+            regions,
+            size: atlas_size,
+        },
         AtlasImage {
             pixels,
             width: atlas_size,
@@ -4181,6 +4303,46 @@ fn create_font_texture(
     });
     if let Err(error) = uploaded {
         destroy_texture_resources(device, &mut texture);
+        return Err(error);
+    }
+    Ok(texture)
+}
+
+/// Upload a fresh ordinary 2D image, retaining the caller's sampler ownership.
+fn create_ui_texture(
+    device: &rhi::backend::Device,
+    image: &AtlasImage,
+    format: rhi::TextureFormat,
+    name: &str,
+) -> Result<rhi::backend::Texture, String> {
+    let desc = rhi::TextureDesc {
+        format,
+        ..util::sampled_texture_desc(name, image.width, image.height)
+    };
+    let texture = rhi::backend::Texture::try_new(device, &desc)?;
+    let uploaded = rhi::backend::Buffer::try_with_data(
+        device,
+        name,
+        &image.pixels,
+        rhi::BufferUsages::COPY_SRC,
+    )
+    .and_then(|staging| {
+        let result = util::upload_image_array(
+            device,
+            staging.handle(),
+            texture.handle(),
+            util::ImageArrayExtent {
+                width: image.width,
+                height: image.height,
+                layers: 1,
+            },
+            format.texel_size().into(),
+        );
+        staging.destroy(device);
+        result
+    });
+    if let Err(error) = uploaded {
+        texture.destroy(device);
         return Err(error);
     }
     Ok(texture)

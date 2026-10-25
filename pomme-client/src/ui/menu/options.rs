@@ -1779,7 +1779,12 @@ impl MainMenu {
         elements.push(MenuElement::Text {
             x: right_x + list_w / 2.0,
             y: list_top + (label_h - fs) / 2.0,
-            text: "Selected".into(),
+            text: if self.resource_reload_failed {
+                "Selected (reload failed)"
+            } else {
+                "Selected"
+            }
+            .into(),
             scale: fs,
             color: WHITE,
             centered: true,
