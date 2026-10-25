@@ -58,14 +58,8 @@ impl CpuMeshAssets {
             Colormaps::load(resources),
         ));
         let (texture_names, generated_item_textures) = atlas_texture_names(&render_assets);
-        let uv_map = TextureAtlas::build_cpu(
-            jar_assets_dir,
-            &asset_index,
-            &texture_names,
-            &generated_item_textures,
-            None,
-        )
-        .uv_map;
+        let uv_map =
+            TextureAtlas::build_cpu(resources, &texture_names, &generated_item_textures).uv_map;
         Self {
             render_assets,
             uv_map,

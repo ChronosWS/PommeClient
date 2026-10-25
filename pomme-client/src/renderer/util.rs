@@ -264,11 +264,31 @@ pub fn transition_image_to_shader_read(
 
 pub fn load_png(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
     let file = std::fs::File::open(path).ok()?;
-    let mut decoder = png::Decoder::new(file);
+    load_png_reader(file, usize::MAX)
+        .map_err(|error| tracing::warn!(path = %path.display(), %error, "Invalid PNG"))
+        .ok()
+}
+
+/// The legacy PNG transforms and RGBA conversion, shared by path and managed
+/// content callers. The limit bounds both the output buffer and RGBA pixels;
+/// the decoder retains png's default internal allocation limit (64 MiB).
+pub(crate) fn load_png_reader(
+    input: impl std::io::Read,
+    max_decoded_bytes: usize,
+) -> Result<(Vec<u8>, u32, u32), Box<dyn std::error::Error>> {
+    let mut decoder = png::Decoder::new(input);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
+    let mut reader = decoder.read_info()?;
+    let header = reader.info();
+    let rgba_bytes = (header.width as usize)
+        .checked_mul(header.height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or("PNG dimensions overflow RGBA buffer size")?;
+    if rgba_bytes > max_decoded_bytes || reader.output_buffer_size() > max_decoded_bytes {
+        return Err("PNG exceeds decoded byte limit".into());
+    }
     let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).ok()?;
+    let info = reader.next_frame(&mut buf)?;
 
     let data = match info.color_type {
         png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
@@ -298,12 +318,11 @@ pub fn load_png(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
             rgba
         }
         other => {
-            tracing::warn!("Unsupported PNG color type {other:?}: {}", path.display());
-            return None;
+            return Err(format!("unsupported PNG color type {other:?}").into());
         }
     };
 
-    Some((data, info.width, info.height))
+    Ok((data, info.width, info.height))
 }
 
 /// Uploads an image whose mip levels are all present in the staging buffer,

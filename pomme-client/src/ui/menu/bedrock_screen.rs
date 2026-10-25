@@ -24,9 +24,6 @@ const TITLE_PANEL_RATIO: f32 = 0.1885;
 const TITLE_OFFSET: f32 = 0.10;
 /// `title.png` is 1937x333, drawn at its own ratio inside the panel.
 const TITLE_ASPECT: f32 = 333.0 / 1937.0;
-/// `splash_text`, from the title panel's right middle.
-const SPLASH_OFFSET: (f32, f32) = (-8.0, 10.0);
-
 /// `main_buttons_panel` of `stacked_row`s, each holding a `main_button` 1
 /// unit in from every edge.
 const COLUMN_W: f32 = 150.0;
@@ -426,16 +423,6 @@ impl MainMenu {
             logo_h * gs,
         ];
         push_image(&mut elements, logo, SpriteId::BedrockTitle, WHITE);
-        self.push_splash(
-            &mut elements,
-            (
-                (px + pw + SPLASH_OFFSET.0) * gs,
-                (py + ph / 2.0 + SPLASH_OFFSET.1) * gs,
-            ),
-            gs,
-            &text_width_fn,
-            false,
-        );
 
         let mut buttons = Buttons {
             elements: &mut elements,

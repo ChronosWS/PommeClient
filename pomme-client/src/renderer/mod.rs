@@ -357,11 +357,9 @@ impl Renderer {
             chunk::atlas::atlas_texture_names(&render_assets);
         let atlas = TextureAtlas::build(
             &ctx.device,
-            jar_assets_dir,
-            asset_index,
+            resources,
             &texture_names,
             &generated_item_textures,
-            None,
         )
         .map_err(RendererError::Atlas)?;
 
@@ -1208,18 +1206,16 @@ impl Renderer {
         ));
 
         self.item_entity_pipeline.clear_meshes(&self.ctx.device);
-        self.atlas.destroy(&self.ctx.device);
         let (texture_names, generated_item_textures) =
             chunk::atlas::atlas_texture_names(&self.render_assets);
-        self.atlas = TextureAtlas::build(
+        let replacement = TextureAtlas::build(
             &self.ctx.device,
-            &self.jar_assets_dir,
-            &self.asset_index,
+            resources,
             &texture_names,
             &generated_item_textures,
-            Some(packs),
         )
         .expect("failed to rebuild atlas");
+        let mut old_atlas = std::mem::replace(&mut self.atlas, replacement);
 
         self.chunk_pipeline
             .rebind_atlas(&self.ctx.device, &self.atlas);
@@ -1231,6 +1227,7 @@ impl Renderer {
             .rebind_atlas(&self.ctx.device, &self.atlas);
         self.particle_pipeline
             .rebind_atlas(&self.ctx.device, &self.atlas);
+        old_atlas.destroy(&self.ctx.device);
         self.entity_renderer
             .reload_mob_textures(&self.ctx.device, resources);
         self.entity_renderer.reload_armor_assets(
