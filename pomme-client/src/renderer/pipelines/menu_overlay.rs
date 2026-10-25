@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, packing, rhi, shader, util};
 use crate::resources::{
     POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT, ResourceError, ResourceId, ResourceManager,
@@ -408,7 +407,7 @@ impl MenuGeometry {
             }
         };
         let (camera_overlay, overlay_vignette_uv, overlay_pumpkin_uv) =
-            build_camera_overlay_texture(font_sources.jar_assets_dir, font_sources.asset_index);
+            build_camera_overlay_texture(font_sources.resources);
 
         let obfuscation_seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1638,13 +1637,13 @@ impl MenuOverlayPipeline {
             sampler: rhi::backend::create_sampler(device, &rhi::SamplerDesc::LINEAR),
         };
 
-        let (pixels, w, h) = load_overlay_rgba(
-            font_sources.jar_assets_dir,
-            font_sources.asset_index,
-            "minecraft/textures/misc/underwater.png",
-        );
         let underwater = TextureResources {
-            texture: util::create_sampled_texture(device, "underwater_overlay", &pixels, w, h),
+            texture: load_single_texture(
+                device,
+                font_sources.resources,
+                "minecraft/textures/misc/underwater.png",
+                "underwater_overlay",
+            ),
             // Repeat wrapping: the overlay tiles 4x and scrolls with the look
             // direction.
             sampler: rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST_REPEAT),
@@ -1740,6 +1739,36 @@ impl MenuOverlayPipeline {
         self.geometry.pomme_logo = pomme_logo;
         self.geometry.sprite_atlas = sprite_atlas;
         Ok(())
+    }
+
+    /// Replace camera textures and their CPU UVs together, retaining samplers.
+    pub fn reload_camera_overlays(
+        &mut self,
+        device: &rhi::backend::Device,
+        resources: &ResourceManager,
+    ) {
+        let (pixels, vignette_uv, pumpkin_uv) = build_camera_overlay_texture(resources);
+        device.wait_idle();
+        let overlay = util::create_sampled_texture(
+            device,
+            "camera_overlay",
+            &pixels.pixels,
+            pixels.width,
+            pixels.height,
+        );
+        let underwater = load_single_texture(
+            device,
+            resources,
+            "minecraft/textures/misc/underwater.png",
+            "underwater_overlay",
+        );
+        self.tex_slots[6] = (overlay.handle(), self.overlay.sampler);
+        self.tex_slots[7] = (underwater.handle(), self.underwater.sampler);
+        self.rebind_textures(device);
+        std::mem::replace(&mut self.overlay.texture, overlay).destroy(device);
+        std::mem::replace(&mut self.underwater.texture, underwater).destroy(device);
+        self.geometry.overlay_vignette_uv = vignette_uv;
+        self.geometry.overlay_pumpkin_uv = pumpkin_uv;
     }
 
     /// Rebuilds the glyph atlases from the current pack stack. Call with the
@@ -3934,19 +3963,7 @@ fn build_sprite_atlas(
             16,
         ),
     ] {
-        // The portal camera overlay shares this allocation, but remains a
-        // legacy consumer until the camera-overlay category is migrated.
-        let image = if id == SpriteId::NetherPortal {
-            crate::assets::load_image(&resolve_asset_path(
-                font_sources.jar_assets_dir,
-                font_sources.asset_index,
-                path,
-            ))
-            .map_err(|error| error.to_string())
-        } else {
-            load_gui_sprite(font_sources.resources, path)
-        };
-        match image {
+        match load_gui_sprite(font_sources.resources, path) {
             Ok(img) => {
                 let rgba = img.to_rgba8();
                 let (src_x, src_y) = src;
@@ -4135,13 +4152,8 @@ fn build_sprite_atlas(
     )
 }
 
-fn load_overlay_rgba(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    asset_key: &str,
-) -> (Vec<u8>, u32, u32) {
-    let path = resolve_asset_path(jar_assets_dir, asset_index, asset_key);
-    match crate::assets::load_image(&path) {
+fn load_overlay_rgba(resources: &ResourceManager, asset_key: &str) -> (Vec<u8>, u32, u32) {
+    match load_gui_sprite(resources, asset_key) {
         Ok(img) => {
             let rgba = img.to_rgba8();
             let (w, h) = (rgba.width(), rgba.height());
@@ -4157,20 +4169,9 @@ fn load_overlay_rgba(
 /// Compose the full-screen camera overlay textures (vignette + pumpkin blur)
 /// side by side into one linear-sampled image. Returns the image and each
 /// half's UV rect, inset half a texel so filtering never crosses the seam.
-fn build_camera_overlay_texture(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-) -> (AtlasImage, [f32; 4], [f32; 4]) {
-    let (vig, vw, vh) = load_overlay_rgba(
-        jar_assets_dir,
-        asset_index,
-        "minecraft/textures/misc/vignette.png",
-    );
-    let (pump, pw, ph) = load_overlay_rgba(
-        jar_assets_dir,
-        asset_index,
-        "minecraft/textures/misc/pumpkinblur.png",
-    );
+fn build_camera_overlay_texture(resources: &ResourceManager) -> (AtlasImage, [f32; 4], [f32; 4]) {
+    let (vig, vw, vh) = load_overlay_rgba(resources, "minecraft/textures/misc/vignette.png");
+    let (pump, pw, ph) = load_overlay_rgba(resources, "minecraft/textures/misc/pumpkinblur.png");
 
     let w = vw + pw;
     let h = vh.max(ph);
@@ -4200,6 +4201,16 @@ fn build_camera_overlay_texture(
         vignette_uv,
         pumpkin_uv,
     )
+}
+
+fn load_single_texture(
+    device: &rhi::backend::Device,
+    resources: &ResourceManager,
+    asset_key: &str,
+    name: &str,
+) -> rhi::backend::Texture {
+    let (pixels, w, h) = load_overlay_rgba(resources, asset_key);
+    util::create_sampled_texture(device, name, &pixels, w, h)
 }
 
 struct FontTextureUpload<'a> {

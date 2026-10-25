@@ -1273,6 +1273,8 @@ impl Renderer {
         ) {
             tracing::warn!("Keeping previous GUI/HUD assets after reload failure: {error}");
         }
+        self.menu_pipeline
+            .reload_camera_overlays(&self.ctx.device, resources);
 
         warm_item_meshes(
             &self.ctx.device,
