@@ -1,14 +1,18 @@
-use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::{fmt, io};
 
 use super::pack_resource::{ReadStream, ResourceOrigin, SharedPackResources};
 use crate::assets::{AssetId, identifier_chars, valid_asset_key};
 
 /// Owned key checked against the asset-key grammar, including namespace.
-/// Paths include category and extension. Canonical ordering is not priority.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct ResourceId(String);
+/// Paths include category and extension. Deterministic namespace-then-path
+/// ordering does not imply resource-pack priority.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ResourceId {
+    namespace: String,
+    path: String,
+}
 
 impl ResourceId {
     pub(crate) fn new(value: &str) -> Result<Self, ResourceError> {
@@ -19,11 +23,45 @@ impl ResourceId {
         {
             return Err(ResourceError::InvalidId(value.to_owned()));
         }
-        Ok(Self(id.canonical()))
+        Ok(Self {
+            namespace: id.namespace.to_owned(),
+            path: id.path.to_owned(),
+        })
+    }
+
+    pub(crate) fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Omits only the default `minecraft` namespace.
+    pub(crate) fn to_short_string(&self) -> String {
+        self.as_asset_id().canonical()
     }
 
     pub(crate) fn as_asset_id(&self) -> AssetId<'_> {
-        AssetId::parse(&self.0)
+        AssetId {
+            namespace: self.namespace(),
+            path: self.path(),
+        }
+    }
+}
+
+/// The full identifier always includes its namespace.
+impl fmt::Display for ResourceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.namespace, self.path)
+    }
+}
+
+impl fmt::Debug for ResourceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ResourceId")
+            .field(&self.to_short_string())
+            .finish()
     }
 }
 

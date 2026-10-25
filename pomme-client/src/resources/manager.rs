@@ -99,8 +99,10 @@ impl ResourceManager {
         unimplemented!("interface only: ordered stack; metadata policy still open")
     }
 
-    /// Validated recursive query as defined by PackResources, with canonical-ID
-    /// ordering and one winner per ID using get_resource's metadata policy.
+    /// Validated recursive query as defined by PackResources, with
+    /// deterministic namespace-then-path ordering (not resource-pack
+    /// priority) and one winner per ID using get_resource's metadata
+    /// policy.
     pub(crate) fn list_resources(
         &self,
         namespace: &str,
@@ -110,7 +112,8 @@ impl ResourceManager {
         unimplemented!("interface only: enumerate and resolve winners")
     }
 
-    /// Recursive query: canonical-ID keys and nonempty low-to-high stacks.
+    /// Recursive query: keys in deterministic namespace-then-path order (not
+    /// resource-pack priority) and nonempty low-to-high stacks.
     /// Shares get_resource_stack's unresolved metadata policy.
     pub(crate) fn list_resource_stacks(
         &self,
