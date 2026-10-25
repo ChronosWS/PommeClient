@@ -407,8 +407,7 @@ impl Renderer {
         let cloud_pipeline = CloudPipeline::new(
             &ctx.device,
             swapchain_state.targets(),
-            jar_assets_dir,
-            asset_index,
+            resources,
         );
 
         let panorama_pipeline = PanoramaPipeline::new(
@@ -1278,6 +1277,7 @@ impl Renderer {
         self.menu_pipeline
             .reload_camera_overlays(&self.ctx.device, resources);
         self.reload_panorama_resources(resources);
+        self.cloud_pipeline.reload_resources(resources);
 
         warm_item_meshes(
             &self.ctx.device,

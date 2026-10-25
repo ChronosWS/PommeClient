@@ -1,10 +1,10 @@
-use std::path::Path;
-
-use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::renderer::camera::{Camera, CameraUniform, CloudMode, MIN_FAR};
 use crate::renderer::pipelines::sky::SkyState;
 use crate::renderer::rhi::{self, VertexFormat};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, shader, util};
+use crate::resources::{ResourceError, ResourceId, ResourceManager};
+
+const MAX_CLOUD_BYTES: usize = 32 * 1024 * 1024;
 
 /// Vertical thickness of the cloud layer in blocks.
 const CLOUD_THICKNESS: f32 = 4.0;
@@ -127,8 +127,7 @@ impl CloudPipeline {
     pub fn new(
         device: &rhi::backend::Device,
         targets: rhi::backend::PipelineTargets,
-        jar_assets_dir: &Path,
-        asset_index: &Option<AssetIndex>,
+        resources: &ResourceManager,
     ) -> Self {
         let camera_layout =
             rhi::backend::create_bind_group_layout(device, util::VERTEX_FRAGMENT_UNIFORM);
@@ -157,7 +156,7 @@ impl CloudPipeline {
             "cloud_faces",
         );
 
-        let grid = load_cloud_grid(jar_assets_dir, asset_index);
+        let grid = load_cloud_grid(resources);
 
         Self {
             fancy_pipeline,
@@ -176,6 +175,16 @@ impl CloudPipeline {
             prev_rel: RelativePos::Inside,
             have_mesh: false,
         }
+    }
+
+    pub fn reload_resources(&mut self, resources: &ResourceManager) {
+        let grid = load_cloud_grid(resources);
+        self.grid = grid;
+        self.faces.clear();
+        self.have_mesh = false;
+        // Rebuild even while stationary; each frame uploads the new mesh before
+        // drawing, including when clouds were disabled during the reload.
+        self.dirty.fill(true);
     }
 
     pub fn update_camera(&mut self, frame: usize, uniform: &CameraUniform) {
@@ -403,10 +412,35 @@ fn build_extruded_cell(
 /// Loads and parses `clouds.png` into a cell grid. A texel is a cloud cell when
 /// its alpha is >= 10 (vanilla `isCellEmpty`). The texel colour is ignored —
 /// vanilla colours clouds purely from the uniform tint times the face shade.
-fn load_cloud_grid(jar_assets_dir: &Path, asset_index: &Option<AssetIndex>) -> Option<CloudGrid> {
-    let key = "minecraft/textures/environment/clouds.png";
-    let path = resolve_asset_path(jar_assets_dir, asset_index, key);
-    let (pixels, w, h) = util::load_png(&path)?;
+fn load_cloud_grid(resources: &ResourceManager) -> Option<CloudGrid> {
+    let key = "minecraft:textures/environment/clouds.png";
+    let image = ResourceId::new(key)
+        .and_then(|id| {
+            resources
+                .get_resource(&id)?
+                .ok_or(ResourceError::Missing(id))?
+                .content()
+                .read_bytes(MAX_CLOUD_BYTES)
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                .map(|image| image.to_rgba8())
+                .map_err(|error| format!("could not decode {key}: {error}"))
+        });
+    let image = match image {
+        Ok(image) => image,
+        Err(error) => {
+            tracing::warn!("Clouds unavailable, skipping cloud layer: {error}");
+            return None;
+        }
+    };
+    let (w, h) = image.dimensions();
+    if w == 0 || h == 0 || w > i32::MAX as u32 || h > i32::MAX as u32 {
+        tracing::warn!("Clouds unavailable, invalid grid dimensions: {w}x{h}");
+        return None;
+    }
+    let pixels = image.into_raw();
     let width = w as usize;
     let height = h as usize;
 
