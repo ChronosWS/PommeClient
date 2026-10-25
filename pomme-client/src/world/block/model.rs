@@ -8,6 +8,85 @@ use serde::Deserialize;
 use super::colormap::Colormap;
 use super::render_assets::{FaceTextures, Tint};
 use crate::assets::{AssetId, AssetIndex, resolve_asset_path_with_packs};
+use crate::resources::{ResourceError, ResourceId, ResourceManager};
+
+const MAX_BLOCKSTATE_JSON_BYTES: usize = 8 * 1024 * 1024;
+
+/// Consumer-owned snapshot: resource handles never cross into the model worker.
+pub(crate) struct BlockstateSources(Vec<BlockstateSource>);
+
+struct BlockstateSource {
+    id: ResourceId,
+    origin: String,
+    bytes: Vec<u8>,
+}
+
+impl BlockstateSources {
+    /// Enumeration failure rejects the snapshot; individual winning-resource
+    /// failures skip that definition without consulting a lower-priority
+    /// source.
+    pub(crate) fn load(resources: &ResourceManager) -> Result<Self, ResourceError> {
+        let ids = resources.list_resource_ids("blockstates", |id| {
+            id.path().starts_with("blockstates/") && id.path().ends_with(".json")
+        })?;
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in ids {
+            let resource = match resources.get_resource(&id) {
+                Ok(Some(resource)) => resource,
+                Ok(None) => {
+                    tracing::warn!("{id}: blockstate disappeared during acquisition; skipping");
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!("{id}: failed to resolve blockstate: {error}; skipping");
+                    continue;
+                }
+            };
+            match resource.content().read_bytes(MAX_BLOCKSTATE_JSON_BYTES) {
+                Ok(bytes) => entries.push(BlockstateSource {
+                    id,
+                    origin: format!("{:?}", resource.content().origin()),
+                    bytes,
+                }),
+                Err(error) => {
+                    tracing::warn!("{id}: failed to read blockstate: {error}; skipping");
+                }
+            }
+        }
+        Ok(Self(entries))
+    }
+
+    pub(super) fn parse(self) -> BlockstateDefinitions {
+        let mut definitions = Vec::with_capacity(self.0.len());
+        for source in self.0 {
+            let Some(path) = source
+                .id
+                .path()
+                .strip_prefix("blockstates/")
+                .and_then(|path| path.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            let name = if source.id.namespace() == "minecraft" {
+                path.to_owned()
+            } else {
+                format!("{}:{path}", source.id.namespace())
+            };
+            match serde_json::from_slice::<BlockstateFile>(&source.bytes) {
+                Ok(blockstate) => definitions.push((name, blockstate)),
+                Err(error) => tracing::warn!(
+                    "{} in {}: blockstate JSON is invalid ({error}); skipping",
+                    source.id,
+                    source.origin
+                ),
+            }
+        }
+        BlockstateDefinitions(definitions)
+    }
+}
+
+/// Parsed once on the worker and shared by texture mapping and geometry baking.
+pub(super) struct BlockstateDefinitions(Vec<(String, BlockstateFile)>);
 
 #[derive(Deserialize)]
 struct BlockstateFile {
@@ -513,35 +592,31 @@ pub struct MultipartEntry {
     pub model: Arc<BakedModel>,
 }
 
-pub fn load_all_block_textures(
+pub(super) fn load_all_block_textures(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     packs: Option<&crate::resources::ResourcePackManager>,
+    blockstates: &BlockstateDefinitions,
 ) -> HashMap<String, FaceTextures> {
     let mut results = HashMap::new();
     let mut model_cache = HashMap::new();
 
-    for_each_blockstate(
-        jar_assets_dir,
-        asset_index,
-        packs,
-        |block_name, blockstate| {
-            let model_ref = extract_default_model_ref(blockstate)?;
-            let resolved = resolve_model(
-                &model_ref.model,
-                jar_assets_dir,
-                asset_index,
-                &mut model_cache,
-                packs,
-            );
-            let face_textures = build_face_textures(block_name, &resolved.textures)?;
-            results.insert(block_name.to_string(), face_textures);
-            Some(())
-        },
-    );
+    for_each_blockstate(blockstates, |block_name, blockstate| {
+        let model_ref = extract_default_model_ref(blockstate)?;
+        let resolved = resolve_model(
+            &model_ref.model,
+            jar_assets_dir,
+            asset_index,
+            &mut model_cache,
+            packs,
+        );
+        let face_textures = build_face_textures(block_name, &resolved.textures)?;
+        results.insert(block_name.to_string(), face_textures);
+        Some(())
+    });
 
     tracing::info!(
-        "Loaded {} block texture mappings from vanilla assets",
+        "Loaded {} block texture mappings from blockstate resources",
         results.len()
     );
     results
@@ -550,81 +625,76 @@ pub fn load_all_block_textures(
 type BakedModelMap = HashMap<String, HashMap<String, Arc<BakedModel>>>;
 type MultipartMap = HashMap<String, Vec<MultipartEntry>>;
 
-pub fn bake_all_models(
+pub(super) fn bake_all_models(
     jar_assets_dir: &Path,
     asset_index: &Option<AssetIndex>,
     packs: Option<&crate::resources::ResourcePackManager>,
+    blockstates: &BlockstateDefinitions,
 ) -> (BakedModelMap, MultipartMap) {
     let mut results: BakedModelMap = HashMap::new();
     let mut multipart_results: HashMap<String, Vec<MultipartEntry>> = HashMap::new();
     let mut model_cache = HashMap::new();
     let mut total = 0u32;
 
-    for_each_blockstate(
-        jar_assets_dir,
-        asset_index,
-        packs,
-        |block_name, blockstate| {
-            total += 1;
-            let mut variants_map: HashMap<String, Arc<BakedModel>> = HashMap::new();
-            // Variants (and multipart cases) naming the same model, rotation
-            // and uvlock share one bake. Per block, since tints are.
-            let mut shared: HashMap<(String, i32, i32, bool), Arc<BakedModel>> = HashMap::new();
-            let mut bake = |model_ref: &ModelRef| {
-                let key = (
-                    model_ref.model.clone(),
-                    model_ref.x,
-                    model_ref.y,
-                    model_ref.uvlock,
-                );
-                if let Some(baked) = shared.get(&key) {
-                    return Some(Arc::clone(baked));
-                }
-                let resolved = resolve_model(
-                    &model_ref.model,
-                    jar_assets_dir,
-                    asset_index,
-                    &mut model_cache,
-                    packs,
-                );
-                let mut baked =
-                    bake_resolved_model(&resolved, model_ref.x, model_ref.y, Tint::None)?;
-                apply_block_tints(&mut baked, block_name);
-                let baked = Arc::new(baked);
-                shared.insert(key, Arc::clone(&baked));
-                Some(baked)
-            };
+    for_each_blockstate(blockstates, |block_name, blockstate| {
+        total += 1;
+        let mut variants_map: HashMap<String, Arc<BakedModel>> = HashMap::new();
+        // Variants (and multipart cases) naming the same model, rotation
+        // and uvlock share one bake. Per block, since tints are.
+        let mut shared: HashMap<(String, i32, i32, bool), Arc<BakedModel>> = HashMap::new();
+        let mut bake = |model_ref: &ModelRef| {
+            let key = (
+                model_ref.model.clone(),
+                model_ref.x,
+                model_ref.y,
+                model_ref.uvlock,
+            );
+            if let Some(baked) = shared.get(&key) {
+                return Some(Arc::clone(baked));
+            }
+            let resolved = resolve_model(
+                &model_ref.model,
+                jar_assets_dir,
+                asset_index,
+                &mut model_cache,
+                packs,
+            );
+            let mut baked = bake_resolved_model(&resolved, model_ref.x, model_ref.y, Tint::None)?;
+            apply_block_tints(&mut baked, block_name);
+            let baked = Arc::new(baked);
+            shared.insert(key, Arc::clone(&baked));
+            Some(baked)
+        };
 
-            if let Some(variants) = &blockstate.variants {
-                for (variant_key, variant_entry) in variants {
-                    if let Some(baked) = bake(variant_entry.first()?) {
-                        variants_map.insert(variant_key.clone(), baked);
-                    }
-                }
-            } else if let Some(multipart) = &blockstate.multipart {
-                let mut entries = Vec::new();
-                for case in multipart {
-                    if let Some(baked) = bake(case.apply.first()?) {
-                        entries.push(MultipartEntry {
-                            when: parse_when_condition(&case.when),
-                            model: baked,
-                        });
-                    }
-                }
-                if !entries.is_empty() {
-                    multipart_results.insert(block_name.to_string(), entries);
+        if let Some(variants) = &blockstate.variants {
+            for (variant_key, variant_entry) in variants {
+                if let Some(baked) = bake(variant_entry.first()?) {
+                    variants_map.insert(variant_key.clone(), baked);
                 }
             }
-
-            if !variants_map.is_empty() {
-                results.insert(block_name.to_string(), variants_map);
+        } else if let Some(multipart) = &blockstate.multipart {
+            let mut entries = Vec::new();
+            for case in multipart {
+                if let Some(baked) = bake(case.apply.first()?) {
+                    entries.push(MultipartEntry {
+                        when: parse_when_condition(&case.when),
+                        model: baked,
+                    });
+                }
             }
-            Some(())
-        },
-    );
+            if !entries.is_empty() {
+                multipart_results.insert(block_name.to_string(), entries);
+            }
+        }
+
+        if !variants_map.is_empty() {
+            results.insert(block_name.to_string(), variants_map);
+        }
+        Some(())
+    });
 
     let mut missing_names: Vec<String> = Vec::new();
-    for_each_blockstate(jar_assets_dir, asset_index, packs, |block_name, _| {
+    for_each_blockstate(blockstates, |block_name, _| {
         if !results.contains_key(block_name)
             && !multipart_results.contains_key(block_name)
             && !crate::world::block_entity::is_block_entity_block(block_name)
@@ -1571,80 +1641,12 @@ fn parse_when_condition(when: &Option<serde_json::Value>) -> HashMap<String, Str
 }
 
 fn for_each_blockstate(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resources::ResourcePackManager>,
+    blockstates: &BlockstateDefinitions,
     mut callback: impl FnMut(&str, &BlockstateFile) -> Option<()>,
 ) {
-    let Some(blockstates_dir) = resolve_blockstates_dir(jar_assets_dir, asset_index, packs) else {
-        tracing::warn!("Blockstates directory not found");
-        return;
-    };
-
-    let entries = match std::fs::read_dir(&blockstates_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!("Failed to read blockstates dir: {e}");
-            return;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(blockstate) = serde_json::from_str::<BlockstateFile>(&contents) else {
-            continue;
-        };
-
-        callback(name, &blockstate);
+    for (name, blockstate) in &blockstates.0 {
+        callback(name, blockstate);
     }
-}
-
-fn resolve_blockstates_dir(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    packs: Option<&crate::resources::ResourcePackManager>,
-) -> Option<PathBuf> {
-    let candidates = [
-        jar_assets_dir.join("assets/minecraft/blockstates"),
-        jar_assets_dir.join("jar/assets/minecraft/blockstates"),
-        PathBuf::from("reference/assets/assets/minecraft/blockstates"),
-    ];
-
-    for c in &candidates {
-        if c.is_dir() {
-            return Some(c.clone());
-        }
-    }
-
-    // Also check the original simple path
-    let path = jar_assets_dir.join("minecraft/blockstates");
-    if path.is_dir() {
-        return Some(path);
-    }
-
-    if asset_index.is_some() {
-        let test_path = resolve_asset_path_with_packs(
-            jar_assets_dir,
-            asset_index,
-            "minecraft/blockstates/stone.json",
-            packs,
-        );
-        if test_path.exists() {
-            return test_path.parent().map(|p| p.to_path_buf());
-        }
-    }
-
-    None
 }
 
 fn extract_default_model_ref(blockstate: &BlockstateFile) -> Option<ModelRef> {

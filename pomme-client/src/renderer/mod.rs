@@ -61,6 +61,7 @@ use crate::renderer::pipelines::held_item::{HandRenderSelection, HeldHand};
 use crate::renderer::pipelines::item_entity::ItemEntityPipeline;
 use crate::ui::font::{FontOptions, FontSources};
 use crate::world::block::colormap::Colormaps;
+use crate::world::block::model::BlockstateSources;
 use crate::world::block::render_assets::{BlockRenderAssets, BlockRenderView};
 
 /// The live atlas's layout, so meshes bake in UVs that match it.
@@ -87,6 +88,9 @@ pub enum RendererError {
 
     #[error("failed to build the texture atlas: {0}")]
     Atlas(String),
+
+    #[error("failed to enumerate Minecraft blockstates: {0}")]
+    Blockstates(String),
 }
 
 /// The loading splash: logo, progress bar and status line.
@@ -291,7 +295,7 @@ impl Renderer {
         window: Arc<Window>,
         font_sources: FontSources<'_>,
         game_dir: &Path,
-        cache_dir: &Path,
+        _cache_dir: &Path,
         vsync: bool,
         panorama_dir: Option<&Path>,
         bedrock_ui_dir: &Path,
@@ -303,20 +307,15 @@ impl Renderer {
             options: font_options,
         } = font_sources;
         // Providers are application-thread-only. The model worker receives
-        // decoded, Arc-owned CPU pixels, never the resource manager/handles.
+        // decoded CPU pixels and owned JSON bytes, never resource handles.
         let colormaps = Colormaps::load(resources);
+        let blockstates = BlockstateSources::load(resources)
+            .map_err(|error| RendererError::Blockstates(error.to_string()))?;
         let render_assets_handle = {
             let jar_assets_dir = jar_assets_dir.to_path_buf();
             let asset_index = asset_index.clone();
-            let cache_dir = cache_dir.to_path_buf();
             std::thread::spawn(move || {
-                BlockRenderAssets::load(
-                    &jar_assets_dir,
-                    &asset_index,
-                    Some(&cache_dir),
-                    None,
-                    colormaps,
-                )
+                BlockRenderAssets::load(&jar_assets_dir, &asset_index, None, colormaps, blockstates)
             })
         };
 
@@ -1194,15 +1193,24 @@ impl Renderer {
         resources: &crate::resources::ResourceManager,
         font_options: FontOptions,
     ) {
+        let blockstates = match BlockstateSources::load(resources) {
+            Ok(blockstates) => blockstates,
+            Err(error) => {
+                tracing::warn!(
+                    "Keeping previous render assets after blockstate enumeration failure: {error}"
+                );
+                return;
+            }
+        };
         self.ctx.device.wait_idle();
 
         let colormaps = Colormaps::load(resources);
         self.render_assets = Arc::new(BlockRenderAssets::load(
             &self.jar_assets_dir,
             &self.asset_index,
-            None,
             Some(packs),
             colormaps,
+            blockstates,
         ));
 
         self.item_entity_pipeline.clear_meshes(&self.ctx.device);
