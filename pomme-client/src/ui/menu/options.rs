@@ -36,6 +36,7 @@ fn compat_label(compat: PackCompat) -> (&'static str, [f32; 4]) {
         PackCompat::Compatible => ("Compatible", [0.33, 0.87, 0.33, 1.0]),
         PackCompat::TooOld => ("Made for an older version", COL_RED),
         PackCompat::TooNew => ("Made for a newer version", COL_RED),
+        PackCompat::Unknown => ("Compatibility unknown", [0.67, 0.67, 0.67, 1.0]),
     }
 }
 

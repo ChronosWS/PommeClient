@@ -17,12 +17,16 @@
 //! Atomic reload is not guaranteed; threading requirements remain undecided.
 
 mod filter;
+mod installed_format;
 mod manager;
+mod pack_format;
 mod pack_resource;
 mod resource;
 
 pub(crate) use filter::{ResourceFilter, ResourceFilterSpec};
+pub(crate) use installed_format::read_installed_pack_format;
 pub(crate) use manager::{BuiltinResources, ResourceManager};
+pub(crate) use pack_format::{PackFormat, PackFormatRange, parse_resource_pack_range};
 pub(crate) use pack_resource::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
 pub(crate) use resource::{ResourceContent, ResourceError, ResourceId};
 

@@ -6,11 +6,9 @@ use std::sync::Arc;
 use pomme_protocol::KnownPack;
 
 use crate::resources::{
-    PackStorage, ResourceError, ResourceFilter, ResourceFilterSpec, ResourceOrigin,
-    ResourcePackDescriptor,
+    PackFormat, PackFormatRange, PackStorage, ResourceError, ResourceFilter, ResourceFilterSpec,
+    ResourceOrigin, ResourcePackDescriptor, parse_resource_pack_range, read_installed_pack_format,
 };
-
-pub const CURRENT_PACK_FORMAT: u32 = 84;
 
 /// Logical pack identity issued by discovery/management, not by source opening.
 /// Equality survives reopening and content/title changes; built-in identity is
@@ -65,11 +63,28 @@ pub enum PackCompat {
     Compatible,
     TooOld,
     TooNew,
+    Unknown,
+}
+
+impl PackCompat {
+    fn for_format(range: Option<PackFormatRange>, target: Option<PackFormat>) -> Self {
+        let (Some(range), Some(target)) = (range, target) else {
+            return Self::Unknown;
+        };
+        if target < range.min() {
+            Self::TooNew
+        } else if target > range.max() {
+            Self::TooOld
+        } else {
+            Self::Compatible
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct PackInfo {
     pack_id: PackId,
+    format_range: Option<PackFormatRange>,
     pub name: String,
     pub description: String,
     pub compat: PackCompat,
@@ -100,6 +115,9 @@ struct ActivePack {
 
 pub struct ResourcePackManager {
     builtin_pack_id: PackId,
+    asset_version: String,
+    client_jar: PathBuf,
+    target_format: Option<PackFormat>,
     packs_dir: PathBuf,
     server_cache_dir: PathBuf,
     active_packs: Vec<ActivePack>,
@@ -109,7 +127,7 @@ pub struct ResourcePackManager {
 impl ResourcePackManager {
     /// `asset_version` is the installed version ID used for the JAR and asset
     /// index.
-    pub fn new(instance_dir: &Path, asset_version: &str) -> Self {
+    pub(crate) fn new(instance_dir: &Path, asset_version: &str, client_jar: &Path) -> Self {
         let packs_dir = instance_dir.join("resourcepacks");
         let server_cache_dir = packs_dir.join(".server_cache");
         let _ = std::fs::create_dir_all(&packs_dir);
@@ -125,13 +143,36 @@ impl ResourcePackManager {
                     version: asset_version.to_owned(),
                 }),
             ),
+            asset_version: asset_version.to_owned(),
+            client_jar: client_jar.to_owned(),
+            target_format: None,
             packs_dir,
             server_cache_dir,
             active_packs: Vec::new(),
             available_local: Vec::new(),
         };
+        mgr.refresh_pack_format();
         mgr.scan_local_packs();
         mgr
+    }
+
+    /// Refresh compatibility from the installed JAR without changing pack
+    /// selection. Unavailable installation metadata leaves compatibility
+    /// unknown.
+    pub(crate) fn refresh_pack_format(&mut self) {
+        let target_format = read_installed_pack_format(&self.client_jar, &self.asset_version)
+            .map_err(|error| {
+                tracing::debug!(%error, "Installed pack format unavailable; compatibility is unknown");
+            })
+            .ok();
+        self.target_format = target_format;
+        for info in self
+            .available_local
+            .iter_mut()
+            .chain(self.active_packs.iter_mut().map(|pack| &mut pack.info))
+        {
+            info.compat = PackCompat::for_format(info.format_range, target_format);
+        }
     }
 
     fn issue_pack_id(identity: PackIdentity, known_pack: Option<KnownPack>) -> PackId {
@@ -304,6 +345,7 @@ impl ResourcePackManager {
             &dir,
             hash,
             Self::issue_pack_id(PackIdentity::Server(id), None),
+            self.target_format,
         );
         self.active_packs.push(ActivePack {
             id: pack_id,
@@ -373,13 +415,14 @@ impl ResourcePackManager {
                         .active_packs
                         .iter()
                         .any(|p| p.provenance == PackProvenance::Local && p.dir == path);
-                    let mut info = parse_pack_meta_dir(&path, &name, pack_id);
+                    let mut info = parse_pack_meta_dir(&path, &name, pack_id, self.target_format);
                     info.enabled = already_active;
                     info.provenance = PackProvenance::Local;
                     self.available_local.push(info);
                 }
             } else if path.extension().is_some_and(|e| e == "zip")
-                && let Some(mut info) = parse_pack_meta_zip(&path, &name, pack_id)
+                && let Some(mut info) =
+                    parse_pack_meta_zip(&path, &name, pack_id, self.target_format)
             {
                 let already_active = self
                     .active_packs
@@ -410,7 +453,7 @@ impl ResourcePackManager {
         let path = self.packs_dir.join(name);
         if path.is_dir() && path.join("pack.mcmeta").exists() {
             self.active_packs.retain(|p| p.id != name);
-            let info = parse_pack_meta_dir(&path, name, pack_id);
+            let info = parse_pack_meta_dir(&path, name, pack_id, self.target_format);
             self.active_packs.push(ActivePack {
                 id: name.to_owned(),
                 provenance: PackProvenance::Local,
@@ -431,7 +474,7 @@ impl ResourcePackManager {
                 tracing::error!("Failed to extract zip pack {name}: {e}");
                 return;
             }
-            let info = parse_pack_meta_dir(&extract_dir, name, pack_id);
+            let info = parse_pack_meta_dir(&extract_dir, name, pack_id, self.target_format);
             self.active_packs.retain(|p| p.id != name);
             self.active_packs.push(ActivePack {
                 id: name.to_owned(),
@@ -567,7 +610,10 @@ fn decode_resource_filter(metadata: impl io::Read) -> io::Result<ResourceFilter>
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-fn parse_meta_value(v: &serde_json::Value, fallback: &str) -> (String, String, PackCompat) {
+fn parse_meta_value(
+    v: &serde_json::Value,
+    fallback: &str,
+) -> (String, String, Option<PackFormatRange>) {
     let pack = v.get("pack");
 
     let description = pack
@@ -582,23 +628,15 @@ fn parse_meta_value(v: &serde_json::Value, fallback: &str) -> (String, String, P
         .unwrap_or(fallback)
         .to_owned();
 
-    let compat = pack
-        .map(|p| {
-            let (min, max) = parse_format_range(p);
-            if CURRENT_PACK_FORMAT < min {
-                PackCompat::TooNew
-            } else if CURRENT_PACK_FORMAT > max {
-                PackCompat::TooOld
-            } else {
-                PackCompat::Compatible
-            }
-        })
-        .unwrap_or(PackCompat::Compatible);
-
-    (name, description, compat)
+    (name, description, pack.and_then(parse_resource_pack_range))
 }
 
-fn parse_pack_meta_dir(dir: &Path, fallback_name: &str, pack_id: PackId) -> PackInfo {
+fn parse_pack_meta_dir(
+    dir: &Path,
+    fallback_name: &str,
+    pack_id: PackId,
+    target_format: Option<PackFormat>,
+) -> PackInfo {
     let meta_path = dir.join("pack.mcmeta");
     let Some(v) = std::fs::read_to_string(&meta_path)
         .ok()
@@ -606,26 +644,33 @@ fn parse_pack_meta_dir(dir: &Path, fallback_name: &str, pack_id: PackId) -> Pack
     else {
         return PackInfo {
             pack_id,
+            format_range: None,
             name: fallback_name.to_owned(),
             description: fallback_name.to_owned(),
-            compat: PackCompat::Compatible,
+            compat: PackCompat::Unknown,
             provenance: PackProvenance::Local,
             enabled: false,
         };
     };
 
-    let (name, description, compat) = parse_meta_value(&v, fallback_name);
+    let (name, description, format_range) = parse_meta_value(&v, fallback_name);
     PackInfo {
         pack_id,
+        format_range,
         name,
         description,
-        compat,
+        compat: PackCompat::for_format(format_range, target_format),
         provenance: PackProvenance::Local,
         enabled: false,
     }
 }
 
-fn parse_pack_meta_zip(path: &Path, fallback_name: &str, pack_id: PackId) -> Option<PackInfo> {
+fn parse_pack_meta_zip(
+    path: &Path,
+    fallback_name: &str,
+    pack_id: PackId,
+    target_format: Option<PackFormat>,
+) -> Option<PackInfo> {
     let data = std::fs::read(path).ok()?;
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).ok()?;
@@ -634,68 +679,16 @@ fn parse_pack_meta_zip(path: &Path, fallback_name: &str, pack_id: PackId) -> Opt
     std::io::Read::read_to_string(&mut mcmeta, &mut contents).ok()?;
     let v: serde_json::Value = serde_json::from_str(&contents).ok()?;
 
-    let (name, description, compat) = parse_meta_value(&v, fallback_name);
+    let (name, description, format_range) = parse_meta_value(&v, fallback_name);
     Some(PackInfo {
         pack_id,
+        format_range,
         name,
         description,
-        compat,
+        compat: PackCompat::for_format(format_range, target_format),
         provenance: PackProvenance::Local,
         enabled: false,
     })
-}
-
-fn parse_format_range(pack: &serde_json::Value) -> (u32, u32) {
-    if let (Some(min), Some(max)) = (pack.get("min_format"), pack.get("max_format")) {
-        let min_v = format_value(min);
-        let max_v = format_value(max);
-        if min_v > 0 && max_v > 0 {
-            return (min_v, max_v);
-        }
-    }
-
-    if let Some(supported) = pack.get("supported_formats") {
-        if let Some(arr) = supported.as_array()
-            && arr.len() == 2
-        {
-            return (
-                arr[0].as_u64().unwrap_or(0) as u32,
-                arr[1].as_u64().unwrap_or(0) as u32,
-            );
-        }
-        if let Some(obj) = supported.as_object() {
-            let min = obj
-                .get("min_inclusive")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
-            let max = obj
-                .get("max_inclusive")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
-            return (min, max);
-        }
-        if let Some(n) = supported.as_u64() {
-            return (n as u32, n as u32);
-        }
-    }
-
-    if let Some(fmt) = pack.get("pack_format").and_then(|v| v.as_u64()) {
-        return (fmt as u32, fmt as u32);
-    }
-
-    (0, u32::MAX)
-}
-
-fn format_value(v: &serde_json::Value) -> u32 {
-    if let Some(n) = v.as_u64() {
-        return n as u32;
-    }
-    if let Some(arr) = v.as_array()
-        && let Some(major) = arr.first().and_then(|v| v.as_u64())
-    {
-        return major as u32;
-    }
-    0
 }
 
 fn extract_zip(data: &[u8], dest: &Path) -> Result<(), PackError> {

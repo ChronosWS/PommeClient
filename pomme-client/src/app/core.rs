@@ -988,7 +988,8 @@ impl AppCore {
         user: UserData,
         window_size: winit::dpi::LogicalSize<u32>,
     ) -> Self {
-        let resource_packs = ResourcePackManager::new(&data_dirs.game_dir, &version);
+        let resource_packs =
+            ResourcePackManager::new(&data_dirs.game_dir, &version, &data_dirs.client_jar);
 
         let mut input = InputState::new();
         let mut menu = MainMenu::new(
@@ -1639,6 +1640,9 @@ impl AppCore {
     /// Rebuilds what was built from assets that didn't exist yet, once the
     /// first-run download has put them on disk.
     pub(crate) fn reload_installed_assets(&mut self) {
+        self.resource_packs.refresh_pack_format();
+        self.menu.available_packs = self.resource_packs.available_local_packs().to_vec();
+        self.menu.active_packs = self.resource_packs.active_pack_info();
         let (asset_index, audio) = load_assets(
             &self.data_dirs,
             &self.version,

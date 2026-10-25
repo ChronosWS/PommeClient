@@ -1642,8 +1642,8 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!("pomme-font-{}", uuid::Uuid::new_v4()));
-            let packs = ResourcePackManager::new(&root.join("instance"), "fixture");
             let client_jar = root.join("fixture.jar");
+            let packs = ResourcePackManager::new(&root.join("instance"), "fixture", &client_jar);
             Self {
                 root,
                 client_jar,
@@ -2071,7 +2071,11 @@ mod tests {
             "jar_assets/example/font/mixed.json",
             r#"{"providers":[{"type":"space","advances":{"B":7.0}}]}"#,
         );
-        let mut packs = ResourcePackManager::new(&fixture.root.join("instance"), "fixture");
+        let mut packs = ResourcePackManager::new(
+            &fixture.root.join("instance"),
+            "fixture",
+            &fixture.client_jar,
+        );
         let pack = fixture.root.join("instance/resourcepacks/bad");
         std::fs::create_dir_all(pack.join("assets/example/font")).unwrap();
         std::fs::write(
@@ -2133,7 +2137,11 @@ mod tests {
             r#"{"providers":[{"type":"bitmap","file":"example:font/color.png","ascent":7,"chars":["X"]}]}"#,
         );
 
-        let mut packs = ResourcePackManager::new(&fixture.root.join("instance"), "fixture");
+        let mut packs = ResourcePackManager::new(
+            &fixture.root.join("instance"),
+            "fixture",
+            &fixture.client_jar,
+        );
         packs.apply_server_pack(uuid::Uuid::from_u128(1), "low");
         packs.apply_server_pack(uuid::Uuid::from_u128(2), "high");
         let load = |packs: &ResourcePackManager| {
@@ -2166,6 +2174,7 @@ mod tests {
         let (reloaded, _) = load(&ResourcePackManager::new(
             &fixture.root.join("instance"),
             "fixture",
+            &fixture.client_jar,
         ));
         assert_eq!(reloaded.glyph('A', None).advance, 5.0);
         assert!(!reloaded.font_sets.contains_key("example:fancy"));
