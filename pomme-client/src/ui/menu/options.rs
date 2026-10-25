@@ -1863,7 +1863,7 @@ impl MainMenu {
                 true,
             ) && clicked
             {
-                self.pack_toggle = Some((pack.name.clone(), true));
+                self.pack_toggle = Some((pack.pack_id().clone(), true));
                 self.reload_assets = true;
             }
         }
@@ -1896,7 +1896,7 @@ impl MainMenu {
                 !is_server,
             ) && clicked
             {
-                self.pack_toggle = Some((pack.name.clone(), false));
+                self.pack_toggle = Some((pack.pack_id().clone(), false));
                 self.reload_assets = true;
             }
         }

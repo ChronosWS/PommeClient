@@ -1,5 +1,6 @@
-//! Client resource bytes, independent of particles, render assets and the GPU.
+//! Resource bytes, independent of particles, render assets and the GPU.
 //! Exact lookup serves bitmap-font textures; other consumers remain legacy.
+//! Current adapters access assets; server-data domains are not implemented.
 //!
 //! Discovery, selection, downloads and legacy extraction belong to the caller.
 //! Root pack.mcmeta belongs to pack management; resource sidecars stay here.

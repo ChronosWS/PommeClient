@@ -1122,6 +1122,7 @@ fn load_bitmap_provider(
         .get_or_init(|| {
             ResourceManager::from_packs(
                 BuiltinResources {
+                    pack_id: ctx.sources.packs.builtin_pack_id(),
                     jar_assets_dir: ctx.sources.jar_assets_dir,
                     asset_index: ctx.sources.asset_index.as_ref(),
                 },
@@ -1663,7 +1664,7 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!("pomme-font-{}", uuid::Uuid::new_v4()));
-            let packs = ResourcePackManager::new(&root.join("instance"));
+            let packs = ResourcePackManager::new(&root.join("instance"), "fixture");
             Self { root, packs }
         }
 
@@ -2056,7 +2057,7 @@ mod tests {
             "jar_assets/example/font/mixed.json",
             r#"{"providers":[{"type":"space","advances":{"B":7.0}}]}"#,
         );
-        let mut packs = ResourcePackManager::new(&fixture.root.join("instance"));
+        let mut packs = ResourcePackManager::new(&fixture.root.join("instance"), "fixture");
         let pack = fixture.root.join("instance/resourcepacks/bad");
         std::fs::create_dir_all(pack.join("assets/example/font")).unwrap();
         std::fs::write(
@@ -2117,7 +2118,7 @@ mod tests {
             r#"{"providers":[{"type":"bitmap","file":"example:font/color.png","ascent":7,"chars":["X"]}]}"#,
         );
 
-        let mut packs = ResourcePackManager::new(&fixture.root.join("instance"));
+        let mut packs = ResourcePackManager::new(&fixture.root.join("instance"), "fixture");
         packs.apply_server_pack(uuid::Uuid::from_u128(1), "low");
         packs.apply_server_pack(uuid::Uuid::from_u128(2), "high");
         let load = |packs: &ResourcePackManager| {
@@ -2146,7 +2147,10 @@ mod tests {
         );
         assert_eq!(&pixels.color[offset..offset + 4], &[10, 20, 30, 255]);
 
-        let (reloaded, _) = load(&ResourcePackManager::new(&fixture.root.join("instance")));
+        let (reloaded, _) = load(&ResourcePackManager::new(
+            &fixture.root.join("instance"),
+            "fixture",
+        ));
         assert_eq!(reloaded.glyph('A', None).advance, 5.0);
         assert!(!reloaded.font_sets.contains_key("example:fancy"));
     }

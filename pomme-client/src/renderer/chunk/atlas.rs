@@ -2042,7 +2042,7 @@ mod tests {
         replacement.put_pixel(1, 3, image::Rgba([255, 255, 255, 255]));
         replacement.save(&pack_path).unwrap();
 
-        let mut packs = crate::resource_pack::ResourcePackManager::new(&instance);
+        let mut packs = crate::resource_pack::ResourcePackManager::new(&instance, "fixture");
         packs.enable_local_pack("test_pack");
         let source = load_source("item/cocoa_beans", &jar_assets, &None, Some(&packs), true);
         let mask = source.alpha_mask.as_ref().unwrap();

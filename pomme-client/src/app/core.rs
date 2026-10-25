@@ -988,7 +988,7 @@ impl AppCore {
         user: UserData,
         window_size: winit::dpi::LogicalSize<u32>,
     ) -> Self {
-        let resource_packs = ResourcePackManager::new(&data_dirs.game_dir);
+        let resource_packs = ResourcePackManager::new(&data_dirs.game_dir, &version);
 
         let mut input = InputState::new();
         let mut menu = MainMenu::new(

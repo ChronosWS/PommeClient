@@ -3160,7 +3160,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut packs = crate::resource_pack::ResourcePackManager::new(&instance);
+        let mut packs = crate::resource_pack::ResourcePackManager::new(&instance, "fixture");
         packs.enable_local_pack("test_pack");
         let baked = bake_item_models(&jar, &None, Some(&packs));
         assert_eq!(

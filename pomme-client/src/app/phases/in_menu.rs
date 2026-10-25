@@ -154,12 +154,8 @@ pub fn update_menu(
         core.menu.active_packs = core.resource_packs.active_pack_info();
     }
 
-    if let Some((name, enable)) = core.menu.pack_toggle.take() {
-        if enable {
-            core.resource_packs.enable_local_pack(&name);
-        } else {
-            core.resource_packs.disable_local_pack(&name);
-        }
+    if let Some((pack_id, enable)) = core.menu.pack_toggle.take() {
+        core.resource_packs.set_local_pack_enabled(&pack_id, enable);
         core.menu.active_packs = core.resource_packs.active_pack_info();
         core.menu.available_packs = core.resource_packs.available_local_packs().to_vec();
     }

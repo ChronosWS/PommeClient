@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use super::resource::{ResourceContent, ResourceError, ResourceId};
 use crate::assets::AssetIndex;
+use crate::resource_pack::PackId;
 
 mod directory;
 mod indexed;
@@ -44,17 +45,19 @@ impl ResourcePackDescriptor {
 pub(crate) type ReadStream = Box<dyn Read + 'static>;
 pub(crate) type SharedPackResources = Rc<dyn PackResources>;
 
-/// Stable source-view key and pack display name, neither a path nor a priority.
-/// Distinct views need distinct keys; metadata carries its own origin.
-/// JAR and external layers share one logical pack name, not extra UI entries.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Logical pack provenance and diagnostic display metadata, not source
+/// identity. Compare pack_id for identity; names can change and layers can
+/// share a pack. Metadata carries its own origin, which may belong to a
+/// different pack.
+#[derive(Clone, Debug)]
 pub(crate) struct ResourceOrigin {
-    pub(crate) key: String,
+    pub(crate) pack_id: PackId,
     pub(crate) name: String,
 }
 
-/// Client assets from one source layer, with checked IDs and queries.
-/// Access failures must not become absence or empty results.
+/// Resource bytes from one source layer, with checked IDs and queries.
+/// Current adapters access the assets tree; other resource domains are not
+/// wired. Access failures must not become absence or empty results.
 /// Threading requirements remain undecided.
 pub(crate) trait PackResources {
     fn origin(&self) -> &ResourceOrigin;

@@ -7,8 +7,10 @@ use super::pack_resource::{
 };
 use super::resource::{Resource, ResourceError, ResourceId};
 use crate::assets::AssetIndex;
+use crate::resource_pack::PackId;
 
 pub(crate) struct BuiltinResources<'a> {
+    pub(crate) pack_id: &'a PackId,
     pub(crate) jar_assets_dir: &'a Path,
     pub(crate) asset_index: Option<&'a AssetIndex>,
 }
@@ -36,7 +38,7 @@ impl ResourceManager {
         let jar = ResourcePackDescriptor {
             storage: PackStorage::Directory(builtin_resources.jar_assets_dir.to_path_buf()),
             origin: ResourceOrigin {
-                key: "builtin:minecraft:jar".to_owned(),
+                pack_id: builtin_resources.pack_id.clone(),
                 name: "Minecraft built-in assets".to_owned(),
             },
         };
@@ -45,7 +47,7 @@ impl ResourceManager {
             .map(|index| ResourcePackDescriptor {
                 storage: PackStorage::Indexed(index.clone()),
                 origin: ResourceOrigin {
-                    key: "builtin:minecraft:external".to_owned(),
+                    pack_id: builtin_resources.pack_id.clone(),
                     name: "Minecraft built-in assets".to_owned(),
                 },
             });

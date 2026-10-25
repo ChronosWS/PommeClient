@@ -775,7 +775,7 @@ pub struct MainMenu {
     pub active_packs: Vec<crate::resource_pack::PackInfo>,
     pub available_packs: Vec<crate::resource_pack::PackInfo>,
     pub packs_dir: PathBuf,
-    pub pack_toggle: Option<(String, bool)>,
+    pub pack_toggle: Option<(crate::resource_pack::PackId, bool)>,
     pub rescan_packs: bool,
     pub reload_assets: bool,
     /// Set by a Font Settings toggle, applied by `AppCore::apply_font_options`.

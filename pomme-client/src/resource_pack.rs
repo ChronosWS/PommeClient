@@ -1,8 +1,60 @@
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use pomme_protocol::KnownPack;
 
 use crate::resources::{PackStorage, ResourceError, ResourceOrigin, ResourcePackDescriptor};
 
 pub const CURRENT_PACK_FORMAT: u32 = 84;
+
+/// Logical pack identity issued by discovery/management, not by source opening.
+/// Equality survives reopening and content/title changes; built-in identity is
+/// version-specific. Multiple source layers may share it, regardless of access.
+#[derive(Clone, Debug)]
+pub struct PackId(Arc<PackRegistration>);
+
+#[derive(Debug)]
+struct PackRegistration {
+    identity: PackIdentity,
+    known_pack: Option<KnownPack>,
+}
+
+impl PackId {
+    /// Optional semantic identity, not a guarantee of registry data
+    /// availability.
+    pub fn known_pack(&self) -> Option<&KnownPack> {
+        self.0.known_pack.as_ref()
+    }
+}
+
+// Optional metadata does not change the logical identity's equality or hash.
+impl PartialEq for PackId {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.identity == other.0.identity
+    }
+}
+
+impl Eq for PackId {}
+
+impl Hash for PackId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.identity.hash(state);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum PackIdentity {
+    // The discovered selection, not its archive/extraction/source location.
+    Local {
+        directory: PathBuf,
+        selection: String,
+    },
+    Server(uuid::Uuid),
+    Builtin {
+        version: String,
+    },
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PackCompat {
@@ -13,11 +65,18 @@ pub enum PackCompat {
 
 #[derive(Clone)]
 pub struct PackInfo {
+    pack_id: PackId,
     pub name: String,
     pub description: String,
     pub compat: PackCompat,
     pub provenance: PackProvenance,
     pub enabled: bool,
+}
+
+impl PackInfo {
+    pub fn pack_id(&self) -> &PackId {
+        &self.pack_id
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -36,6 +95,7 @@ struct ActivePack {
 }
 
 pub struct ResourcePackManager {
+    builtin_pack_id: PackId,
     packs_dir: PathBuf,
     server_cache_dir: PathBuf,
     active_packs: Vec<ActivePack>,
@@ -43,12 +103,24 @@ pub struct ResourcePackManager {
 }
 
 impl ResourcePackManager {
-    pub fn new(instance_dir: &Path) -> Self {
+    /// `asset_version` is the installed version ID used for the JAR and asset
+    /// index.
+    pub fn new(instance_dir: &Path, asset_version: &str) -> Self {
         let packs_dir = instance_dir.join("resourcepacks");
         let server_cache_dir = packs_dir.join(".server_cache");
         let _ = std::fs::create_dir_all(&packs_dir);
         let _ = std::fs::create_dir_all(&server_cache_dir);
         let mut mgr = Self {
+            builtin_pack_id: Self::issue_pack_id(
+                PackIdentity::Builtin {
+                    version: asset_version.to_owned(),
+                },
+                Some(KnownPack {
+                    namespace: "minecraft".to_owned(),
+                    id: "core".to_owned(),
+                    version: asset_version.to_owned(),
+                }),
+            ),
             packs_dir,
             server_cache_dir,
             active_packs: Vec::new(),
@@ -56,6 +128,31 @@ impl ResourcePackManager {
         };
         mgr.scan_local_packs();
         mgr
+    }
+
+    fn issue_pack_id(identity: PackIdentity, known_pack: Option<KnownPack>) -> PackId {
+        PackId(Arc::new(PackRegistration {
+            identity,
+            known_pack,
+        }))
+    }
+
+    /// The recognized built-in pack, even before its storage is
+    /// installed/opened.
+    pub fn builtin_pack_id(&self) -> &PackId {
+        &self.builtin_pack_id
+    }
+
+    /// Exact namespace/id/version lookup across registered packs, selected or
+    /// not. Membership guarantees neither source accessibility nor
+    /// negotiation capability; network negotiation still requires the
+    /// protocol's embedded registry data.
+    #[allow(dead_code, reason = "catalog API has no runtime consumer yet")]
+    pub fn find_known_pack(&self, known_pack: &KnownPack) -> Option<&PackId> {
+        std::iter::once(&self.builtin_pack_id)
+            .chain(self.available_local.iter().map(PackInfo::pack_id))
+            .chain(self.active_packs.iter().map(|pack| pack.info.pack_id()))
+            .find(|pack_id| pack_id.known_pack() == Some(known_pack))
     }
 
     pub fn resolve_asset(&self, asset_key: &str) -> Option<PathBuf> {
@@ -85,12 +182,8 @@ impl ResourcePackManager {
     ) -> Result<Vec<ResourcePackDescriptor>, ResourceError> {
         let mut descriptors = Vec::new();
         for pack in &self.active_packs {
-            let kind = match pack.provenance {
-                PackProvenance::Local => "local",
-                PackProvenance::Server => "server",
-            };
             let origin = ResourceOrigin {
-                key: format!("{kind}:{}", pack.id),
+                pack_id: pack.info.pack_id.clone(),
                 name: pack.info.name.clone(),
             };
             let descriptor = match &pack.archive {
@@ -197,7 +290,11 @@ impl ResourcePackManager {
         let pack_id = id.to_string();
         self.active_packs.retain(|p| p.id != pack_id);
         let dir = self.server_pack_dir(hash);
-        let info = parse_pack_meta_dir(&dir, hash);
+        let info = parse_pack_meta_dir(
+            &dir,
+            hash,
+            Self::issue_pack_id(PackIdentity::Server(id), None),
+        );
         self.active_packs.push(ActivePack {
             id: pack_id,
             provenance: PackProvenance::Server,
@@ -241,6 +338,10 @@ impl ResourcePackManager {
             Ok(e) => e,
             Err(_) => return,
         };
+        let directory = self
+            .packs_dir
+            .canonicalize()
+            .unwrap_or_else(|_| self.packs_dir.clone());
 
         for entry in entries.flatten() {
             let path = entry.path();
@@ -248,6 +349,13 @@ impl ResourcePackManager {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
+            let pack_id = Self::issue_pack_id(
+                PackIdentity::Local {
+                    directory: directory.clone(),
+                    selection: name.clone(),
+                },
+                None,
+            );
 
             if path.is_dir() {
                 if path.join("pack.mcmeta").exists() {
@@ -255,13 +363,13 @@ impl ResourcePackManager {
                         .active_packs
                         .iter()
                         .any(|p| p.provenance == PackProvenance::Local && p.dir == path);
-                    let mut info = parse_pack_meta_dir(&path, &name);
+                    let mut info = parse_pack_meta_dir(&path, &name, pack_id);
                     info.enabled = already_active;
                     info.provenance = PackProvenance::Local;
                     self.available_local.push(info);
                 }
             } else if path.extension().is_some_and(|e| e == "zip")
-                && let Some(mut info) = parse_pack_meta_zip(&path, &name)
+                && let Some(mut info) = parse_pack_meta_zip(&path, &name, pack_id)
             {
                 let already_active = self
                     .active_packs
@@ -275,10 +383,24 @@ impl ResourcePackManager {
     }
 
     pub fn enable_local_pack(&mut self, name: &str) {
+        // String selections must resolve to an already discovered pack, never
+        // mint identity for an arbitrary caller-supplied path or display title.
+        let Some(pack_id) =
+            self.available_local
+                .iter()
+                .find_map(|info| match &info.pack_id.0.identity {
+                    PackIdentity::Local { selection, .. } if selection == name => {
+                        Some(info.pack_id.clone())
+                    }
+                    _ => None,
+                })
+        else {
+            return;
+        };
         let path = self.packs_dir.join(name);
         if path.is_dir() && path.join("pack.mcmeta").exists() {
             self.active_packs.retain(|p| p.id != name);
-            let info = parse_pack_meta_dir(&path, name);
+            let info = parse_pack_meta_dir(&path, name, pack_id);
             self.active_packs.push(ActivePack {
                 id: name.to_owned(),
                 provenance: PackProvenance::Local,
@@ -299,7 +421,7 @@ impl ResourcePackManager {
                 tracing::error!("Failed to extract zip pack {name}: {e}");
                 return;
             }
-            let info = parse_pack_meta_dir(&extract_dir, name);
+            let info = parse_pack_meta_dir(&extract_dir, name, pack_id);
             self.active_packs.retain(|p| p.id != name);
             self.active_packs.push(ActivePack {
                 id: name.to_owned(),
@@ -317,11 +439,28 @@ impl ResourcePackManager {
         self.scan_local_packs();
     }
 
-    pub fn disable_local_pack(&mut self, name: &str) {
-        self.active_packs
-            .retain(|p| !(p.id == name && p.provenance == PackProvenance::Local));
-        tracing::info!("Disabled local resource pack: {name}");
-        self.scan_local_packs();
+    /// Menu selections carry issued identity; titles are only presentation.
+    pub fn set_local_pack_enabled(&mut self, pack_id: &PackId, enabled: bool) {
+        if enabled {
+            let Some(info) = self
+                .available_local
+                .iter()
+                .find(|info| &info.pack_id == pack_id)
+            else {
+                return;
+            };
+            let PackIdentity::Local { selection, .. } = &info.pack_id.0.identity else {
+                return;
+            };
+            let selection = selection.clone();
+            self.enable_local_pack(&selection);
+        } else {
+            self.active_packs.retain(|pack| {
+                !(pack.provenance == PackProvenance::Local && &pack.info.pack_id == pack_id)
+            });
+            tracing::info!("Disabled local resource pack: {pack_id:?}");
+            self.scan_local_packs();
+        }
     }
 
     pub fn active_pack_info(&self) -> Vec<PackInfo> {
@@ -397,13 +536,14 @@ fn parse_meta_value(v: &serde_json::Value, fallback: &str) -> (String, String, P
     (name, description, compat)
 }
 
-fn parse_pack_meta_dir(dir: &Path, fallback_name: &str) -> PackInfo {
+fn parse_pack_meta_dir(dir: &Path, fallback_name: &str, pack_id: PackId) -> PackInfo {
     let meta_path = dir.join("pack.mcmeta");
     let Some(v) = std::fs::read_to_string(&meta_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
     else {
         return PackInfo {
+            pack_id,
             name: fallback_name.to_owned(),
             description: fallback_name.to_owned(),
             compat: PackCompat::Compatible,
@@ -414,6 +554,7 @@ fn parse_pack_meta_dir(dir: &Path, fallback_name: &str) -> PackInfo {
 
     let (name, description, compat) = parse_meta_value(&v, fallback_name);
     PackInfo {
+        pack_id,
         name,
         description,
         compat,
@@ -422,7 +563,7 @@ fn parse_pack_meta_dir(dir: &Path, fallback_name: &str) -> PackInfo {
     }
 }
 
-fn parse_pack_meta_zip(path: &Path, fallback_name: &str) -> Option<PackInfo> {
+fn parse_pack_meta_zip(path: &Path, fallback_name: &str, pack_id: PackId) -> Option<PackInfo> {
     let data = std::fs::read(path).ok()?;
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).ok()?;
@@ -433,6 +574,7 @@ fn parse_pack_meta_zip(path: &Path, fallback_name: &str) -> Option<PackInfo> {
 
     let (name, description, compat) = parse_meta_value(&v, fallback_name);
     Some(PackInfo {
+        pack_id,
         name,
         description,
         compat,
