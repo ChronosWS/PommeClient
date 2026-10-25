@@ -191,8 +191,10 @@ pub fn update_menu(
         }
         MenuAction::PlayWorld { folder } => return open_world(core, &folder),
         MenuAction::ChangeTheme(theme) => {
-            gfx.renderer
-                .reload_panorama(&theme.panorama_dir(&core.data_dirs));
+            gfx.renderer.reload_panorama(
+                theme.panorama_dir(&core.data_dirs).as_deref(),
+                &core.resources,
+            );
             if theme == PanoramaTheme::Bedrock {
                 gfx.renderer
                     .load_bedrock_sprites(&core.data_dirs.bedrock_ui_dir(), core.font_sources());

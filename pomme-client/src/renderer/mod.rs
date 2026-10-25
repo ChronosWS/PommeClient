@@ -255,6 +255,7 @@ pub struct Renderer {
     block_overlay_pipeline: BlockOverlayPipeline,
     sky_pipeline: SkyPipeline,
     panorama_pipeline: PanoramaPipeline,
+    panorama_dir: Option<PathBuf>,
     menu_pipeline: MenuOverlayPipeline,
     /// The Menu Background Blur option: vanilla's `MenuBlurRadius`.
     menu_blur_radius: u8,
@@ -299,11 +300,11 @@ impl Renderer {
         game_dir: &Path,
         cache_dir: &Path,
         vsync: bool,
-        panorama_dir: &Path,
+        panorama_dir: Option<&Path>,
         bedrock_ui_dir: &Path,
     ) -> Result<Self, RendererError> {
         let FontSources {
-            resources: _,
+            resources,
             jar_assets_dir,
             asset_index,
             packs,
@@ -413,7 +414,7 @@ impl Renderer {
         let panorama_pipeline = PanoramaPipeline::new(
             &ctx.device,
             swapchain_state.targets(),
-            pipelines::panorama::resolve_panorama_faces(panorama_dir, jar_assets_dir, asset_index),
+            pipelines::panorama::load_panorama_faces(panorama_dir, resources),
         );
 
         splash(&mut menu_pipeline, 0.9, "Finalizing...");
@@ -524,6 +525,7 @@ impl Renderer {
             block_overlay_pipeline,
             sky_pipeline,
             panorama_pipeline,
+            panorama_dir: panorama_dir.map(Path::to_path_buf),
             menu_pipeline,
             menu_blur_radius: crate::ui::menu::DEFAULT_MENU_BACKGROUND_BLURRINESS,
             entity_outline,
@@ -1275,6 +1277,7 @@ impl Renderer {
         }
         self.menu_pipeline
             .reload_camera_overlays(&self.ctx.device, resources);
+        self.reload_panorama_resources(resources);
 
         warm_item_meshes(
             &self.ctx.device,
@@ -1323,12 +1326,18 @@ impl Renderer {
         }
     }
 
-    pub fn reload_panorama(&mut self, panorama_dir: &Path) {
-        let faces = pipelines::panorama::resolve_panorama_faces(
-            panorama_dir,
-            &self.jar_assets_dir,
-            &self.asset_index,
-        );
+    pub fn reload_panorama(
+        &mut self,
+        panorama_dir: Option<&Path>,
+        resources: &crate::resources::ResourceManager,
+    ) {
+        self.panorama_dir = panorama_dir.map(Path::to_path_buf);
+        self.reload_panorama_resources(resources);
+    }
+
+    fn reload_panorama_resources(&mut self, resources: &crate::resources::ResourceManager) {
+        let faces =
+            pipelines::panorama::load_panorama_faces(self.panorama_dir.as_deref(), resources);
         self.panorama_pipeline
             .reload_cubemap(&self.ctx.device, faces);
     }

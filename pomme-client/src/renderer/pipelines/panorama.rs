@@ -1,10 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::assets::{AssetIndex, resolve_asset_path};
 use crate::renderer::{rhi, shader, util};
+use crate::resources::{ResourceError, ResourceId, ResourceManager};
 
 // Minecraft panorama face order differs from Vulkan cubemap layer order
 const FACE_TO_LAYER: [u32; 6] = [4, 1, 5, 0, 2, 3];
+const MAX_FACE_BYTES: usize = 32 * 1024 * 1024;
 
 const PARAMS_LAYOUT: &[rhi::BindGroupLayoutEntry] = &[rhi::BindGroupLayoutEntry::uniform(
     rhi::ShaderStages::FRAGMENT,
@@ -26,17 +27,14 @@ pub struct PanoramaPipeline {
     cube: rhi::backend::Texture,
     cube_sampler: rhi::backend::Sampler,
     has_cubemap: bool,
-    /// The files behind the current cubemap, so a reload to the same set is a
-    /// no-op.
-    faces: Option<[PathBuf; 6]>,
 }
 
 impl PanoramaPipeline {
-    /// `faces` comes from [`resolve_panorama_faces`]; `None` draws nothing.
+    /// `faces` comes from [`load_panorama_faces`]; `None` draws nothing.
     pub fn new(
         device: &rhi::backend::Device,
         targets: rhi::backend::PipelineTargets,
-        faces: Option<[PathBuf; 6]>,
+        faces: Option<[image::RgbaImage; 6]>,
     ) -> Self {
         let params_layout = rhi::backend::create_bind_group_layout(device, PARAMS_LAYOUT);
         let cube_layout = rhi::backend::create_bind_group_layout(device, CUBE_LAYOUT);
@@ -63,7 +61,6 @@ impl PanoramaPipeline {
             cube,
             cube_sampler,
             has_cubemap,
-            faces,
         }
     }
 
@@ -87,25 +84,23 @@ impl PanoramaPipeline {
         pass.draw(3, 1, 0, 0);
     }
 
-    pub fn reload_cubemap(&mut self, device: &rhi::backend::Device, faces: Option<[PathBuf; 6]>) {
-        if faces == self.faces {
-            return;
-        }
+    pub fn reload_cubemap(
+        &mut self,
+        device: &rhi::backend::Device,
+        faces: Option<[image::RgbaImage; 6]>,
+    ) {
+        // Paths and IDs can stay unchanged while active pack bytes change.
         device.wait_idle();
-        self.destroy_cube(device);
-
         let (cube, cube_sampler, has_cubemap) = load_cubemap(device, faces.as_ref());
-
-        self.faces = faces;
-        self.cube = cube;
-        self.cube_sampler = cube_sampler;
-        self.has_cubemap = has_cubemap;
-
         self.cube_set.replace(
             device,
             self.cube_layout,
-            &util::texture_binding(self.cube.handle(), self.cube_sampler),
+            &util::texture_binding(cube.handle(), cube_sampler),
         );
+        self.destroy_cube(device);
+        self.cube = cube;
+        self.cube_sampler = cube_sampler;
+        self.has_cubemap = has_cubemap;
     }
 
     fn destroy_cube(&mut self, device: &rhi::backend::Device) {
@@ -135,36 +130,61 @@ impl PanoramaPipeline {
     }
 }
 
-fn resolve_panorama_face(
-    i: u32,
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-) -> Option<PathBuf> {
-    let flat = jar_assets_dir.join(format!("panorama_{i}.png"));
-    if flat.exists() {
-        return Some(flat);
+/// Explicit application-theme files are a separate, all-six override, not a
+/// Minecraft pack. Incomplete/invalid themes fall back to the active Minecraft
+/// resources as a whole; Minecraft faces each use normal pack
+/// priority/filtering.
+pub fn load_panorama_faces(
+    panorama_dir: Option<&Path>,
+    resources: &ResourceManager,
+) -> Option<[image::RgbaImage; 6]> {
+    if let Some(directory) = panorama_dir {
+        match collect_panorama_faces(|i| {
+            let path = directory.join(format!("panorama_{i}.png"));
+            let (data, w, h) = util::load_png(&path)
+                .ok_or_else(|| format!("could not decode {}", path.display()))?;
+            image::RgbaImage::from_raw(w, h, data)
+                .ok_or_else(|| format!("invalid RGBA image: {}", path.display()))
+        }) {
+            Ok(faces) => return Some(faces),
+            Err(error) => tracing::info!("Using Minecraft panorama instead of theme: {error}"),
+        }
     }
-    let asset_key = format!("minecraft/textures/gui/title/background/panorama_{i}.png");
-    let path = resolve_asset_path(jar_assets_dir, asset_index, &asset_key);
-    path.exists().then_some(path)
+
+    match collect_panorama_faces(|i| {
+        let name = format!("minecraft:textures/gui/title/background/panorama_{i}.png");
+        let bytes = ResourceId::new(&name)
+            .and_then(|id| {
+                resources
+                    .get_resource(&id)?
+                    .ok_or(ResourceError::Missing(id))?
+                    .content()
+                    .read_bytes(MAX_FACE_BYTES)
+            })
+            .map_err(|error| error.to_string())?;
+        image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .map(|image| image.to_rgba8())
+            .map_err(|error| format!("could not decode {name}: {error}"))
+    }) {
+        Ok(faces) => Some(faces),
+        Err(error) => {
+            tracing::info!("Panorama unavailable, skipping cubemap: {error}");
+            None
+        }
+    }
 }
 
-/// All six faces from one source: the flat `panorama_{i}.png` overrides in
-/// `panorama_dir` if it has every one, else the jar's. Never mixes the two.
-pub fn resolve_panorama_faces(
-    panorama_dir: &Path,
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-) -> Option<[PathBuf; 6]> {
-    let collect = |resolve: &dyn Fn(u32) -> Option<PathBuf>| -> Option<[PathBuf; 6]> {
-        let faces: Vec<PathBuf> = (0..6).map(resolve).collect::<Option<_>>()?;
-        faces.try_into().ok()
-    };
-    collect(&|i| {
-        let flat = panorama_dir.join(format!("panorama_{i}.png"));
-        flat.exists().then_some(flat)
-    })
-    .or_else(|| collect(&|i| resolve_panorama_face(i, jar_assets_dir, asset_index)))
+fn collect_panorama_faces(
+    load: impl FnMut(u32) -> Result<image::RgbaImage, String>,
+) -> Result<[image::RgbaImage; 6], String> {
+    let faces = (0..6).map(load).collect::<Result<Vec<_>, _>>()?;
+    let size = faces[0].dimensions();
+    if size.0 <= 1 || size.0 != size.1 || faces.iter().any(|face| face.dimensions() != size) {
+        return Err("panorama faces must be equally sized squares larger than 1x1".into());
+    }
+    faces
+        .try_into()
+        .map_err(|_| "expected six panorama faces".into())
 }
 
 fn flip_horizontal(data: &[u8], w: u32, h: u32) -> Vec<u8> {
@@ -182,30 +202,14 @@ fn flip_horizontal(data: &[u8], w: u32, h: u32) -> Vec<u8> {
 
 fn load_cubemap(
     device: &rhi::backend::Device,
-    face_paths: Option<&[PathBuf; 6]>,
+    faces: Option<&[image::RgbaImage; 6]>,
 ) -> (rhi::backend::Texture, rhi::backend::Sampler, bool) {
-    let Some(face_paths) = face_paths else {
+    let Some(faces) = faces else {
         tracing::info!("Panorama faces not found, skipping cubemap");
         return create_fallback_cubemap(device);
     };
 
-    let mut faces: Vec<Vec<u8>> = Vec::new();
-    let mut face_w = 0u32;
-    let mut face_h = 0u32;
-
-    for (i, path) in face_paths.iter().enumerate() {
-        match util::load_png(path) {
-            Some((data, w, h)) if w > 1 && h > 1 => {
-                face_w = w;
-                face_h = h;
-                faces.push(data);
-            }
-            _ => {
-                tracing::info!("Panorama face {i} is a placeholder, skipping cubemap");
-                return create_fallback_cubemap(device);
-            }
-        }
-    }
+    let (face_w, face_h) = faces[0].dimensions();
 
     let face_bytes = (face_w * face_h * 4) as usize;
     let mut staging_data = vec![0u8; face_bytes * 6];

@@ -318,14 +318,13 @@ impl PanoramaTheme {
         }
     }
 
-    /// The panorama cubemap each theme draws: vanilla's ships in the version
-    /// jar, Pomme's alongside the rest of the branded assets, Bedrock's with
-    /// its downloaded UI textures.
-    pub fn panorama_dir(self, dirs: &crate::dirs::DataDirs) -> std::path::PathBuf {
+    /// Java uses active Minecraft resources; Pomme and Bedrock use their
+    /// explicit application-theme directories.
+    pub fn panorama_dir(self, dirs: &crate::dirs::DataDirs) -> Option<std::path::PathBuf> {
         match self {
-            Self::Java => dirs.jar_assets_dir.clone(),
-            Self::Pomme => dirs.pomme_assets_dir.join("panoramas"),
-            Self::Bedrock => dirs.bedrock_ui_dir(),
+            Self::Java => None,
+            Self::Pomme => Some(dirs.pomme_assets_dir.join("panoramas")),
+            Self::Bedrock => Some(dirs.bedrock_ui_dir()),
         }
     }
 }
