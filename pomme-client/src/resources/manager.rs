@@ -16,8 +16,8 @@ pub(crate) struct BuiltinResources<'a> {
 }
 
 /// Fixed selected-source view; input order is low-to-high priority.
-/// Discovery and selection belong to the caller. Only exact lookup is
-/// implemented; namespace, stack and listing methods are prototype contracts.
+/// Discovery and selection belong to the caller. Exact and stack lookup are
+/// implemented; namespace and listing methods are prototype contracts.
 pub(crate) struct ResourceManager {
     sources: Vec<SharedPackResources>,
 }
@@ -89,14 +89,29 @@ impl ResourceManager {
         Ok(None)
     }
 
-    /// All matches low-to-high, empty on absence. Per-entry metadata policy
-    /// remains undecided and must be settled before implementation.
+    /// All matches low-to-high, empty on absence; access errors never fall
+    /// back. Each entry's lazy, uncached metadata comes only from its own
+    /// source.
     pub(crate) fn get_resource_stack(
         &self,
         id: &ResourceId,
     ) -> Result<Vec<Resource>, ResourceError> {
-        let _ = id;
-        unimplemented!("interface only: ordered stack; metadata policy still open")
+        let mut resources = Vec::new();
+        for source in &self.sources {
+            let Some(content) = source.clone().get_resource(id)? else {
+                continue;
+            };
+            let source = source.clone();
+            let id = id.clone();
+            let metadata = Rc::new(move || {
+                let asset_id = id.as_asset_id();
+                let metadata_id =
+                    ResourceId::new(&format!("{}:{}.mcmeta", asset_id.namespace, asset_id.path))?;
+                source.clone().get_resource(&metadata_id)
+            });
+            resources.push(Resource::new(content, metadata));
+        }
+        Ok(resources)
     }
 
     /// Validated recursive query as defined by PackResources, with
@@ -114,7 +129,7 @@ impl ResourceManager {
 
     /// Recursive query: keys in deterministic namespace-then-path order (not
     /// resource-pack priority) and nonempty low-to-high stacks.
-    /// Shares get_resource_stack's unresolved metadata policy.
+    /// Shares get_resource_stack's lazy, same-source metadata policy.
     pub(crate) fn list_resource_stacks(
         &self,
         namespace: &str,

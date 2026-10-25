@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::assets::{AssetId, AssetIndex, resolve_asset_path_with_packs, resource_stack_paths};
+use crate::assets::{AssetId, AssetIndex, resolve_asset_path_with_packs};
 use crate::resource_pack::ResourcePackManager;
 use crate::resources::{
     BuiltinResources, ResourceContent, ResourceError, ResourceId, ResourceManager,
@@ -112,6 +112,7 @@ const MAX_UNIHEX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_UNIHEX_LINE_BYTES: usize = 512;
 const MAX_PROVIDER_GLYPHS: usize = 262_144;
 
+#[cfg(any(feature = "ttf-fonts", test))]
 fn read_file_bounded(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path)
         .map_err(|error| format!("failed to open {kind} {}: {error}", path.display()))?;
@@ -138,9 +139,22 @@ fn read_file_bounded(path: &Path, max_bytes: usize, kind: &str) -> Result<Vec<u8
     Ok(bytes)
 }
 
-fn read_text_file_bounded(path: &Path, max_bytes: usize, kind: &str) -> Result<String, String> {
-    String::from_utf8(read_file_bounded(path, max_bytes, kind)?)
-        .map_err(|error| format!("{kind} {} is not valid UTF-8: {error}", path.display()))
+fn read_text_resource_bounded(
+    content: &ResourceContent,
+    max_bytes: usize,
+    kind: &str,
+) -> Result<String, String> {
+    let label = format!("{} from {:?}", content.id(), content.origin());
+    let stream = content.open().map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    stream
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read {kind} {label}: {error}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("{kind} {label} exceeds the {max_bytes}-byte limit"));
+    }
+    String::from_utf8(bytes).map_err(|error| format!("{kind} {label} is not valid UTF-8: {error}"))
 }
 
 fn decoded_rgba_bytes(width: u32, height: u32) -> Option<u64> {
@@ -495,7 +509,7 @@ impl GlyphMap {
         let ctx = LoadContext {
             sources,
             missing: missing_glyph.clone(),
-            bitmap_resources: OnceCell::new(),
+            resources: OnceCell::new(),
         };
 
         let font_ids = discover_font_ids(&sources);
@@ -589,8 +603,26 @@ struct LoadContext<'a> {
     sources: FontSources<'a>,
     missing: Arc<GlyphInfo>,
     /// Local to this load pass/thread; FontSources remains Copy and Send.
-    /// Only bitmap texture bytes use this view, not font definitions/metadata.
-    bitmap_resources: OnceCell<Result<ResourceManager, ResourceError>>,
+    /// Shared by font definitions and bitmap textures; metadata is not read.
+    resources: OnceCell<Result<ResourceManager, ResourceError>>,
+}
+
+impl LoadContext<'_> {
+    fn resource_manager(&self) -> Result<&ResourceManager, String> {
+        self.resources
+            .get_or_init(|| {
+                ResourceManager::from_packs(
+                    BuiltinResources {
+                        pack_id: self.sources.packs.builtin_pack_id(),
+                        jar_assets_dir: self.sources.jar_assets_dir,
+                        asset_index: self.sources.asset_index.as_ref(),
+                    },
+                    self.sources.packs.active_pack_descriptors()?,
+                )
+            })
+            .as_ref()
+            .map_err(|error| format!("failed to initialize font resources: {error}"))
+    }
 }
 
 /// The asset key of resource `id` under `prefix` (`Identifier.withPrefix`).
@@ -609,8 +641,10 @@ fn normalize_resource_id(id: &str) -> Result<String, String> {
     Ok(format!("{namespace}:{path}"))
 }
 
-fn font_asset_key(id: &str) -> Result<String, String> {
-    Ok(format!("{}.json", asset_key(id, "font/")?))
+fn font_resource_id(id: &str) -> Result<ResourceId, String> {
+    asset_key(id, "font/")?;
+    let AssetId { namespace, path } = AssetId::parse(id);
+    ResourceId::new(&format!("{namespace}:font/{path}.json")).map_err(|error| error.to_string())
 }
 
 fn font_id_from_asset_key(asset_key: &str) -> Option<String> {
@@ -747,8 +781,10 @@ fn single_codepoint(text: &str) -> Option<char> {
 
 /// Reads one font JSON (vanilla `FontManager.loadResourceStack` decodes a
 /// whole file or skips it).
-fn read_font_definition(path: &Path) -> Result<Vec<(ProviderDefinition, FontFilter)>, String> {
-    let text = read_text_file_bounded(path, MAX_FONT_DEFINITION_BYTES, "font definition")?;
+fn read_font_definition(
+    content: &ResourceContent,
+) -> Result<Vec<(ProviderDefinition, FontFilter)>, String> {
+    let text = read_text_resource_bounded(content, MAX_FONT_DEFINITION_BYTES, "font definition")?;
     let value: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     value
         .get("providers")
@@ -932,24 +968,32 @@ fn load_unresolved_font(
     ctx: &LoadContext<'_>,
     atlases: &mut Atlases,
 ) -> Vec<UnresolvedProvider> {
-    let asset_key = match font_asset_key(font_id) {
-        Ok(asset_key) => asset_key,
+    let id = match font_resource_id(font_id) {
+        Ok(id) => id,
         Err(error) => return vec![UnresolvedProvider::Invalid(error)],
     };
-    let sources = &ctx.sources;
+    let stack = match ctx.resource_manager().and_then(|manager| {
+        manager
+            .get_resource_stack(&id)
+            .map_err(|error| error.to_string())
+    }) {
+        Ok(stack) => stack,
+        Err(error) => {
+            let error = format!("Unable to load font `{font_id}` resource {id}: {error}");
+            tracing::warn!("{error}");
+            return vec![UnresolvedProvider::Invalid(error)];
+        }
+    };
     let mut providers = Vec::new();
-    for path in resource_stack_paths(
-        sources.jar_assets_dir,
-        sources.asset_index,
-        &asset_key,
-        Some(sources.packs),
-    ) {
-        let definitions = match read_font_definition(&path) {
+    for resource in stack {
+        let content = resource.content();
+        let definitions = match read_font_definition(content) {
             Ok(definitions) => definitions,
             Err(error) => {
                 tracing::warn!(
-                    "Unable to load font `{font_id}` in {}: {error}",
-                    path.display()
+                    "Unable to load font `{font_id}` resource {} from {:?}: {error}",
+                    content.id(),
+                    content.origin()
                 );
                 continue;
             }
@@ -970,8 +1014,9 @@ fn load_unresolved_font(
                 // Vanilla `safeLoad`: a provider that fails to load rejects
                 // its whole font.
                 Err(error) => providers.push(UnresolvedProvider::Invalid(format!(
-                    "{}: {error}",
-                    path.display()
+                    "{} from {:?}: {error}",
+                    content.id(),
+                    content.origin()
                 ))),
             }
         }
@@ -1117,20 +1162,7 @@ fn load_bitmap_provider(
     let AssetId { namespace, path } = AssetId::parse(&definition.file);
     let id = ResourceId::new(&format!("{namespace}:textures/{path}"))
         .map_err(|error| error.to_string())?;
-    let manager = ctx
-        .bitmap_resources
-        .get_or_init(|| {
-            ResourceManager::from_packs(
-                BuiltinResources {
-                    pack_id: ctx.sources.packs.builtin_pack_id(),
-                    jar_assets_dir: ctx.sources.jar_assets_dir,
-                    asset_index: ctx.sources.asset_index.as_ref(),
-                },
-                ctx.sources.packs.active_pack_descriptors()?,
-            )
-        })
-        .as_ref()
-        .map_err(|error| format!("failed to initialize bitmap font resources: {error}"))?;
+    let manager = ctx.resource_manager()?;
     let resource = manager
         .get_resource(&id)
         .map_err(|error| error.to_string())?
@@ -1705,7 +1737,7 @@ mod tests {
                     options: FontOptions::default(),
                 },
                 missing: Arc::new(space_glyph(6.0)),
-                bitmap_resources: OnceCell::new(),
+                resources: OnceCell::new(),
             }
         }
     }
