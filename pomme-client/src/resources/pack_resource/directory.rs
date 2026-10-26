@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use super::{
     PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, canonical_directory,
-    check_directory, enumeration_error, is_file, lookup_error, open_directory, open_file,
-    overlay_directory, resolve_within, source_file, valid_namespace, validate_query,
+    check_directory, enumeration_error, is_file, lookup_error, open_file, overlay_directory,
+    resolve_within, source_file, valid_namespace, validate_query,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
@@ -20,15 +20,6 @@ pub(super) struct DirectoryPackResources {
 }
 
 impl DirectoryPackResources {
-    pub(super) fn open(root: PathBuf, origin: ResourceOrigin) -> Result<Self, ResourceError> {
-        open_directory(&root, &origin)?;
-        Ok(Self {
-            root,
-            pack_root: None,
-            origin,
-        })
-    }
-
     pub(super) fn open_pack(
         pack_root: PathBuf,
         overlay: Option<&str>,

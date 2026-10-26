@@ -2,7 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(feature = "ttf-fonts")]
 use std::ffi::CStr;
-use std::io::{BufRead, BufReader, Cursor, Read};
+use std::io::{BufRead, BufReader, Cursor};
 #[cfg(feature = "ttf-fonts")]
 use std::os::raw::c_char;
 #[cfg(test)]
@@ -102,15 +102,9 @@ fn read_text_resource_bounded(
     kind: &str,
 ) -> Result<String, String> {
     let label = format!("{} from {:?}", content.id(), content.origin());
-    let stream = content.open().map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    stream
-        .take(max_bytes as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("failed to read {kind} {label}: {error}"))?;
-    if bytes.len() > max_bytes {
-        return Err(format!("{kind} {label} exceeds the {max_bytes}-byte limit"));
-    }
+    let bytes = content
+        .read_bytes(max_bytes)
+        .map_err(|error| format!("failed to read {kind}: {error}"))?;
     String::from_utf8(bytes).map_err(|error| format!("{kind} {label} is not valid UTF-8: {error}"))
 }
 
@@ -188,17 +182,9 @@ fn read_unihex_line_bounded<R: BufRead>(
 
 fn load_bitmap_image_bounded(content: &ResourceContent) -> Result<image::DynamicImage, String> {
     let label = format!("{:?} from {:?}", content.id(), content.origin());
-    let stream = content.open().map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    stream
-        .take(MAX_BITMAP_FILE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("failed to read bitmap font texture {label}: {error}"))?;
-    if bytes.len() > MAX_BITMAP_FILE_BYTES {
-        return Err(format!(
-            "bitmap font texture {label} exceeds the {MAX_BITMAP_FILE_BYTES}-byte limit"
-        ));
-    }
+    let bytes = content
+        .read_bytes(MAX_BITMAP_FILE_BYTES)
+        .map_err(|error| format!("failed to read bitmap font texture: {error}"))?;
     let reader = image::ImageReader::new(Cursor::new(bytes.as_slice()))
         .with_guessed_format()
         .map_err(|error| format!("failed to identify bitmap font {label}: {error}"))?;

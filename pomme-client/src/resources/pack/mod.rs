@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use id::PackIdentity;
 use metadata::PackMetadata;
-use pomme_protocol::KnownPack;
 
 use super::installed_format::read_installed_pack_format;
 use super::pack_format::{PackFormat, PackFormatRange};
@@ -95,7 +94,7 @@ impl ResourcePackManager {
         let _ = std::fs::create_dir_all(&packs_dir);
         let _ = std::fs::create_dir_all(&server_cache_dir);
         let mut mgr = Self {
-            embedded_pack_id: PackId::new(PackIdentity::Pomme, None),
+            embedded_pack_id: PackId::new(PackIdentity::Pomme),
             installed_resources: None,
             builtin_pack_id: new_builtin_pack_id(asset_version),
             asset_version: asset_version.to_owned(),
@@ -159,49 +158,10 @@ impl ResourcePackManager {
         index: Option<&crate::assets::AssetIndex>,
     ) -> ResourceSources {
         ResourceSources(builtin_descriptors(
-            PackId::new(PackIdentity::Pomme, None),
+            PackId::new(PackIdentity::Pomme),
             new_builtin_pack_id(asset_version),
             Some((client_jar, index)),
         ))
-    }
-
-    /// The recognized built-in pack, even before its storage is
-    /// installed/opened.
-    pub fn builtin_pack_id(&self) -> &PackId {
-        &self.builtin_pack_id
-    }
-
-    /// Exact namespace/id/version lookup across registered packs, selected or
-    /// not. Membership guarantees neither source accessibility nor
-    /// negotiation capability; network negotiation still requires the
-    /// protocol's embedded registry data.
-    #[allow(dead_code, reason = "catalog API has no runtime consumer yet")]
-    pub fn find_known_pack(&self, known_pack: &KnownPack) -> Option<&PackId> {
-        std::iter::once(&self.builtin_pack_id)
-            .chain(self.available_local.iter().map(PackInfo::pack_id))
-            .chain(self.active_packs.iter().map(|pack| pack.info.pack_id()))
-            .find(|pack_id| pack_id.known_pack() == Some(known_pack))
-    }
-
-    // Retained only for the legacy path-safety regression fixture.
-    #[cfg(test)]
-    pub fn resolve_asset(&self, asset_key: &str) -> Option<PathBuf> {
-        if !crate::assets::valid_asset_key(asset_key) {
-            return None;
-        }
-        for pack in self.active_packs.iter().rev() {
-            let path = pack.dir.join("assets").join(asset_key);
-            if path.exists() {
-                return Some(path);
-            }
-        }
-        None
-    }
-
-    /// Active pack roots in low-to-high priority order, matching the order in
-    /// which stacked resources are registered by Vanilla.
-    pub fn active_pack_dirs(&self) -> impl Iterator<Item = &Path> {
-        self.active_packs.iter().map(|pack| pack.dir.as_path())
     }
 
     /// Selected logical packs in low-to-high order, including filter-only
@@ -235,11 +195,11 @@ impl ResourcePackManager {
                     source,
                 })?;
             let storage = match &pack.archive {
-                Some(path) => PackStorage::ZipPack {
+                Some(path) => PackStorage::Zip {
                     path: path.clone(),
                     overlays,
                 },
-                None => PackStorage::DirectoryPack {
+                None => PackStorage::Directory {
                     root: pack.dir.clone(),
                     overlays,
                 },
@@ -265,30 +225,6 @@ impl ResourcePackManager {
                 origin: origin.clone(),
                 source,
             })
-    }
-
-    /// Resolve a resource-pack asset together with the metadata sidecar that
-    /// vanilla would expose for that resource. Metadata may come from the same
-    /// pack or a higher-priority pack, but never from below the pack that
-    /// supplied the resource itself.
-    pub fn resolve_asset_with_metadata(
-        &self,
-        asset_key: &str,
-    ) -> Option<(PathBuf, Option<PathBuf>)> {
-        let metadata_key = format!("{asset_key}.mcmeta");
-        for (source_index, pack) in self.active_packs.iter().enumerate().rev() {
-            let path = pack.dir.join("assets").join(asset_key);
-            if !path.exists() {
-                continue;
-            }
-            let metadata = self.active_packs[source_index..]
-                .iter()
-                .rev()
-                .map(|candidate| candidate.dir.join("assets").join(&metadata_key))
-                .find(|candidate| candidate.exists());
-            return Some((path, metadata));
-        }
-        None
     }
 
     fn server_pack_dir(&self, hash: &str) -> PathBuf {
@@ -322,7 +258,7 @@ impl ResourcePackManager {
         let info = parse_pack_meta_dir(
             &dir,
             hash,
-            PackId::new(PackIdentity::Server(id), None),
+            PackId::new(PackIdentity::Server(id)),
             self.target_format,
         );
         self.active_packs.push(ActivePack {
@@ -379,13 +315,10 @@ impl ResourcePackManager {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let pack_id = PackId::new(
-                PackIdentity::Local {
-                    directory: directory.clone(),
-                    selection: name.clone(),
-                },
-                None,
-            );
+            let pack_id = PackId::new(PackIdentity::Local {
+                directory: directory.clone(),
+                selection: name.clone(),
+            });
 
             if path.is_dir() {
                 if path.join(keys::PACK_METADATA_FILE).exists() {
@@ -513,7 +446,10 @@ impl ResourcePackManager {
         client_jar: &Path,
     ) -> Result<ResourceSources, ResourceError> {
         let mut sources = vec![ResourcePackDescriptor {
-            storage: vec![PackStorage::Zip(client_jar.to_owned())],
+            storage: vec![PackStorage::Zip {
+                path: client_jar.to_owned(),
+                overlays: Vec::new(),
+            }],
             origin: ResourceOrigin {
                 pack_id: self.builtin_pack_id.clone(),
                 name: "Fixture".to_owned(),
@@ -526,16 +462,9 @@ impl ResourcePackManager {
 }
 
 fn new_builtin_pack_id(asset_version: &str) -> PackId {
-    PackId::new(
-        PackIdentity::Builtin {
-            version: asset_version.to_owned(),
-        },
-        Some(KnownPack {
-            namespace: "minecraft".to_owned(),
-            id: "core".to_owned(),
-            version: asset_version.to_owned(),
-        }),
-    )
+    PackId::new(PackIdentity::Builtin {
+        version: asset_version.to_owned(),
+    })
 }
 
 /// Common low-to-high registration for bootstrap, GUI and vanilla-only modes.
@@ -553,7 +482,10 @@ fn builtin_descriptors(
         filter: Default::default(),
     }];
     if let Some((client_jar, index)) = installation {
-        let mut storage = vec![PackStorage::Zip(client_jar.to_owned())];
+        let mut storage = vec![PackStorage::Zip {
+            path: client_jar.to_owned(),
+            overlays: Vec::new(),
+        }];
         if let Some(index) = index {
             storage.push(PackStorage::Indexed(index.clone()));
         }

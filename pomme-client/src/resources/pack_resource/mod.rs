@@ -22,14 +22,12 @@ use zip::ZipPackResources;
 
 /// Storage selected by pack management, independent of identity and priority.
 pub(super) enum PackStorage {
-    /// Namespace-containing directory, normally `<pack root>/assets`.
-    Directory(PathBuf),
-    Zip(PathBuf),
-    DirectoryPack {
+    /// Pack root with base assets and metadata-selected overlays.
+    Directory {
         root: PathBuf,
         overlays: Vec<String>,
     },
-    ZipPack {
+    Zip {
         path: PathBuf,
         overlays: Vec<String>,
     },
@@ -59,11 +57,7 @@ impl ResourcePackDescriptor {
             .map(|storage| {
                 let origin = self.origin.clone();
                 let source: SharedPackResources = match storage {
-                    PackStorage::Directory(root) => {
-                        Rc::new(DirectoryPackResources::open(root, origin)?)
-                    }
-                    PackStorage::Zip(path) => Rc::new(ZipPackResources::open(path, origin)?),
-                    PackStorage::DirectoryPack { root, overlays } => {
+                    PackStorage::Directory { root, overlays } => {
                         let mut children: Vec<SharedPackResources> = vec![Rc::new(
                             DirectoryPackResources::open_pack(root.clone(), None, origin.clone())?,
                         )];
@@ -76,7 +70,7 @@ impl ResourcePackDescriptor {
                         }
                         Rc::new(overlay::OverlayPackResources::new(origin, children))
                     }
-                    PackStorage::ZipPack { path, overlays } => {
+                    PackStorage::Zip { path, overlays } => {
                         let base = Rc::new(ZipPackResources::open(path, origin.clone())?);
                         base.check_pack_root()?;
                         let mut children: Vec<SharedPackResources> = vec![base.clone()];
@@ -123,16 +117,6 @@ impl<T: PackResources + Send + Sync> ThreadSafeResourceSource for T {
 pub(crate) struct ResourceOrigin {
     pub(super) pack_id: PackId,
     pub(super) name: String,
-}
-
-impl ResourceOrigin {
-    pub(crate) fn pack_id(&self) -> &PackId {
-        &self.pack_id
-    }
-
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
 }
 
 /// Resource bytes from one source layer, with syntax-checked logical IDs.

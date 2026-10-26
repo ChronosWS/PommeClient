@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
-use crate::resources::ResourcePackManager;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AssetId<'a> {
     pub namespace: &'a str,
@@ -72,49 +69,6 @@ pub fn load_image(path: &Path) -> Result<image::DynamicImage, image::ImageError>
     })
 }
 
-// Retained for the legacy path-safety regression test; production consumers
-// no longer acquire resources through this helper.
-#[cfg(test)]
-pub fn resolve_asset_path_with_packs(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    asset_key: &str,
-    packs: Option<&ResourcePackManager>,
-) -> PathBuf {
-    if !checked_asset_key(asset_key) {
-        return jar_assets_dir.join("__invalid_asset_key__");
-    }
-    packs
-        .and_then(|packs| packs.resolve_asset(asset_key))
-        .or_else(|| builtin_asset(jar_assets_dir, asset_index, asset_key))
-        .unwrap_or_else(|| jar_assets_dir.join(asset_key))
-}
-
-#[cfg(test)]
-fn checked_asset_key(asset_key: &str) -> bool {
-    let valid = valid_asset_key(asset_key);
-    if !valid {
-        tracing::warn!("Rejecting invalid Minecraft asset key {asset_key:?}");
-    }
-    valid
-}
-
-/// The jar and the asset index are one built-in pack, the index first.
-#[cfg(test)]
-fn builtin_asset(
-    jar_assets_dir: &Path,
-    asset_index: &Option<AssetIndex>,
-    asset_key: &str,
-) -> Option<PathBuf> {
-    asset_index
-        .as_ref()
-        .and_then(|idx| idx.resolve(asset_key))
-        .or_else(|| {
-            let jar = jar_assets_dir.join(asset_key);
-            jar.is_file().then_some(jar)
-        })
-}
-
 #[derive(Clone)]
 pub struct AssetIndex {
     objects_dir: PathBuf,
@@ -145,14 +99,6 @@ impl AssetIndex {
             objects_dir: objects_dir.to_path_buf(),
             hashes,
         })
-    }
-
-    // Retained only for the legacy path-safety regression fixture.
-    #[cfg(test)]
-    pub fn resolve(&self, asset_key: &str) -> Option<PathBuf> {
-        let hash = self.hashes.get(asset_key)?;
-        let path = self.objects_dir.join(&hash[..2]).join(hash);
-        path.exists().then_some(path)
     }
 
     pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
@@ -217,12 +163,5 @@ mod tests {
                 "accepted invalid asset key: {invalid}"
             );
         }
-    }
-
-    #[test]
-    fn invalid_asset_key_never_joins_outside_root() {
-        let root = std::env::temp_dir().join(format!("pomme-assets-{}", uuid::Uuid::new_v4()));
-        let resolved = resolve_asset_path_with_packs(&root, &None, "minecraft/../../outside", None);
-        assert_eq!(resolved, root.join("__invalid_asset_key__"));
     }
 }

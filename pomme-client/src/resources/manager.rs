@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use super::ResourceSources;
@@ -116,41 +116,6 @@ impl ResourceManager {
             metadata_blocked |= pack.filter.blocks(&metadata_id);
         }
         resources.reverse();
-        Ok(resources)
-    }
-
-    /// Recursive query across all namespaces, excluding .mcmeta sidecars.
-    /// Keys have namespace-then-path ordering, with get_resource's winner and
-    /// lazy metadata policy. Enumeration is not an atomic storage snapshot.
-    pub(crate) fn list_resources(
-        &self,
-        prefix: &str,
-        selector: impl Fn(&ResourceId) -> bool,
-    ) -> Result<BTreeMap<ResourceId, Resource>, ResourceError> {
-        let mut resources = BTreeMap::new();
-        for id in self.list_resource_ids(prefix, selector)? {
-            if let Some(resource) = self.get_resource(&id)? {
-                resources.insert(id, resource);
-            }
-        }
-        Ok(resources)
-    }
-
-    /// All-namespace query without sidecars: keys in namespace-then-path order
-    /// (not resource-pack priority) and nonempty low-to-high stacks.
-    /// Shares get_resource_stack's lazy, same-source metadata policy.
-    pub(crate) fn list_resource_stacks(
-        &self,
-        prefix: &str,
-        selector: impl Fn(&ResourceId) -> bool,
-    ) -> Result<BTreeMap<ResourceId, Vec<Resource>>, ResourceError> {
-        let mut resources = BTreeMap::new();
-        for id in self.list_resource_ids(prefix, selector)? {
-            let stack = self.get_resource_stack(&id)?;
-            if !stack.is_empty() {
-                resources.insert(id, stack);
-            }
-        }
         Ok(resources)
     }
 

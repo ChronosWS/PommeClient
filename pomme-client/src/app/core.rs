@@ -852,7 +852,6 @@ pub struct AppCore {
     pub(crate) resources: crate::resources::ResourceManager,
     pub(crate) block_definitions: Rc<BlockDefinitions>,
     pub pending_pack_download: Option<PendingPackDownload>,
-    pub asset_index: Option<AssetIndex>,
     pub audio: crate::audio::AudioEngine,
     pub tick_accumulator: f32,
     pub time_tick_accumulator: f32,
@@ -1024,7 +1023,6 @@ impl AppCore {
             resources,
             block_definitions: Rc::new(BlockDefinitions::new()),
             pending_pack_download: None,
-            asset_index,
             audio,
             tick_accumulator: 0.0,
             time_tick_accumulator: 0.0,
@@ -1674,7 +1672,6 @@ impl AppCore {
             resource_packs,
             menu,
             audio,
-            asset_index,
             data_dirs,
             version,
             inline_objects,
@@ -1703,8 +1700,7 @@ impl AppCore {
                     renderer.reload_assets(resources, menu.font_options());
                 }
                 menu.load_splash(resources);
-                if let Some(index) = installed_index {
-                    *asset_index = index;
+                if installed_index.is_some() {
                     *audio = crate::audio::AudioEngine::new(resources, menu.category_volumes());
                 } else {
                     audio.reload_assets(resources);
