@@ -1,9 +1,8 @@
 //! Resource bytes, independent of particles, render assets and the GPU.
-//! Supplies Pomme UI assets and Minecraft fonts; other consumers remain
-//! legacy. Current adapters access assets; server-data domains are not
-//! implemented.
+//! Shared resource view for all standard asset consumers through registered
+//! sources. Server-data domains are not implemented.
 //!
-//! Pack management owns discovery, selection, downloads and legacy extraction.
+//! Pack management owns discovery, selection, downloads and extraction.
 //! Its root metadata parser is private; resource sidecars remain queryable.
 //! Source priority: selected packs above the optional external index above JAR
 //! above embedded Pomme resources. Bootstrap needs only the embedded pack.

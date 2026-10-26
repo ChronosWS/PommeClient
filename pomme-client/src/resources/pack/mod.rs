@@ -63,7 +63,7 @@ struct ActivePack {
     id: String,
     provenance: PackProvenance,
     dir: PathBuf,
-    // Migrated consumers read the original local ZIP; legacy consumers keep dir.
+    // Local ZIP resource sources use the original archive rather than dir.
     archive: Option<PathBuf>,
     info: PackInfo,
 }
