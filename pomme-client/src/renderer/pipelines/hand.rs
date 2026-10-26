@@ -145,7 +145,8 @@ impl HandPipeline {
         old_skin
     }
 
-    /// Called while idle. Rebind the preview before destroying the returned skin.
+    /// Called while idle. Rebind the preview before destroying the returned
+    /// skin.
     pub fn reload_default_skin(
         &mut self,
         device: &rhi::backend::Device,

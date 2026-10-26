@@ -1255,18 +1255,14 @@ impl Renderer {
         old_atlas.destroy(&self.ctx.device);
         self.entity_renderer
             .reload_mob_textures(&self.ctx.device, resources);
-        self.entity_renderer.reload_armor_assets(
-            &self.ctx.device,
-            resources,
-        );
-        self.entity_renderer.reload_default_player_textures(
-            &self.ctx.device,
-            resources,
-        );
-        if let Some(old_skin) = self.hand_pipeline.reload_default_skin(
-            &self.ctx.device,
-            resources,
-        ) {
+        self.entity_renderer
+            .reload_armor_assets(&self.ctx.device, resources);
+        self.entity_renderer
+            .reload_default_player_textures(&self.ctx.device, resources);
+        if let Some(old_skin) = self
+            .hand_pipeline
+            .reload_default_skin(&self.ctx.device, resources)
+        {
             // Rebind both consumers before retiring the hand-owned texture.
             self.skin_preview.rebind_skin(
                 &self.ctx.device,

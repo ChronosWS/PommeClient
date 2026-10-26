@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use super::{MAX_FRAMES_IN_FLIGHT, rhi};
-
 use crate::resources::{ResourceError, ResourceId, ResourceManager};
 
 /// Maximum encoded size for ordinary resource-backed images.

@@ -713,13 +713,7 @@ fn load_armor_assets(
     defs.into_iter()
         .map(|(id, def)| {
             let build = |layer| {
-                build_armor_texture_layer(
-                    device,
-                    texture_layout,
-                    texture_sampler,
-                    resources,
-                    layer,
-                )
+                build_armor_texture_layer(device, texture_layout, texture_sampler, resources, layer)
             };
             (
                 id,
@@ -1874,9 +1868,7 @@ impl EntityRenderer {
         device: &rhi::backend::Device,
         resources: &ResourceManager,
     ) {
-        self.reload_static_textures(device, resources, |kind| {
-            kind != EntityKind::Player
-        });
+        self.reload_static_textures(device, resources, |kind| kind != EntityKind::Player);
     }
 
     /// Reload only static player fallbacks, never the UUID-keyed profile skins.
@@ -1886,9 +1878,7 @@ impl EntityRenderer {
         device: &rhi::backend::Device,
         resources: &ResourceManager,
     ) {
-        self.reload_static_textures(device, resources, |kind| {
-            kind == EntityKind::Player
-        });
+        self.reload_static_textures(device, resources, |kind| kind == EntityKind::Player);
     }
 
     fn reload_static_textures(
