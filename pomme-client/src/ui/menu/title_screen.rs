@@ -95,6 +95,7 @@ impl MainMenu {
             (cx + SPLASH_WIDTH_OFFSET * gs, SPLASH_HEIGHT_OFFSET * gs),
             gs,
             &text_width_fn,
+            true,
         );
 
         // Realms is never enabled.
@@ -338,14 +339,16 @@ impl MainMenu {
         }
     }
 
-    /// Java `SplashRenderer.extractRenderState`, rotated about `pivot` and
-    /// fitted to a fixed width. Other themes do not display Java splashes.
+    /// `SplashRenderer.extractRenderState`, rotated about `pivot`. Java fits
+    /// the splash to a fixed width; Bedrock's (`fit` false) keeps the text's
+    /// own size and only pulses.
     pub(super) fn push_splash(
         &self,
         elements: &mut Vec<MenuElement>,
         pivot: (f32, f32),
         gs: f32,
         text_width_fn: &impl Fn(&str, f32) -> f32,
+        fit: bool,
     ) {
         let Some(ref splash) = self.splash else {
             return;
@@ -355,7 +358,11 @@ impl MainMenu {
         let text_w = text_width_fn(splash, common::FONT_SIZE);
         let millis = self.created.elapsed().as_millis() % 1000;
         let phase = 1.8 - ((millis as f32 / 1000.0 * TAU).sin() * 0.1).abs();
-        let text_scale = phase * 100.0 / (text_w + 32.0);
+        let text_scale = if fit {
+            phase * 100.0 / (text_w + 32.0)
+        } else {
+            phase / 1.8
+        };
 
         let scale = common::FONT_SIZE * gs * text_scale;
         elements.push(MenuElement::McTextRotated {
