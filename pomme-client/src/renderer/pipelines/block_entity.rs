@@ -11,7 +11,7 @@ use crate::renderer::pipelines::entity_renderer::{
 };
 use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::{block_entity_model, rhi, util};
-use crate::resources::{ResourceError, ResourceId, ResourceManager};
+use crate::resources::{ResourceId, ResourceManager};
 
 pub struct BlockEntityRenderInfo {
     pub pos: BlockPos,
@@ -630,20 +630,7 @@ fn load_texture_image(
     pending_uploads: &mut Vec<util::PendingImageUpload>,
     staging_to_free: &mut Vec<rhi::backend::Buffer>,
 ) -> rhi::backend::Texture {
-    let image = resources
-        .get_resource(&definition.id)
-        .and_then(|resource| {
-            resource
-                .ok_or_else(|| ResourceError::Missing(definition.id.clone()))?
-                .content()
-                .read_bytes(MAX_TEXTURE_BYTES)
-        })
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| {
-            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .map(|image| image.to_rgba8())
-                .map_err(|error| error.to_string())
-        });
+    let image = util::load_resource_png(resources, &definition.id, MAX_TEXTURE_BYTES);
     let (pixels, width, height) = match image {
         Ok(image) => {
             let (width, height) = image.dimensions();

@@ -7,11 +7,44 @@ use serde::Deserialize;
 use super::colormap::Colormap;
 use super::render_assets::{FaceTextures, Tint};
 use crate::assets::AssetId;
-use crate::resources::{ResourceError, ResourceId, ResourceManager};
+use crate::resources::{Resource, ResourceContent, ResourceError, ResourceId, ResourceManager};
 
 const MAX_BLOCKSTATE_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MODEL_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ITEM_DEFINITION_JSON_BYTES: usize = 8 * 1024 * 1024;
+
+fn resolve_definition(
+    resources: &ResourceManager,
+    id: &ResourceId,
+    kind: &str,
+) -> Option<Resource> {
+    match resources.get_resource(id) {
+        Ok(Some(resource)) => Some(resource),
+        Ok(None) => {
+            tracing::warn!("{id}: {kind} disappeared during acquisition; skipping");
+            None
+        }
+        Err(error) => {
+            tracing::warn!("{id}: failed to resolve {kind}: {error}; skipping");
+            None
+        }
+    }
+}
+
+fn read_definition_bytes(
+    content: &ResourceContent,
+    kind: &str,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    match content.read_bytes(max_bytes) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            let id = content.id();
+            tracing::warn!("{id}: failed to read {kind}: {error}; skipping");
+            None
+        }
+    }
+}
 
 /// Winning modern item definitions shared by baking and held-display lookup.
 /// Raw owned bytes preserve the tolerant Value interpreter without retaining
@@ -27,18 +60,8 @@ impl ItemDefinitionSources {
         let mut entries = HashMap::with_capacity(ids.len());
         let mut total_bytes = 0;
         for id in ids {
-            let resource = match resources.get_resource(&id) {
-                Ok(Some(resource)) => resource,
-                Ok(None) => {
-                    tracing::warn!(
-                        "{id}: item definition disappeared during acquisition; skipping"
-                    );
-                    continue;
-                }
-                Err(error) => {
-                    tracing::warn!("{id}: failed to resolve item definition: {error}; skipping");
-                    continue;
-                }
+            let Some(resource) = resolve_definition(resources, &id, "item definition") else {
+                continue;
             };
             let Some(path) = id
                 .path()
@@ -50,17 +73,13 @@ impl ItemDefinitionSources {
             let Ok(key) = ResourceId::new(&format!("{}:{path}", id.namespace())) else {
                 continue;
             };
-            match resource
-                .content()
-                .read_bytes(MAX_ITEM_DEFINITION_JSON_BYTES)
-            {
-                Ok(bytes) => {
-                    total_bytes += bytes.len();
-                    entries.insert(key.to_short_string(), bytes);
-                }
-                Err(error) => {
-                    tracing::warn!("{id}: failed to read item definition: {error}; skipping");
-                }
+            if let Some(bytes) = read_definition_bytes(
+                resource.content(),
+                "item definition",
+                MAX_ITEM_DEFINITION_JSON_BYTES,
+            ) {
+                total_bytes += bytes.len();
+                entries.insert(key.to_short_string(), bytes);
             }
         }
         tracing::info!(
@@ -110,16 +129,8 @@ impl ModelSources {
         let mut entries = HashMap::with_capacity(ids.len());
         let mut total_bytes = 0;
         for id in ids {
-            let resource = match resources.get_resource(&id) {
-                Ok(Some(resource)) => resource,
-                Ok(None) => {
-                    tracing::warn!("{id}: model disappeared during acquisition; skipping");
-                    continue;
-                }
-                Err(error) => {
-                    tracing::warn!("{id}: failed to resolve model: {error}; skipping");
-                    continue;
-                }
+            let Some(resource) = resolve_definition(resources, &id, "model") else {
+                continue;
             };
             let Some(path) = id
                 .path()
@@ -131,12 +142,11 @@ impl ModelSources {
             let Some(key) = model_key(&format!("{}:{path}", id.namespace())) else {
                 continue;
             };
-            match resource.content().read_bytes(MAX_MODEL_JSON_BYTES) {
-                Ok(bytes) => {
-                    total_bytes += bytes.len();
-                    entries.insert(key, bytes);
-                }
-                Err(error) => tracing::warn!("{id}: failed to read model: {error}; skipping"),
+            if let Some(bytes) =
+                read_definition_bytes(resource.content(), "model", MAX_MODEL_JSON_BYTES)
+            {
+                total_bytes += bytes.len();
+                entries.insert(key, bytes);
             }
         }
         tracing::info!(
@@ -191,26 +201,17 @@ impl BlockstateSources {
         })?;
         let mut entries = Vec::with_capacity(ids.len());
         for id in ids {
-            let resource = match resources.get_resource(&id) {
-                Ok(Some(resource)) => resource,
-                Ok(None) => {
-                    tracing::warn!("{id}: blockstate disappeared during acquisition; skipping");
-                    continue;
-                }
-                Err(error) => {
-                    tracing::warn!("{id}: failed to resolve blockstate: {error}; skipping");
-                    continue;
-                }
+            let Some(resource) = resolve_definition(resources, &id, "blockstate") else {
+                continue;
             };
-            match resource.content().read_bytes(MAX_BLOCKSTATE_JSON_BYTES) {
-                Ok(bytes) => entries.push(BlockstateSource {
+            if let Some(bytes) =
+                read_definition_bytes(resource.content(), "blockstate", MAX_BLOCKSTATE_JSON_BYTES)
+            {
+                entries.push(BlockstateSource {
                     id,
                     origin: format!("{:?}", resource.content().origin()),
                     bytes,
-                }),
-                Err(error) => {
-                    tracing::warn!("{id}: failed to read blockstate: {error}; skipping");
-                }
+                });
             }
         }
         Ok(Self(entries))

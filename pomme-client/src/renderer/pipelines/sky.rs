@@ -4,7 +4,7 @@ use glam::Vec3;
 
 use crate::renderer::camera::Camera;
 use crate::renderer::{rhi, shader, util};
-use crate::resources::{ResourceError, ResourceId, ResourceManager};
+use crate::resources::{ResourceId, ResourceManager};
 use crate::world::block::model::CardinalLightType;
 use crate::world::environment::{EnvAttributes, Skybox};
 
@@ -663,19 +663,8 @@ fn load_celestial_texture(
     key: &str,
 ) -> rhi::backend::Texture {
     let image = ResourceId::new(key)
-        .and_then(|id| {
-            resources
-                .get_resource(&id)?
-                .ok_or(ResourceError::Missing(id))?
-                .content()
-                .read_bytes(MAX_CELESTIAL_TEXTURE_BYTES)
-        })
         .map_err(|error| error.to_string())
-        .and_then(|bytes| {
-            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .map(|image| image.to_rgba8())
-                .map_err(|error| format!("could not decode {key}: {error}"))
-        });
+        .and_then(|id| util::load_resource_png(resources, &id, MAX_CELESTIAL_TEXTURE_BYTES));
     let (pixels, w, h) = match image {
         Ok(image) => {
             let (w, h) = image.dimensions();

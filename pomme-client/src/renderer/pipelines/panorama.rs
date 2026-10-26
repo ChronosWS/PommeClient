@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::renderer::{rhi, shader, util};
-use crate::resources::{ResourceError, ResourceId, ResourceManager};
+use crate::resources::{ResourceId, ResourceManager};
 
 // Minecraft panorama face order differs from Vulkan cubemap layer order
 const FACE_TO_LAYER: [u32; 6] = [4, 1, 5, 0, 2, 3];
@@ -153,18 +153,8 @@ pub fn load_panorama_faces(
 
     match collect_panorama_faces(|i| {
         let name = format!("minecraft:textures/gui/title/background/panorama_{i}.png");
-        let bytes = ResourceId::new(&name)
-            .and_then(|id| {
-                resources
-                    .get_resource(&id)?
-                    .ok_or(ResourceError::Missing(id))?
-                    .content()
-                    .read_bytes(MAX_FACE_BYTES)
-            })
-            .map_err(|error| error.to_string())?;
-        image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-            .map(|image| image.to_rgba8())
-            .map_err(|error| format!("could not decode {name}: {error}"))
+        let id = ResourceId::new(&name).map_err(|error| error.to_string())?;
+        util::load_resource_png(resources, &id, MAX_FACE_BYTES)
     }) {
         Ok(faces) => Some(faces),
         Err(error) => {

@@ -688,20 +688,7 @@ fn build_armor_texture_layer(
 }
 
 fn load_armor_texture(resources: &ResourceManager, id: &ResourceId) -> (Vec<u8>, u32, u32) {
-    let image = resources
-        .get_resource(id)
-        .and_then(|resource| {
-            resource
-                .ok_or_else(|| ResourceError::Missing(id.clone()))?
-                .content()
-                .read_bytes(MAX_ARMOR_TEXTURE_BYTES)
-        })
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| {
-            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .map(|image| image.to_rgba8())
-                .map_err(|error| error.to_string())
-        });
+    let image = util::load_resource_png(resources, id, MAX_ARMOR_TEXTURE_BYTES);
     match image {
         Ok(image) => {
             let (width, height) = image.dimensions();

@@ -2,6 +2,27 @@ use std::path::Path;
 
 use super::{MAX_FRAMES_IN_FLIGHT, rhi};
 
+use crate::resources::{ResourceError, ResourceId, ResourceManager};
+
+pub(crate) fn load_resource_png(
+    resources: &ResourceManager,
+    id: &ResourceId,
+    max_bytes: usize,
+) -> Result<image::RgbaImage, String> {
+    let bytes = resources
+        .get_resource(id)
+        .and_then(|resource| {
+            resource
+                .ok_or_else(|| ResourceError::Missing(id.clone()))?
+                .content()
+                .read_bytes(max_bytes)
+        })
+        .map_err(|error| error.to_string())?;
+    image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .map(|image| image.to_rgba8())
+        .map_err(|error| format!("could not decode {id}: {error}"))
+}
+
 /// A texture holding `pixels`, ready for shaders to read.
 pub fn create_sampled_texture(
     device: &rhi::backend::Device,

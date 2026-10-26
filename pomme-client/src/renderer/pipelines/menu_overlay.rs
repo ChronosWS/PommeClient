@@ -1716,7 +1716,7 @@ impl MenuOverlayPipeline {
         let sprite = match create_ui_texture(
             device,
             &sprites,
-            rhi::TextureFormat::Rgba8UnormSrgb,
+            rhi::TextureFormat::Rgba8Unorm,
             "sprite_reload",
         ) {
             Ok(sprite) => sprite,

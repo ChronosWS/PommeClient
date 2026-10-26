@@ -7,7 +7,7 @@ use glam::{DVec3, Vec3};
 use crate::physics::block_shape::{LocalBox, is_collision_shape_full_block, outline_shape};
 use crate::renderer::camera::CameraUniform;
 use crate::renderer::{rhi, shader, util};
-use crate::resources::{ResourceError, ResourceId, ResourceManager};
+use crate::resources::{ResourceId, ResourceManager};
 use crate::world::block::{BlockStateData, BlockStateTable};
 use crate::world::block_entity::is_invisible_block;
 use crate::world::chunk::ChunkStore;
@@ -311,19 +311,8 @@ fn load_shadow_texture(
     resources: &ResourceManager,
 ) -> rhi::backend::Texture {
     let image = ResourceId::new(SHADOW_TEXTURE)
-        .and_then(|id| {
-            resources
-                .get_resource(&id)?
-                .ok_or(ResourceError::Missing(id))?
-                .content()
-                .read_bytes(MAX_SHADOW_TEXTURE_BYTES)
-        })
         .map_err(|error| error.to_string())
-        .and_then(|bytes| {
-            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .map(|image| image.to_rgba8())
-                .map_err(|error| format!("could not decode {SHADOW_TEXTURE}: {error}"))
-        });
+        .and_then(|id| util::load_resource_png(resources, &id, MAX_SHADOW_TEXTURE_BYTES));
     let (pixels, w, h) = match image {
         Ok(image) => {
             let (w, h) = image.dimensions();
