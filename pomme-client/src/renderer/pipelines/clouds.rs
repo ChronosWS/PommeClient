@@ -4,8 +4,6 @@ use crate::renderer::rhi::{self, VertexFormat};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, shader, util};
 use crate::resources::{ResourceId, ResourceManager};
 
-const MAX_CLOUD_BYTES: usize = 32 * 1024 * 1024;
-
 /// Vertical thickness of the cloud layer in blocks.
 const CLOUD_THICKNESS: f32 = 4.0;
 /// Horizontal size of one cloud cell in blocks (one clouds.png texel).
@@ -416,7 +414,7 @@ fn load_cloud_grid(resources: &ResourceManager) -> Option<CloudGrid> {
     let key = "minecraft:textures/environment/clouds.png";
     let image = ResourceId::new(key)
         .map_err(|error| error.to_string())
-        .and_then(|id| util::load_resource_png(resources, &id, MAX_CLOUD_BYTES));
+        .and_then(|id| util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES));
     let image = match image {
         Ok(image) => image,
         Err(error) => {

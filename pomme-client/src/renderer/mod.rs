@@ -2313,7 +2313,7 @@ async fn fetch_skin_image(skin_url: &str) -> Result<(Vec<u8>, u32, u32), String>
         .map_err(pomme_auth::error_chain)?;
 
     let img = image::load_from_memory(&skin_bytes).map_err(pomme_auth::error_chain)?;
-    let rgba = img.to_rgba8();
+    let rgba = img.into_rgba8();
     let w = rgba.width();
     let h = rgba.height();
     process_legacy_skin(rgba.into_raw(), w, h)

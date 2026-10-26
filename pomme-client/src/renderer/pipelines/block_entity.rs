@@ -144,8 +144,6 @@ const SHULKER_TEXTURES: &[&str] = &[
     "minecraft:textures/entity/shulker/shulker.png",
 ];
 
-const MAX_TEXTURE_BYTES: usize = 32 * 1024 * 1024;
-
 fn name_index(table: &[&str], name: &str) -> Option<u32> {
     table.iter().position(|&n| n == name).map(|i| i as u32)
 }
@@ -630,7 +628,8 @@ fn load_texture_image(
     pending_uploads: &mut Vec<util::PendingImageUpload>,
     staging_to_free: &mut Vec<rhi::backend::Buffer>,
 ) -> rhi::backend::Texture {
-    let image = util::load_resource_png(resources, &definition.id, MAX_TEXTURE_BYTES);
+    let image =
+        util::load_resource_image(resources, &definition.id, util::MAX_RESOURCE_IMAGE_BYTES);
     let (pixels, width, height) = match image {
         Ok(image) => {
             let (width, height) = image.dimensions();

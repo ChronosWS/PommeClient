@@ -52,7 +52,6 @@ const MAX_SHADOW_VERTS: usize = MAX_SHADOW_QUADS * VERTS_PER_QUAD;
 /// Vanilla `EntityRenderer.MAX_SHADOW_RADIUS`.
 const MAX_SHADOW_RADIUS: f32 = 32.0;
 const SHADOW_TEXTURE: &str = "minecraft:textures/misc/shadow.png";
-const MAX_SHADOW_TEXTURE_BYTES: usize = 32 * 1024 * 1024;
 
 pub struct EntityShadowPipeline {
     pipeline: rhi::backend::RenderPipeline,
@@ -312,7 +311,7 @@ fn load_shadow_texture(
 ) -> rhi::backend::Texture {
     let image = ResourceId::new(SHADOW_TEXTURE)
         .map_err(|error| error.to_string())
-        .and_then(|id| util::load_resource_png(resources, &id, MAX_SHADOW_TEXTURE_BYTES));
+        .and_then(|id| util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES));
     let (pixels, w, h) = match image {
         Ok(image) => {
             let (w, h) = image.dimensions();

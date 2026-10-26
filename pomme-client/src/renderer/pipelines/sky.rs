@@ -8,7 +8,6 @@ use crate::resources::{ResourceId, ResourceManager};
 use crate::world::block::model::CardinalLightType;
 use crate::world::environment::{EnvAttributes, Skybox};
 
-const MAX_CELESTIAL_TEXTURE_BYTES: usize = 32 * 1024 * 1024;
 const SUN_TEXTURE: &str = "minecraft:textures/environment/celestial/sun.png";
 const END_SKY_TEXTURE: &str = "minecraft:textures/environment/end_sky.png";
 const MOON_TEXTURES: [&str; 8] = [
@@ -664,7 +663,7 @@ fn load_celestial_texture(
 ) -> rhi::backend::Texture {
     let image = ResourceId::new(key)
         .map_err(|error| error.to_string())
-        .and_then(|id| util::load_resource_png(resources, &id, MAX_CELESTIAL_TEXTURE_BYTES));
+        .and_then(|id| util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES));
     let (pixels, w, h) = match image {
         Ok(image) => {
             let (w, h) = image.dimensions();

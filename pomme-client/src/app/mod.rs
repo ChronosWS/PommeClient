@@ -27,6 +27,7 @@ use crate::app::phases::{AfterSaving, AppPhase, ConnectionPhase, FpsCounter, Gfx
 use crate::app::state_slot::StateSlot;
 use crate::dirs::DataDirs;
 use crate::net::connection::{ConnectArgs, ConnectionHandle, spawn_connection};
+use crate::renderer::util::MAX_RESOURCE_IMAGE_BYTES;
 use crate::renderer::{self, Renderer};
 use crate::singleplayer::World;
 use crate::user::UserData;
@@ -435,17 +436,15 @@ fn create_window(
 ) -> Result<Arc<Window>, winit::error::OsError> {
     let window_icon = {
         crate::resources::ResourceId::new(crate::resources::POMME_ICON)
-            .and_then(|id| {
-                core.resources
-                    .get_resource(&id)?
-                    .ok_or(crate::resources::ResourceError::Missing(id))?
-                    .content()
-                    .read_bytes(32 * 1024 * 1024)
-            })
             .map_err(|error| error.to_string())
-            .and_then(|bytes| image::load_from_memory(&bytes).map_err(|error| error.to_string()))
-            .map(|img| {
-                let rgba = img.to_rgba8();
+            .and_then(|id| {
+                crate::renderer::util::load_resource_image(
+                    &core.resources,
+                    &id,
+                    MAX_RESOURCE_IMAGE_BYTES,
+                )
+            })
+            .map(|rgba| {
                 let (w, h) = (rgba.width(), rgba.height());
                 winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
             })

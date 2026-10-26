@@ -5,7 +5,6 @@ use crate::resources::{ResourceId, ResourceManager};
 
 // Minecraft panorama face order differs from Vulkan cubemap layer order
 const FACE_TO_LAYER: [u32; 6] = [4, 1, 5, 0, 2, 3];
-const MAX_FACE_BYTES: usize = 32 * 1024 * 1024;
 
 const PARAMS_LAYOUT: &[rhi::BindGroupLayoutEntry] = &[rhi::BindGroupLayoutEntry::uniform(
     rhi::ShaderStages::FRAGMENT,
@@ -154,7 +153,7 @@ pub fn load_panorama_faces(
     match collect_panorama_faces(|i| {
         let name = format!("minecraft:textures/gui/title/background/panorama_{i}.png");
         let id = ResourceId::new(&name).map_err(|error| error.to_string())?;
-        util::load_resource_png(resources, &id, MAX_FACE_BYTES)
+        util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES)
     }) {
         Ok(faces) => Some(faces),
         Err(error) => {

@@ -14,7 +14,6 @@ use super::skin_preview::{
 use crate::resources::{ResourceId, ResourceManager};
 
 const BOOK_TEXTURE: &str = "minecraft:textures/entity/enchantment/enchanting_table_book.png";
-const MAX_BOOK_TEXTURE_BYTES: usize = 32 * 1024 * 1024;
 use crate::renderer::{BookPreview, rhi, util};
 
 /// Base mesh of one book part, posed per frame.
@@ -211,7 +210,7 @@ fn load_book_texture(
 ) -> rhi::backend::Texture {
     let image = ResourceId::new(BOOK_TEXTURE)
         .map_err(|error| error.to_string())
-        .and_then(|id| util::load_resource_png(resources, &id, MAX_BOOK_TEXTURE_BYTES));
+        .and_then(|id| util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES));
     let (pixels, tex_w, tex_h) = match image {
         Ok(image) => {
             let (w, h) = image.dimensions();

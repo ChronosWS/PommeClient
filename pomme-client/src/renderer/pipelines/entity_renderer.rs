@@ -578,7 +578,6 @@ pub fn jeb_sheep_tint(entity_id: i32, age_in_ticks: u32) -> [f32; 4] {
 
 // Equipment definitions are small layer lists, with headroom for custom packs.
 const MAX_EQUIPMENT_JSON_BYTES: usize = 1024 * 1024;
-const MAX_ARMOR_TEXTURE_BYTES: usize = 32 * 1024 * 1024;
 
 fn equipment_texture_id(texture: &str, layer_type: &str) -> Option<ResourceId> {
     // Unqualified textures default to minecraft, not the definition namespace.
@@ -688,7 +687,7 @@ fn build_armor_texture_layer(
 }
 
 fn load_armor_texture(resources: &ResourceManager, id: &ResourceId) -> (Vec<u8>, u32, u32) {
-    let image = util::load_resource_png(resources, id, MAX_ARMOR_TEXTURE_BYTES);
+    let image = util::load_resource_image(resources, id, util::MAX_RESOURCE_IMAGE_BYTES);
     match image {
         Ok(image) => {
             let (width, height) = image.dimensions();

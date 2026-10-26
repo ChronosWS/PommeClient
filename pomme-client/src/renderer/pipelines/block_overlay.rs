@@ -386,7 +386,7 @@ fn load_destroy_stage(
                 ));
             }
             image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                .map(|image| image.to_rgba8())
+                .map(|image| image.into_rgba8())
                 .map_err(|error| error.to_string())
         });
     match image {

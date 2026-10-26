@@ -175,9 +175,9 @@ fn pomme_bytes(resources: &ResourceManager, name: &str) -> Result<Vec<u8>, Strin
 }
 
 fn load_pomme_logo(resources: &ResourceManager) -> Result<Vec<u8>, String> {
-    let bytes = pomme_bytes(resources, POMME_ICON)?;
-    let img = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
-    Ok(downscale_straight_alpha(&img.to_rgba8(), POMME_LOGO_SIZE, POMME_LOGO_SIZE).into_raw())
+    let id = ResourceId::new(POMME_ICON).map_err(|error| error.to_string())?;
+    let img = util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES)?;
+    Ok(downscale_straight_alpha(&img, POMME_LOGO_SIZE, POMME_LOGO_SIZE).into_raw())
 }
 
 fn build_font_atlas(resources: &ResourceManager) -> Result<(FontAtlas, AtlasImage), String> {
@@ -2746,18 +2746,11 @@ fn bedrock_nine_slice(dir: &Path, stem: &str) -> f32 {
 fn load_gui_sprite(
     resources: &ResourceManager,
     asset_key: &str,
-) -> Result<image::DynamicImage, String> {
+) -> Result<image::RgbaImage, String> {
     const MAX_SPRITE_BYTES: usize = 64 * 1024 * 1024;
-    let bytes = ResourceId::new(&asset_key.replacen('/', ":", 1))
-        .and_then(|id| {
-            resources
-                .get_resource(&id)?
-                .ok_or(ResourceError::Missing(id))?
-                .content()
-                .read_bytes(MAX_SPRITE_BYTES)
-        })
-        .map_err(|error| error.to_string())?;
-    image::load_from_memory(&bytes).map_err(|error| error.to_string())
+    ResourceId::new(&asset_key.replacen('/', ":", 1))
+        .map_err(|error| error.to_string())
+        .and_then(|id| util::load_resource_image(resources, &id, MAX_SPRITE_BYTES))
 }
 
 fn build_sprite_atlas(
@@ -3716,8 +3709,7 @@ fn build_sprite_atlas(
         .chain(boss_bar_sprites)
     {
         match load_gui_sprite(font_sources.resources, &asset_key) {
-            Ok(img) => {
-                let rgba = img.to_rgba8();
+            Ok(rgba) => {
                 let w = rgba.width();
                 let h = rgba.height();
                 images.push((id, rgba.into_raw(), w, h, border));
@@ -3734,16 +3726,13 @@ fn build_sprite_atlas(
         font_sources.resources,
         "minecraft/textures/entity/player/wide/steve.png",
     ) {
-        Ok(img) => {
-            let rgba = img.to_rgba8();
-            match extract_face_8x8(rgba.as_raw(), rgba.width(), rgba.height()) {
-                Some(out) => images.push((SpriteId::SteveHead, out, 8, 8, 0.0)),
-                None => {
-                    tracing::warn!("Steve skin too small: {}x{}", rgba.width(), rgba.height());
-                    images.push((SpriteId::SteveHead, vec![255, 0, 255, 255], 1, 1, 0.0));
-                }
+        Ok(rgba) => match extract_face_8x8(rgba.as_raw(), rgba.width(), rgba.height()) {
+            Some(out) => images.push((SpriteId::SteveHead, out, 8, 8, 0.0)),
+            None => {
+                tracing::warn!("Steve skin too small: {}x{}", rgba.width(), rgba.height());
+                images.push((SpriteId::SteveHead, vec![255, 0, 255, 255], 1, 1, 0.0));
             }
-        }
+        },
         Err(e) => {
             tracing::warn!("Failed to load Steve skin: {e}");
             images.push((SpriteId::SteveHead, vec![255, 0, 255, 255], 1, 1, 0.0));
@@ -3756,8 +3745,7 @@ fn build_sprite_atlas(
         font_sources.resources,
         "minecraft/textures/gui/sprites/hud/locator_bar_background.png",
     ) {
-        Ok(img) => {
-            let rgba = img.to_rgba8();
+        Ok(rgba) => {
             if rgba.width() == 12 && rgba.height() == 5 {
                 let src = rgba.as_raw();
                 let mut out = vec![0u8; 182 * 5 * 4];
@@ -3809,8 +3797,7 @@ fn build_sprite_atlas(
         ),
     ] {
         let frames = match load_gui_sprite(font_sources.resources, asset_key) {
-            Ok(img) => {
-                let rgba = img.to_rgba8();
+            Ok(rgba) => {
                 if rgba.width() == 7 && rgba.height() == 10 {
                     let src = rgba.into_raw();
                     let frame_bytes = 7 * 5 * 4;
@@ -3963,8 +3950,7 @@ fn build_sprite_atlas(
         ),
     ] {
         match load_gui_sprite(font_sources.resources, path) {
-            Ok(img) => {
-                let rgba = img.to_rgba8();
+            Ok(rgba) => {
                 let (src_x, src_y) = src;
                 let full_w = rgba.width();
                 let crop_w = max_w.min(full_w.saturating_sub(src_x));
@@ -3999,8 +3985,7 @@ fn build_sprite_atlas(
                     "minecraft/textures/gui/sprites/container/creative_inventory/tab_{row_name}_{state_name}_{col}.png"
                 );
                 match load_gui_sprite(font_sources.resources, &asset_key) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
+                    Ok(rgba) => {
                         let w = rgba.width();
                         let h = rgba.height();
                         images.push((id, rgba.into_raw(), w, h, 0.0));
@@ -4032,8 +4017,7 @@ fn build_sprite_atlas(
         ),
     ] {
         match load_gui_sprite(font_sources.resources, asset_key) {
-            Ok(img) => {
-                let rgba = img.to_rgba8();
+            Ok(rgba) => {
                 let (w, h) = (rgba.width(), rgba.height());
                 let used = (h * used_h).div_ceil(logical_h).min(h);
                 let mut raw = rgba.into_raw();
@@ -4153,8 +4137,7 @@ fn build_sprite_atlas(
 
 fn load_overlay_rgba(resources: &ResourceManager, asset_key: &str) -> (Vec<u8>, u32, u32) {
     match load_gui_sprite(resources, asset_key) {
-        Ok(img) => {
-            let rgba = img.to_rgba8();
+        Ok(rgba) => {
             let (w, h) = (rgba.width(), rgba.height());
             (rgba.into_raw(), w, h)
         }

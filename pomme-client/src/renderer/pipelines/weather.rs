@@ -10,7 +10,6 @@ pub const WEATHER_RADIUS: i32 = 10;
 
 const COLUMNS_PER_SIDE: usize = (2 * WEATHER_RADIUS + 1) as usize;
 const MAX_WEATHER_VERTS: usize = COLUMNS_PER_SIDE * COLUMNS_PER_SIDE * 6;
-const MAX_WEATHER_TEXTURE_BYTES: usize = 32 * 1024 * 1024;
 const RAIN_TEXTURE: &str = "minecraft:textures/environment/rain.png";
 const SNOW_TEXTURE: &str = "minecraft:textures/environment/snow.png";
 
@@ -396,7 +395,7 @@ fn load_weather_texture(
 ) -> rhi::backend::Texture {
     let image = ResourceId::new(key)
         .map_err(|error| error.to_string())
-        .and_then(|id| util::load_resource_png(resources, &id, MAX_WEATHER_TEXTURE_BYTES));
+        .and_then(|id| util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES));
     let (pixels, w, h) = match image {
         Ok(image) => {
             let (w, h) = image.dimensions();

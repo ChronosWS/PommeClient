@@ -1034,7 +1034,7 @@ fn load_bitmap_provider(
         .get_resource(&id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("missing bitmap font texture {id:?}"))?;
-    let image = load_bitmap_image_bounded(resource.content())?.to_rgba8();
+    let image = load_bitmap_image_bounded(resource.content())?.into_rgba8();
     // Vanilla `BitmapProvider.Definition.load` floors the cell size.
     let pixel_w = image.width() / cols;
     let pixel_h = image.height() / rows;
