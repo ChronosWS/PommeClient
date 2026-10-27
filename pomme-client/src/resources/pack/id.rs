@@ -40,6 +40,7 @@ impl Hash for PackId {
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(super) enum PackIdentity {
     Pomme,
+    Theme(super::super::theme::ThemeAssets),
     // The discovered selection, not its archive/extraction/source location.
     Local {
         directory: PathBuf,

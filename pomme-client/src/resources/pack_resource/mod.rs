@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::PackId;
 use super::filter::ResourceFilter;
-use super::resource::{ResourceContent, ResourceError, ResourceId};
+use super::resource::{ResourceContent, ResourceError, ResourceId, resource_path_chars};
 use crate::assets::{AssetIndex, identifier_chars};
 
 mod directory;
@@ -16,7 +16,7 @@ mod indexed;
 mod overlay;
 mod zip;
 
-use directory::DirectoryPackResources;
+use directory::{DirectoryLayout, DirectoryPackResources};
 use indexed::IndexedPackResources;
 use zip::ZipPackResources;
 
@@ -32,6 +32,11 @@ pub(super) enum PackStorage {
         overlays: Vec<String>,
     },
     Indexed(AssetIndex),
+    NamespaceDirectory {
+        root: PathBuf,
+        namespace: String,
+        remappings: Option<Arc<BTreeMap<ResourceId, PathBuf>>>,
+    },
     Embedded,
 }
 
@@ -58,13 +63,20 @@ impl ResourcePackDescriptor {
                 let origin = self.origin.clone();
                 let source: SharedPackResources = match storage {
                     PackStorage::Directory { root, overlays } => {
-                        let mut children: Vec<SharedPackResources> = vec![Rc::new(
-                            DirectoryPackResources::open_pack(root.clone(), None, origin.clone())?,
-                        )];
+                        let mut children: Vec<SharedPackResources> =
+                            vec![Rc::new(DirectoryPackResources::open(
+                                DirectoryLayout::ResourcePack {
+                                    root: root.clone(),
+                                    overlay: None,
+                                },
+                                origin.clone(),
+                            )?)];
                         for directory in overlays {
-                            children.push(Rc::new(DirectoryPackResources::open_pack(
-                                root.clone(),
-                                Some(&directory),
+                            children.push(Rc::new(DirectoryPackResources::open(
+                                DirectoryLayout::ResourcePack {
+                                    root: root.clone(),
+                                    overlay: Some(directory),
+                                },
                                 origin.clone(),
                             )?));
                         }
@@ -82,6 +94,18 @@ impl ResourcePackDescriptor {
                     PackStorage::Indexed(index) => {
                         Rc::new(IndexedPackResources::open(index, origin)?)
                     }
+                    PackStorage::NamespaceDirectory {
+                        root,
+                        namespace,
+                        remappings,
+                    } => Rc::new(DirectoryPackResources::open(
+                        DirectoryLayout::Mapped {
+                            root,
+                            namespace,
+                            remappings,
+                        },
+                        origin,
+                    )?),
                     PackStorage::Embedded => Rc::new(embedded::EmbeddedPackResources::new(origin)),
                 };
                 Ok(source)
@@ -152,7 +176,7 @@ pub(super) trait PackResources {
 
     /// Recursive logical directory prefix, not a physical path or glob. Empty
     /// means all paths in the namespace; otherwise matching descendants under
-    /// `prefix/` only. Namespace and prefix use identifier characters, not
+    /// `prefix/` only. Namespace and prefix use resource ID characters, not
     /// filesystem component rules. Invalid syntax is Err; storage containment
     /// is the adapter's responsibility. Nonempty prefixes cannot end in `/`.
     /// Returns unique checked IDs, including .mcmeta files; callers may filter.
@@ -264,7 +288,7 @@ fn valid_namespace(namespace: &str) -> bool {
 
 pub(super) fn validate_query(namespace: Option<&str>, prefix: &str) -> Result<(), ResourceError> {
     if namespace.is_some_and(|namespace| !valid_namespace(namespace))
-        || !identifier_chars(prefix, true)
+        || !resource_path_chars(prefix)
         || prefix.ends_with('/')
     {
         return Err(ResourceError::InvalidQuery {

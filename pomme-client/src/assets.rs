@@ -62,13 +62,6 @@ pub(crate) fn valid_asset_key(asset_key: &str) -> bool {
             .any(|component| matches!(component, "" | "." | ".."))
 }
 
-pub fn load_image(path: &Path) -> Result<image::DynamicImage, image::ImageError> {
-    image::open(path).or_else(|_| {
-        let data = std::fs::read(path).map_err(image::ImageError::IoError)?;
-        image::load_from_memory(&data)
-    })
-}
-
 #[derive(Clone)]
 pub struct AssetIndex {
     objects_dir: PathBuf,

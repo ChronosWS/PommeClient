@@ -9,7 +9,8 @@ use super::pack_resource::{
 use crate::assets::{AssetId, identifier_chars};
 
 /// Owned logical name with nonempty namespace and path, checked only for
-/// identifier characters. Storage resolution belongs to the source adapter.
+/// namespace characters and case-preserving ASCII path characters. Storage
+/// resolution belongs to the source adapter.
 /// Deterministic namespace-then-path ordering does not imply pack priority.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ResourceId {
@@ -23,7 +24,7 @@ impl ResourceId {
         if namespace.is_empty()
             || path.is_empty()
             || !identifier_chars(namespace, false)
-            || !identifier_chars(path, true)
+            || !resource_path_chars(path)
         {
             return Err(ResourceError::InvalidId(value.to_owned()));
         }
@@ -52,6 +53,11 @@ impl ResourceId {
             path: self.path(),
         }
     }
+}
+
+pub(super) fn resource_path_chars(path: &str) -> bool {
+    path.bytes()
+        .all(|c| c.is_ascii_alphanumeric() || b"_./-".contains(&c))
 }
 
 /// The full identifier always includes its namespace.

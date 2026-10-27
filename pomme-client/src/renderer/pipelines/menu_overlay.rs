@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, packing, rhi, shader, util};
+use crate::resources::theme::BedrockTexture;
 use crate::resources::{
     POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT, ResourceError, ResourceId, ResourceManager,
 };
@@ -377,9 +377,7 @@ struct MenuMesh {
 /// measurement, and vertex building.
 pub struct MenuGeometry {
     atlas: FontAtlas,
-    pomme_logo: Vec<u8>,
     sprite_atlas: SpriteAtlas,
-    bedrock_ui_dir: Option<std::path::PathBuf>,
     mc_glyph_map: Option<GlyphMap>,
     obfuscation_rng: ObfuscationRng,
     favicon_regions: std::collections::HashMap<String, [f32; 4]>,
@@ -393,12 +391,11 @@ pub struct MenuGeometry {
 impl MenuGeometry {
     fn new(
         font_sources: FontSources<'_>,
-        bedrock_ui_dir: Option<&Path>,
         font_layer_limit: u32,
     ) -> Result<(Self, MenuAtlases), String> {
         let (atlas, font) = build_font_atlas(font_sources.resources)?;
         let pomme_logo = load_pomme_logo(font_sources.resources)?;
-        let (sprite_atlas, sprites) = build_sprite_atlas(font_sources, bedrock_ui_dir, &pomme_logo);
+        let (sprite_atlas, sprites) = build_sprite_atlas(font_sources, &pomme_logo);
         let (mc_glyph_map, glyphs) = match GlyphMap::load(font_sources, font_layer_limit) {
             Ok((map, pixels)) => (Some(map), Some(pixels)),
             Err(error) => {
@@ -416,9 +413,7 @@ impl MenuGeometry {
 
         let geometry = Self {
             atlas,
-            pomme_logo,
             sprite_atlas,
-            bedrock_ui_dir: bedrock_ui_dir.map(Path::to_owned),
             mc_glyph_map,
             obfuscation_rng: ObfuscationRng::new(obfuscation_seed),
             favicon_regions: std::collections::HashMap::new(),
@@ -1547,11 +1542,9 @@ impl MenuOverlayPipeline {
         device: &rhi::backend::Device,
         targets: rhi::backend::PipelineTargets,
         font_sources: FontSources<'_>,
-        bedrock_ui_dir: Option<&Path>,
         font_layer_limit: u32,
     ) -> Result<Self, String> {
-        let (geometry, atlases) =
-            MenuGeometry::new(font_sources, bedrock_ui_dir, font_layer_limit)?;
+        let (geometry, atlases) = MenuGeometry::new(font_sources, font_layer_limit)?;
 
         let globals_layout =
             rhi::backend::create_bind_group_layout(device, util::VERTEX_FRAGMENT_UNIFORM);
@@ -1692,7 +1685,7 @@ impl MenuOverlayPipeline {
         })
     }
 
-    /// Rebuild GUI/HUD layouts and textures together, retaining Bedrock assets.
+    /// Rebuild GUI/HUD layouts and textures together from the active resources.
     pub fn reload_gui_assets(
         &mut self,
         device: &rhi::backend::Device,
@@ -1700,11 +1693,7 @@ impl MenuOverlayPipeline {
     ) -> Result<(), String> {
         let (atlas, font_pixels) = build_font_atlas(font_sources.resources)?;
         let pomme_logo = load_pomme_logo(font_sources.resources)?;
-        let (sprite_atlas, sprites) = build_sprite_atlas(
-            font_sources,
-            self.geometry.bedrock_ui_dir.as_deref(),
-            &pomme_logo,
-        );
+        let (sprite_atlas, sprites) = build_sprite_atlas(font_sources, &pomme_logo);
 
         device.wait_idle();
         let font = create_ui_texture(
@@ -1735,7 +1724,6 @@ impl MenuOverlayPipeline {
         std::mem::replace(&mut self.font.texture, font).destroy(device);
         std::mem::replace(&mut self.sprite.texture, sprite).destroy(device);
         self.geometry.atlas = atlas;
-        self.geometry.pomme_logo = pomme_logo;
         self.geometry.sprite_atlas = sprite_atlas;
         Ok(())
     }
@@ -1937,28 +1925,6 @@ impl MenuOverlayPipeline {
             self.tex_layout,
             &texture_slot_bindings(&self.tex_slots),
         );
-    }
-
-    pub fn has_sprite(&self, id: SpriteId) -> bool {
-        self.geometry.sprite_atlas.regions.contains_key(&id)
-    }
-
-    /// Rebuilds the sprite atlas, for sprites whose files arrived after it was
-    /// built.
-    pub fn reload_sprite_atlas(
-        &mut self,
-        device: &rhi::backend::Device,
-        font_sources: FontSources<'_>,
-        bedrock_ui_dir: Option<&Path>,
-    ) {
-        let (atlas, sprites) =
-            build_sprite_atlas(font_sources, bedrock_ui_dir, &self.geometry.pomme_logo);
-        device.wait_idle();
-        let texture = sprite_texture(device, &sprites);
-        self.set_texture(device, 1, texture.handle(), self.sprite.sampler);
-        std::mem::replace(&mut self.sprite.texture, texture).destroy(device);
-        self.geometry.sprite_atlas = atlas;
-        self.geometry.bedrock_ui_dir = bedrock_ui_dir.map(Path::to_owned);
     }
 
     pub fn update_favicon_atlas(
@@ -2693,51 +2659,65 @@ fn downscale_straight_alpha(src: &image::RgbaImage, w: u32, h: u32) -> image::Rg
     out
 }
 
-/// The Bedrock UI textures the Bedrock title screen draws, by path from
-/// `textures/ui` without the extension.
-const BEDROCK_SPRITES: [(SpriteId, &str); 17] = [
-    (SpriteId::BedrockButton, "button_borderless_light"),
-    (SpriteId::BedrockButtonHover, "button_borderless_lighthover"),
+const BEDROCK_SPRITES: [(SpriteId, BedrockTexture); 17] = [
+    (SpriteId::BedrockButton, BedrockTexture::Button),
+    (SpriteId::BedrockButtonHover, BedrockTexture::ButtonHover),
     (
         SpriteId::BedrockButtonPressed,
-        "button_borderless_lightpressed",
+        BedrockTexture::ButtonPressed,
     ),
-    (SpriteId::BedrockOutline, "focus_border_white"),
-    (SpriteId::BedrockRealms, "realms_button_borderless_default"),
-    (
-        SpriteId::BedrockRealmsHover,
-        "realms_button_borderless_hover",
-    ),
+    (SpriteId::BedrockOutline, BedrockTexture::Outline),
+    (SpriteId::BedrockRealms, BedrockTexture::Realms),
+    (SpriteId::BedrockRealmsHover, BedrockTexture::RealmsHover),
     (
         SpriteId::BedrockRealmsPressed,
-        "realms_button_borderless_hover_pressed",
+        BedrockTexture::RealmsPressed,
+    ),
+    (SpriteId::BedrockSocial, BedrockTexture::Social),
+    (SpriteId::BedrockSocialHover, BedrockTexture::SocialHover),
+    (SpriteId::BedrockBlack, BedrockTexture::Black),
+    (SpriteId::BedrockDropdown, BedrockTexture::Dropdown),
+    (
+        SpriteId::BedrockDropdownHover,
+        BedrockTexture::DropdownHover,
     ),
     (
-        SpriteId::BedrockSocial,
-        "socialbuttonicon/social-default-icon",
+        SpriteId::BedrockDropdownSelect,
+        BedrockTexture::DropdownSelect,
     ),
+    (SpriteId::BedrockRadioOn, BedrockTexture::RadioOn),
+    (SpriteId::BedrockRadioOnHover, BedrockTexture::RadioOnHover),
+    (SpriteId::BedrockRadioOff, BedrockTexture::RadioOff),
     (
-        SpriteId::BedrockSocialHover,
-        "socialbuttonicon/social-hover-icon",
+        SpriteId::BedrockRadioOffHover,
+        BedrockTexture::RadioOffHover,
     ),
-    (SpriteId::BedrockBlack, "Black"),
-    (SpriteId::BedrockDropdown, "dropdown_background"),
-    (SpriteId::BedrockDropdownHover, "dropDownHoverBG"),
-    (SpriteId::BedrockDropdownSelect, "dropDownSelectBG"),
-    (SpriteId::BedrockRadioOn, "radio_on"),
-    (SpriteId::BedrockRadioOnHover, "radio_on_hover"),
-    (SpriteId::BedrockRadioOff, "radio_off"),
-    (SpriteId::BedrockRadioOffHover, "radio_off_hover"),
 ];
 
 /// The `nineslice_size` from the `.json` Bedrock keeps beside a texture, in
-/// texels. Only the single-number form is read; anything else is unsliced.
-fn bedrock_nine_slice(dir: &Path, stem: &str) -> f32 {
-    std::fs::read(dir.join(format!("{stem}.json")))
+/// texels. Only the single-number form is read; anything else uses the default.
+fn bedrock_nine_slice(json: &[u8]) -> f32 {
+    serde_json::from_slice::<serde_json::Value>(json)
         .ok()
-        .and_then(|json| serde_json::from_slice::<serde_json::Value>(&json).ok())
         .and_then(|meta| meta.get("nineslice_size")?.as_f64())
         .map_or(0.0, |size| size as f32)
+}
+
+fn load_bedrock_nine_slice(resources: &ResourceManager, texture: BedrockTexture) -> f32 {
+    const MAX_SIDECAR_BYTES: usize = 64 * 1024 * 1024;
+    let load = || -> Result<f32, ResourceError> {
+        let id = ResourceId::new(&texture.asset_key("json").replacen('/', ":", 1))?;
+        let Some(resource) = resources.get_resource(&id)? else {
+            return Ok(0.0);
+        };
+        Ok(bedrock_nine_slice(
+            &resource.content().read_bytes(MAX_SIDECAR_BYTES)?,
+        ))
+    };
+    load().unwrap_or_else(|error| {
+        tracing::debug!(%error, "Bedrock nine-slice unavailable; using default");
+        0.0
+    })
 }
 
 /// The sprite table uses namespace/path keys; resource IDs use namespace:path.
@@ -2755,7 +2735,6 @@ fn load_gui_sprite(
 
 fn build_sprite_atlas(
     font_sources: FontSources<'_>,
-    bedrock_ui_dir: Option<&Path>,
     pomme_logo: &[u8],
 ) -> (SpriteAtlas, AtlasImage) {
     let sprites: &[(SpriteId, &str, f32)] = &[
@@ -4046,29 +4025,36 @@ fn build_sprite_atlas(
     // The Bedrock title draws at 55% of the screen width, 1056 px at 1080p, so
     // 1024 keeps the NEAREST sampler close to 1:1 there.
     const BEDROCK_TITLE_W: u32 = 1024;
-    if let Some(dir) = bedrock_ui_dir {
-        match crate::assets::load_image(&dir.join("title.png")) {
-            Ok(img) => {
-                let h = (img.height() * BEDROCK_TITLE_W).div_ceil(img.width());
+    match load_gui_sprite(
+        font_sources.resources,
+        &BedrockTexture::Title.asset_key("png"),
+    ) {
+        Ok(img) => {
+            let h = (img.height() * BEDROCK_TITLE_W).div_ceil(img.width());
+            images.push((
+                SpriteId::BedrockTitle,
+                downscale_straight_alpha(&img, BEDROCK_TITLE_W, h).into_raw(),
+                BEDROCK_TITLE_W,
+                h,
+                0.0,
+            ));
+        }
+        Err(e) => tracing::debug!("No Bedrock title yet: {e}"),
+    }
+    for (id, texture) in BEDROCK_SPRITES {
+        let key = texture.asset_key("png");
+        match load_gui_sprite(font_sources.resources, &key) {
+            Ok(rgba) => {
+                let (w, h) = (rgba.width(), rgba.height());
                 images.push((
-                    SpriteId::BedrockTitle,
-                    downscale_straight_alpha(&img.to_rgba8(), BEDROCK_TITLE_W, h).into_raw(),
-                    BEDROCK_TITLE_W,
+                    id,
+                    rgba.into_raw(),
+                    w,
                     h,
-                    0.0,
+                    load_bedrock_nine_slice(font_sources.resources, texture),
                 ));
             }
-            Err(e) => tracing::debug!("No Bedrock title yet: {e}"),
-        }
-        for (id, stem) in BEDROCK_SPRITES {
-            match crate::assets::load_image(&dir.join(format!("{stem}.png"))) {
-                Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let (w, h) = (rgba.width(), rgba.height());
-                    images.push((id, rgba.into_raw(), w, h, bedrock_nine_slice(dir, stem)));
-                }
-                Err(e) => tracing::debug!("No Bedrock sprite {stem} yet: {e}"),
-            }
+            Err(e) => tracing::debug!("No Bedrock sprite {key} yet: {e}"),
         }
     }
 
@@ -5346,18 +5332,15 @@ mod tests {
 
     #[test]
     fn bedrock_nine_slice_reads_the_number_form_only() {
-        let dir = std::env::temp_dir().join(format!("pomme-nine-slice-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for (stem, json) in [
-            ("number", r#"{ "nineslice_size": 2, "base_size": [4, 4] }"#),
-            ("array", r#"{ "nineslice_size": [1, 2, 1, 2] }"#),
-        ] {
-            std::fs::write(dir.join(format!("{stem}.json")), json).unwrap();
-        }
-        assert_eq!(bedrock_nine_slice(&dir, "number"), 2.0);
-        assert_eq!(bedrock_nine_slice(&dir, "array"), 0.0);
-        assert_eq!(bedrock_nine_slice(&dir, "missing"), 0.0);
-        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(
+            bedrock_nine_slice(br#"{ "nineslice_size": 2, "base_size": [4, 4] }"#),
+            2.0
+        );
+        assert_eq!(
+            bedrock_nine_slice(br#"{ "nineslice_size": [1, 2, 1, 2] }"#),
+            0.0
+        );
+        assert_eq!(bedrock_nine_slice(b""), 0.0);
     }
 
     #[test]

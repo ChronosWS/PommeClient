@@ -959,6 +959,27 @@ fn resolve_head_profile(profile: HeadProfile, tab_list: &TabList) -> HeadProfile
     }
 }
 
+fn register_theme_sources(
+    packs: &mut ResourcePackManager,
+    theme: crate::ui::menu::PanoramaTheme,
+    dirs: &DataDirs,
+) {
+    use crate::resources::theme::ThemeAssets;
+    use crate::ui::menu::PanoramaTheme;
+
+    packs.set_theme(match theme {
+        PanoramaTheme::Java => None,
+        PanoramaTheme::Pomme => Some((ThemeAssets::Pomme, dirs.pomme_assets_dir.clone())),
+        PanoramaTheme::Bedrock => {
+            // UI_DIR is resource_pack/textures/ui; expose the native pack tree.
+            let mut root = dirs.bedrock_ui_dir();
+            root.pop();
+            root.pop();
+            Some((ThemeAssets::Bedrock, root))
+        }
+    });
+}
+
 impl AppCore {
     pub fn new(
         version: String,
@@ -983,6 +1004,7 @@ impl AppCore {
         );
 
         let display_mode = menu.display_mode;
+        register_theme_sources(&mut resource_packs, menu.theme(), &data_dirs);
 
         let asset_index =
             AssetIndex::load(&data_dirs.indexes_dir, &data_dirs.objects_dir, &version);
@@ -1686,6 +1708,7 @@ impl AppCore {
         if let Some(index) = &installed_index {
             resource_packs.register_installation(index.clone());
         }
+        register_theme_sources(resource_packs, menu.theme(), data_dirs);
         let result = resource_packs.sources().and_then(|sources| {
             resources.reload(sources, |resources| {
                 if let Err(error) = crate::lang::reload(resources) {

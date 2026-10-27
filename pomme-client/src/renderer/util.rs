@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use super::{MAX_FRAMES_IN_FLIGHT, rhi};
 use crate::resources::{ResourceError, ResourceId, ResourceManager};
 
@@ -268,15 +266,8 @@ pub fn transition_image_to_shader_read(
     });
 }
 
-pub fn load_png(path: &Path) -> Option<(Vec<u8>, u32, u32)> {
-    let file = std::fs::File::open(path).ok()?;
-    load_png_reader(file, usize::MAX)
-        .map_err(|error| tracing::warn!(path = %path.display(), %error, "Invalid PNG"))
-        .ok()
-}
-
-/// The legacy PNG transforms and RGBA conversion, shared by path and managed
-/// content callers. The limit bounds both the output buffer and RGBA pixels;
+/// The legacy PNG transforms and RGBA conversion for managed content callers.
+/// The limit bounds both the output buffer and RGBA pixels;
 /// the decoder retains png's default internal allocation limit (64 MiB).
 pub(crate) fn load_png_reader(
     input: impl std::io::Read,

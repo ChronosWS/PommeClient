@@ -1,7 +1,5 @@
-use std::path::Path;
-
 use crate::renderer::{rhi, shader, util};
-use crate::resources::{ResourceId, ResourceManager};
+use crate::resources::ResourceManager;
 
 // Minecraft panorama face order differs from Vulkan cubemap layer order
 const FACE_TO_LAYER: [u32; 6] = [4, 1, 5, 0, 2, 3];
@@ -129,30 +127,11 @@ impl PanoramaPipeline {
     }
 }
 
-/// Explicit application-theme files are a separate, all-six override, not a
-/// Minecraft pack. Incomplete/invalid themes fall back to the active Minecraft
-/// resources as a whole; Minecraft faces each use normal pack
-/// priority/filtering.
-pub fn load_panorama_faces(
-    panorama_dir: Option<&Path>,
-    resources: &ResourceManager,
-) -> Option<[image::RgbaImage; 6]> {
-    if let Some(directory) = panorama_dir {
-        match collect_panorama_faces(|i| {
-            let path = directory.join(format!("panorama_{i}.png"));
-            let (data, w, h) = util::load_png(&path)
-                .ok_or_else(|| format!("could not decode {}", path.display()))?;
-            image::RgbaImage::from_raw(w, h, data)
-                .ok_or_else(|| format!("invalid RGBA image: {}", path.display()))
-        }) {
-            Ok(faces) => return Some(faces),
-            Err(error) => tracing::info!("Using Minecraft panorama instead of theme: {error}"),
-        }
-    }
-
+/// Each face uses ordinary resource priority; validate the resulting cube as a
+/// set.
+pub fn load_panorama_faces(resources: &ResourceManager) -> Option<[image::RgbaImage; 6]> {
     match collect_panorama_faces(|i| {
-        let name = format!("minecraft:textures/gui/title/background/panorama_{i}.png");
-        let id = ResourceId::new(&name).map_err(|error| error.to_string())?;
+        let id = crate::resources::theme::panorama_id(i).map_err(|error| error.to_string())?;
         util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES)
     }) {
         Ok(faces) => Some(faces),

@@ -3,7 +3,7 @@ use crate::app::core::AppCore;
 use crate::app::phases::{Gfx, Panorama};
 use crate::net::connection::{ConnectArgs, Transport};
 use crate::singleplayer::{self, World};
-use crate::ui::menu::{MenuAction, PanoramaTheme};
+use crate::ui::menu::MenuAction;
 
 pub enum MenuUpdateResult {
     None,
@@ -178,13 +178,8 @@ pub fn update_menu(
         }
         MenuAction::PlayWorld { folder } => return open_world(core, &folder),
         MenuAction::ChangeTheme(theme) => {
-            gfx.renderer.reload_panorama(
-                theme.panorama_dir(&core.data_dirs).as_deref(),
-                &core.resources,
-            );
-            if theme == PanoramaTheme::Bedrock {
-                gfx.renderer
-                    .load_bedrock_sprites(&core.data_dirs.bedrock_ui_dir(), core.font_sources());
+            if let Err(error) = core.reload_pack_assets(&mut gfx.renderer) {
+                tracing::error!(%error, ?theme, "Failed to reload theme assets; resource sources unchanged");
             }
             core.menu.start_transition_open();
         }

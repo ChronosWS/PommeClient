@@ -17,7 +17,7 @@ pub(crate) const MAX_FRAMES_IN_FLIGHT: usize = 3;
 const KEEPS_SURFACE_WHEN_SUSPENDED: bool = cfg!(target_os = "ios");
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use azalea_block::BlockState;
@@ -255,7 +255,6 @@ pub struct Renderer {
     block_overlay_pipeline: BlockOverlayPipeline,
     sky_pipeline: SkyPipeline,
     panorama_pipeline: PanoramaPipeline,
-    panorama_dir: Option<PathBuf>,
     menu_pipeline: MenuOverlayPipeline,
     /// The Menu Background Blur option: vanilla's `MenuBlurRadius`.
     menu_blur_radius: u8,
@@ -300,8 +299,6 @@ impl Renderer {
         game_dir: &Path,
         _cache_dir: &Path,
         vsync: bool,
-        panorama_dir: Option<&Path>,
-        bedrock_ui_dir: &Path,
     ) -> Result<Self, RendererError> {
         let FontSources {
             resources,
@@ -321,7 +318,7 @@ impl Renderer {
         });
 
         let (ctx, swapchain_state, mut frames, mut menu_pipeline) =
-            boot::bring_up(&window, font_sources, Some(bedrock_ui_dir), vsync)?;
+            boot::bring_up(&window, font_sources, vsync)?;
         // The swapchain may pick the surface's `current_extent` rather than the
         // requested size; track that actual extent so layout matches rendering.
         let swapchain_extent = swapchain_state.extent;
@@ -394,7 +391,7 @@ impl Renderer {
         let panorama_pipeline = PanoramaPipeline::new(
             &ctx.device,
             swapchain_state.targets(),
-            pipelines::panorama::load_panorama_faces(panorama_dir, resources),
+            pipelines::panorama::load_panorama_faces(resources),
         );
 
         splash(&mut menu_pipeline, 0.9, "Finalizing...");
@@ -493,7 +490,6 @@ impl Renderer {
             block_overlay_pipeline,
             sky_pipeline,
             panorama_pipeline,
-            panorama_dir: panorama_dir.map(Path::to_path_buf),
             menu_pipeline,
             menu_blur_radius: crate::ui::menu::DEFAULT_MENU_BACKGROUND_BLURRINESS,
             entity_outline,
@@ -1341,33 +1337,10 @@ impl Renderer {
         }
     }
 
-    pub fn reload_panorama(
-        &mut self,
-        panorama_dir: Option<&Path>,
-        resources: &crate::resources::ResourceManager,
-    ) {
-        self.panorama_dir = panorama_dir.map(Path::to_path_buf);
-        self.reload_panorama_resources(resources);
-    }
-
     fn reload_panorama_resources(&mut self, resources: &crate::resources::ResourceManager) {
-        let faces =
-            pipelines::panorama::load_panorama_faces(self.panorama_dir.as_deref(), resources);
+        let faces = pipelines::panorama::load_panorama_faces(resources);
         self.panorama_pipeline
             .reload_cubemap(&self.ctx.device, faces);
-    }
-
-    /// Brings the Bedrock title and button sprites into the menu atlas when
-    /// their files arrived after the atlas was built.
-    pub fn load_bedrock_sprites(&mut self, bedrock_ui_dir: &Path, font_sources: FontSources<'_>) {
-        if self.menu_pipeline.has_sprite(SpriteId::BedrockTitle) {
-            return;
-        }
-        self.menu_pipeline.reload_sprite_atlas(
-            &self.ctx.device,
-            font_sources,
-            Some(bedrock_ui_dir),
-        );
     }
 
     pub fn trigger_skin_swing(&mut self) {

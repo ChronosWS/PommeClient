@@ -4,8 +4,9 @@
 //!
 //! Pack management owns discovery, selection, downloads and extraction.
 //! Its root metadata parser is private; resource sidecars remain queryable.
-//! Source priority: selected packs above the optional external index above JAR
-//! above embedded Pomme resources. Bootstrap needs only the embedded pack.
+//! Source priority: selected packs above selected theme assets above the
+//! optional external index above JAR above embedded Pomme resources. Bootstrap
+//! needs only the embedded pack.
 //! Built-ins are separate layers of one pack, not a composite source.
 //! Filters apply between logical packs, not within their physical layers.
 //! Overlays belong in source composition, not loaders. This layer
@@ -25,6 +26,7 @@ mod pack;
 mod pack_format;
 mod pack_resource;
 mod resource;
+pub(crate) mod theme;
 
 /// Well-known metadata filenames and schema keys, shared by pack consumers.
 pub(crate) mod metadata {

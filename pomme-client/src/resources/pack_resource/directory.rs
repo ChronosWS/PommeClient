@@ -1,49 +1,126 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{
     PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, canonical_directory,
-    check_directory, enumeration_error, is_file, lookup_error, open_file, overlay_directory,
-    resolve_within, source_file, valid_namespace, validate_query,
+    check_directory, enumeration_error, is_file, lookup_error, matches_prefix, open_file,
+    overlay_directory, resolve_within, source_file, valid_namespace, validate_query,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
-/// A namespace-containing assets directory, including extracted JARs and packs.
+/// Pack assets or a native namespace-root directory with sparse translations.
 #[derive(Clone)]
 pub(super) struct DirectoryPackResources {
     root: PathBuf,
-    pack_root: Option<PathBuf>,
+    layout: DirectoryState,
     origin: ResourceOrigin,
 }
 
-impl DirectoryPackResources {
-    pub(super) fn open_pack(
+pub(super) enum DirectoryLayout {
+    /// Pack root containing `assets/<namespace>`, optionally under an overlay.
+    ResourcePack {
+        root: PathBuf,
+        overlay: Option<String>,
+    },
+    /// Native root for one namespace; paths without remappings are
+    /// root-relative.
+    Mapped {
+        root: PathBuf,
+        namespace: String,
+        remappings: Option<Arc<BTreeMap<ResourceId, PathBuf>>>,
+    },
+}
+
+#[derive(Clone)]
+enum DirectoryState {
+    StandardAssets {
         pack_root: PathBuf,
-        overlay: Option<&str>,
+    },
+    NamespaceRoot {
+        namespace: String,
+        remappings: Option<Arc<BTreeMap<ResourceId, PathBuf>>>,
+    },
+}
+
+impl DirectoryPackResources {
+    pub(super) fn open(
+        layout: DirectoryLayout,
         origin: ResourceOrigin,
     ) -> Result<Self, ResourceError> {
-        let directory = overlay
-            .map(overlay_directory)
-            .transpose()
-            .map_err(|source| enumeration_error(&origin, "open overlay directory", source))?;
-        let root = pack_root.join(directory.unwrap_or_default()).join("assets");
-        let source = Self {
-            root,
-            pack_root: Some(pack_root),
-            origin,
-        };
-        source.assets_root().map_err(|error| {
-            enumeration_error(&source.origin, "open pack assets directory", error)
-        })?;
-        Ok(source)
+        match layout {
+            DirectoryLayout::ResourcePack {
+                root: pack_root,
+                overlay,
+            } => {
+                let directory = overlay
+                    .as_deref()
+                    .map(overlay_directory)
+                    .transpose()
+                    .map_err(|source| {
+                        enumeration_error(&origin, "open overlay directory", source)
+                    })?;
+                let root = pack_root.join(directory.unwrap_or_default()).join("assets");
+                let source = Self {
+                    root,
+                    layout: DirectoryState::StandardAssets { pack_root },
+                    origin,
+                };
+                source.assets_root().map_err(|error| {
+                    enumeration_error(&source.origin, "open pack assets directory", error)
+                })?;
+                Ok(source)
+            }
+            DirectoryLayout::Mapped {
+                root,
+                namespace,
+                remappings,
+            } => {
+                validate_query(Some(&namespace), "")?;
+                if let Some(remappings) = &remappings {
+                    for (id, path) in remappings.iter() {
+                        if id.namespace() != namespace
+                            || path.as_os_str().is_empty()
+                            || path
+                                .components()
+                                .any(|component| !matches!(component, Component::Normal(_)))
+                        {
+                            return Err(enumeration_error(
+                                &origin,
+                                "validate directory remapping",
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    format!(
+                                        "invalid directory remapping {id} -> {}",
+                                        path.display()
+                                    ),
+                                ),
+                            ));
+                        }
+                    }
+                }
+                let root = canonical_directory(&root).map_err(|source| {
+                    enumeration_error(&origin, "open source directory", source)
+                })?;
+                Ok(Self {
+                    root,
+                    layout: DirectoryState::NamespaceRoot {
+                        namespace,
+                        remappings,
+                    },
+                    origin,
+                })
+            }
+        }
     }
 
     fn assets_root(&self) -> io::Result<Option<PathBuf>> {
-        let Some(pack_root) = &self.pack_root else {
-            return canonical_directory(&self.root).map(Some);
+        let DirectoryState::StandardAssets { pack_root } = &self.layout else {
+            let root = resolve_within(&self.root, &self.root)?;
+            check_directory(&root)?;
+            return Ok(Some(root));
         };
         let boundary = canonical_directory(pack_root)?;
         let relative = self
@@ -66,15 +143,54 @@ impl DirectoryPackResources {
         Ok(Some(current))
     }
 
+    fn accepts_namespace(&self, namespace: &str) -> bool {
+        match &self.layout {
+            DirectoryState::StandardAssets { .. } => true,
+            DirectoryState::NamespaceRoot {
+                namespace: configured,
+                ..
+            } => namespace == configured,
+        }
+    }
+
+    /// Exact mappings win over derived companions; translation is single-step.
+    fn remapped_path(&self, id: &ResourceId) -> Option<PathBuf> {
+        let DirectoryState::NamespaceRoot {
+            remappings: Some(remappings),
+            ..
+        } = &self.layout
+        else {
+            return None;
+        };
+        if let Some(path) = remappings.get(id) {
+            return Some(path.clone());
+        }
+        let base = id.path().strip_suffix(".mcmeta")?;
+        let base = ResourceId::new(&format!("{}:{base}", id.namespace())).ok()?;
+        let mut path = remappings.get(&base)?.as_os_str().to_os_string();
+        path.push(".mcmeta");
+        Some(PathBuf::from(path))
+    }
+
     fn locate(&self, id: &ResourceId) -> io::Result<Option<PathBuf>> {
+        if !self.accepts_namespace(id.namespace()) {
+            return Ok(None);
+        }
         let Some(root) = self.assets_root()? else {
             return Ok(None);
         };
+        let relative = match &self.layout {
+            DirectoryState::StandardAssets { .. } => PathBuf::from(id.namespace()).join(id.path()),
+            DirectoryState::NamespaceRoot { .. } => self
+                .remapped_path(id)
+                .unwrap_or_else(|| PathBuf::from(id.path())),
+        };
         // Only the final resolved resource is confined to the source assets root.
-        source_file(&root, &root.join(id.namespace()).join(id.path()))
+        source_file(&root, &root.join(relative))
     }
 
     fn collect_resources(
+        &self,
         root: &Path,
         directory: &Path,
         namespace: &str,
@@ -109,11 +225,21 @@ impl DirectoryPackResources {
             let Ok(id) = ResourceId::new(&format!("{namespace}:{path}")) else {
                 continue;
             };
+            if self.remapped_path(&id).is_some() {
+                // A shadowed file is irrelevant; directories can still contain
+                // ordinary descendants whose IDs are not remapped.
+                match std::fs::metadata(entry.path()) {
+                    Ok(metadata) if metadata.is_dir() => {}
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                }
+            }
             let Some((resolved, metadata)) = Self::entry_within(root, &entry.path())? else {
                 continue;
             };
             if metadata.is_dir() {
-                Self::collect_resources(root, &resolved, namespace, &path, active, resources)?;
+                self.collect_resources(root, &resolved, namespace, &path, active, resources)?;
             } else if is_file(&resolved)? {
                 resources.insert(id);
             }
@@ -167,6 +293,10 @@ impl PackResources for DirectoryPackResources {
             let Some(root) = self.assets_root()? else {
                 return Ok(namespaces);
             };
+            if let DirectoryState::NamespaceRoot { namespace, .. } = &self.layout {
+                namespaces.insert(namespace.clone());
+                return Ok(namespaces);
+            }
             for entry in std::fs::read_dir(&root)? {
                 let entry = entry?;
                 let name = entry.file_name();
@@ -191,16 +321,22 @@ impl PackResources for DirectoryPackResources {
         prefix: &str,
     ) -> Result<BTreeSet<ResourceId>, ResourceError> {
         validate_query(Some(namespace), prefix)?;
+        if !self.accepts_namespace(namespace) {
+            return Ok(BTreeSet::new());
+        }
         let enumerate = || -> io::Result<_> {
             let mut resources = BTreeSet::new();
             let Some(root) = self.assets_root()? else {
                 return Ok(resources);
             };
-            if let Some((directory, metadata)) =
-                Self::entry_within(&root, &root.join(namespace).join(prefix))?
+            let path = match &self.layout {
+                DirectoryState::StandardAssets { .. } => root.join(namespace).join(prefix),
+                DirectoryState::NamespaceRoot { .. } => root.join(prefix),
+            };
+            if let Some((directory, metadata)) = Self::entry_within(&root, &path)?
                 && metadata.is_dir()
             {
-                Self::collect_resources(
+                self.collect_resources(
                     &root,
                     &directory,
                     namespace,
@@ -208,6 +344,24 @@ impl PackResources for DirectoryPackResources {
                     &mut BTreeSet::new(),
                     &mut resources,
                 )?;
+            }
+            if let DirectoryState::NamespaceRoot {
+                remappings: Some(remappings),
+                ..
+            } = &self.layout
+            {
+                for id in remappings.keys() {
+                    let companion =
+                        ResourceId::new(&format!("{id}.mcmeta")).map_err(io::Error::other)?;
+                    for candidate in [id, &companion] {
+                        if matches_prefix(candidate.path(), prefix)
+                            && let Some(relative) = self.remapped_path(candidate)
+                            && source_file(&root, &root.join(relative))?.is_some()
+                        {
+                            resources.insert(candidate.clone());
+                        }
+                    }
+                }
             }
             Ok(resources)
         };

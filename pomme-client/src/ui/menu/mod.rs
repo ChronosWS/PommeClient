@@ -317,16 +317,6 @@ impl PanoramaTheme {
             _ => Self::Java,
         }
     }
-
-    /// Java uses active Minecraft resources; Pomme and Bedrock use their
-    /// explicit application-theme directories.
-    pub fn panorama_dir(self, dirs: &crate::dirs::DataDirs) -> Option<std::path::PathBuf> {
-        match self {
-            Self::Java => None,
-            Self::Pomme => Some(dirs.pomme_assets_dir.join("panoramas")),
-            Self::Bedrock => Some(dirs.bedrock_ui_dir()),
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

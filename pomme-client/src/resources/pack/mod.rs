@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use id::PackIdentity;
 use metadata::PackMetadata;
@@ -6,6 +7,7 @@ use metadata::PackMetadata;
 use super::installed_format::read_installed_pack_format;
 use super::pack_format::{PackFormat, PackFormatRange};
 use super::pack_resource::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
+use super::theme::ThemeAssets;
 use super::{ResourceError, ResourceSources, metadata as keys};
 
 mod id;
@@ -76,6 +78,7 @@ pub struct ResourcePackManager {
     embedded_pack_id: PackId,
     builtin_pack_id: PackId,
     installed_resources: Option<InstalledResources>,
+    selected_theme: Option<(ThemeAssets, PathBuf)>,
     asset_version: String,
     client_jar: PathBuf,
     target_format: Option<PackFormat>,
@@ -96,6 +99,7 @@ impl ResourcePackManager {
         let mut mgr = Self {
             embedded_pack_id: PackId::new(PackIdentity::Pomme),
             installed_resources: None,
+            selected_theme: None,
             builtin_pack_id: new_builtin_pack_id(asset_version),
             asset_version: asset_version.to_owned(),
             client_jar: client_jar.to_owned(),
@@ -134,9 +138,13 @@ impl ResourcePackManager {
         }
     }
 
+    pub(crate) fn set_theme(&mut self, theme: Option<(ThemeAssets, PathBuf)>) {
+        self.selected_theme = theme;
+    }
+
     /// Owned snapshot, low-to-high: Pomme, Minecraft (JAR then index),
-    /// selections. No installation is needed to open the embedded bootstrap
-    /// stack.
+    /// selected theme, selections. No installation is needed to open the
+    /// embedded bootstrap stack.
     pub(crate) fn sources(&self) -> Result<ResourceSources, ResourceError> {
         let mut sources = builtin_descriptors(
             self.embedded_pack_id.clone(),
@@ -145,6 +153,32 @@ impl ResourcePackManager {
                 .as_ref()
                 .map(|installed| (self.client_jar.as_path(), installed.index.as_ref())),
         );
+        if let Some((theme, root)) = &self.selected_theme {
+            let origin = ResourceOrigin {
+                pack_id: PackId::new(PackIdentity::Theme(*theme)),
+                name: format!("{theme:?} theme assets"),
+            };
+            match std::fs::read_dir(root) {
+                Ok(_) => sources.push(ResourcePackDescriptor {
+                    storage: vec![PackStorage::NamespaceDirectory {
+                        root: root.clone(),
+                        namespace: "minecraft".to_owned(),
+                        remappings: Some(Arc::new(theme.panorama_remappings()?)),
+                    }],
+                    origin,
+                    filter: Default::default(),
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(ResourceError::Io {
+                        operation: "open source directory",
+                        id: None,
+                        origin,
+                        source,
+                    });
+                }
+            }
+        }
         sources.extend(self.active_pack_descriptors()?);
         Ok(ResourceSources(sources))
     }
