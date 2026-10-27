@@ -4,8 +4,7 @@ use std::sync::Arc;
 use id::PackIdentity;
 use metadata::PackMetadata;
 
-use super::installed_format::read_installed_pack_format;
-use super::pack_format::{PackFormat, PackFormatRange};
+use super::pack_format::{PackFormat, PackFormatRange, read_installed_pack_format};
 use super::pack_resource::{PackStorage, ResourceOrigin, ResourcePackDescriptor};
 use super::theme::ThemeAssets;
 use super::{ResourceError, ResourceSources, metadata as keys};

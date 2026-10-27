@@ -15,8 +15,8 @@ const MODEL_PARENT_LIMIT: u32 = 16;
 pub struct DisplayResolver {
     keys: &'static [&'static str],
     cache: RefCell<HashMap<String, DisplayTransform>>,
-    items: ItemDefinitionSources,
     models: ModelSources,
+    items: ItemDefinitionSources,
 }
 
 impl DisplayResolver {
@@ -28,8 +28,8 @@ impl DisplayResolver {
         Self {
             keys,
             cache: RefCell::new(HashMap::new()),
-            items,
             models,
+            items,
         }
     }
 

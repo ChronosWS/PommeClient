@@ -20,7 +20,6 @@
 //! thread; content alone can opt into a transferable handle with local streams.
 
 mod filter;
-mod installed_format;
 mod manager;
 mod pack;
 mod pack_format;
