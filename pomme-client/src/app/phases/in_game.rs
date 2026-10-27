@@ -272,6 +272,7 @@ pub struct GameState {
     pub overworld_day: bool,
     /// The current dimension's `default_clock`, whose ticks are its day time.
     pub default_clock: Option<String>,
+    pub clocks: crate::world::clock::ClientClocks,
     /// The current dimension's lightmap attribute layers.
     pub light_environment: crate::world::environment::LightEnvironment,
     /// Vanilla `LightmapRenderStateExtractor.blockLightFlicker`.
@@ -353,6 +354,11 @@ pub struct GameState {
 }
 
 impl GameState {
+    /// The day time is the dimension's default clock.
+    pub fn sync_day_time(&mut self) {
+        self.sky_state.day_time = self.clocks.total_ticks(self.default_clock.as_deref());
+    }
+
     /// The mob a spectator views the world from, if it's one the client knows.
     pub fn spectated(&self) -> Option<&crate::entity::LivingEntity> {
         self.entity_store.living.get(&self.camera_entity?)
@@ -541,6 +547,7 @@ impl GameState {
             ambient_light: 0.0,
             overworld_day: true,
             default_clock: None,
+            clocks: Default::default(),
             light_environment: Default::default(),
             block_light_flicker: 0.0,
             game_mode_switcher: None,
@@ -2297,12 +2304,13 @@ pub fn update_game(
 
     game.drain_and_upload_meshes(&mut gfx.renderer);
 
-    // Sky time ticks unconditionally so it keeps flowing in menus;
-    // server SetTime packets reconcile drift.
+    // Sky time ticks unconditionally so it keeps flowing in menus.
     core.time_tick_accumulator = (core.time_tick_accumulator + dt).min(1.0);
     while core.time_tick_accumulator >= TICK_RATE {
-        game.sky_state.day_time = game.sky_state.day_time.wrapping_add(1);
         game.sky_state.game_time = game.sky_state.game_time.wrapping_add(1);
+        game.sky_state.prev_day_time = game.sky_state.day_time;
+        game.clocks.tick(game.sky_state.game_time);
+        game.sync_day_time();
         core.time_tick_accumulator -= TICK_RATE;
     }
 
@@ -4064,11 +4072,8 @@ pub fn update_game(
 
     let sky_partial_tick = (core.time_tick_accumulator / TICK_RATE).clamp(0.0, 1.0);
     let sky = crate::renderer::SkyState {
-        day_time: game.sky_state.day_time,
-        game_time: game.sky_state.game_time,
-        rain_level: game.sky_state.rain_level,
-        thunder_level: game.sky_state.thunder_level,
         partial_tick: sky_partial_tick,
+        ..game.sky_state.clone()
     };
     if game.show_chunk_borders {
         gfx.renderer.update_chunk_borders(
