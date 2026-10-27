@@ -1,6 +1,6 @@
 //! Vanilla `SplashManager`: the yellow line that hangs off the title logo.
 
-use crate::resources::{ResourceId, ResourceManager};
+use crate::resources::{ResourceManager, resource_id};
 
 /// Bound pack-provided text before decoding it or building the splash pool.
 const MAX_SPLASH_BYTES: usize = 1024 * 1024;
@@ -37,9 +37,8 @@ pub(super) fn pick(
         return Some(fixed.to_string());
     }
 
-    let id = ResourceId::new("minecraft:texts/splashes.txt").expect("valid splash resource ID");
     let resource = resources
-        .get_resource(&id)
+        .get_resource(&resource_id!("minecraft:texts/splashes.txt"))
         .inspect_err(|e| tracing::warn!("Failed to locate splashes.txt: {e}"))
         .ok()??;
     let content = resource.content();

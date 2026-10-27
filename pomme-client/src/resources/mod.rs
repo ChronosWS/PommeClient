@@ -28,6 +28,17 @@ mod pack_resource;
 mod resource;
 pub(crate) mod theme;
 
+/// Builds a resource ID value from a static string expression, validated at
+/// compile time. Use `ResourceId::new` for fallible construction from dynamic
+/// strings.
+macro_rules! resource_id {
+    ($value:expr $(,)?) => {
+        const { $crate::resources::ResourceId::literal($value) }
+    };
+}
+
+pub(crate) use resource_id;
+
 /// Well-known metadata filenames and schema keys, shared by pack consumers.
 pub(crate) mod metadata {
     pub(crate) const PACK_METADATA_FILE: &str = "pack.mcmeta";

@@ -7,15 +7,15 @@ use super::{
     PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, matches_prefix,
     validate_query,
 };
-use crate::resources::{ResourceContent, ResourceError, ResourceId};
+use crate::resources::{ResourceContent, ResourceError, ResourceId, resource_id};
 
 // Stable application IDs, independent of the installed Minecraft version.
 // Selected packs can override them through the ordinary resource lookup.
-pub(crate) const POMME_UI_FONT: &str = "pomme:font/ui.ttf";
-pub(crate) const POMME_ICONS_FONT: &str = "pomme:font/icons.ttf";
-pub(crate) const POMME_ICON: &str = "pomme:textures/icon.png";
+pub(crate) const POMME_UI_FONT: ResourceId = resource_id!("pomme:font/ui.ttf");
+pub(crate) const POMME_ICONS_FONT: ResourceId = resource_id!("pomme:font/icons.ttf");
+pub(crate) const POMME_ICON: ResourceId = resource_id!("pomme:textures/icon.png");
 
-const ENTRIES: &[(&str, &[u8])] = &[
+const ENTRIES: &[(ResourceId, &[u8])] = &[
     (
         POMME_UI_FONT,
         include_bytes!("../../renderer/fonts/Montserrat-Medium.ttf"),
@@ -40,7 +40,7 @@ impl EmbeddedPackResources {
     fn bytes(id: &ResourceId) -> Option<&'static [u8]> {
         ENTRIES
             .iter()
-            .find_map(|(name, bytes)| (*name == id.to_string()).then_some(*bytes))
+            .find_map(|(name, bytes)| (name == id).then_some(*bytes))
     }
 }
 
@@ -78,13 +78,11 @@ impl PackResources for EmbeddedPackResources {
         prefix: &str,
     ) -> Result<BTreeSet<ResourceId>, ResourceError> {
         validate_query(Some(namespace), prefix)?;
-        ENTRIES
+        Ok(ENTRIES
             .iter()
-            .map(|(name, _)| ResourceId::new(name))
-            .filter(|id| match id {
-                Ok(id) => id.namespace() == namespace && matches_prefix(id.path(), prefix),
-                Err(_) => true,
-            })
-            .collect()
+            .map(|(id, _)| id)
+            .filter(|id| id.namespace() == namespace && matches_prefix(id.path(), prefix))
+            .cloned()
+            .collect())
     }
 }

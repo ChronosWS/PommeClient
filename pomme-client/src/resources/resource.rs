@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::Read;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -8,30 +9,40 @@ use super::pack_resource::{
 };
 use crate::assets::{AssetId, identifier_chars};
 
-/// Owned logical name with nonempty namespace and path, checked only for
+/// Logical name with nonempty namespace and path, checked only for
 /// namespace characters and case-preserving ASCII path characters. Storage
 /// resolution belongs to the source adapter.
 /// Deterministic namespace-then-path ordering does not imply pack priority.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ResourceId {
-    namespace: String,
-    path: String,
+    namespace: Cow<'static, str>,
+    path: Cow<'static, str>,
 }
 
 impl ResourceId {
     pub(crate) fn new(value: &str) -> Result<Self, ResourceError> {
-        let (namespace, path) = value.split_once(':').unwrap_or(("minecraft", value));
-        if namespace.is_empty()
-            || path.is_empty()
-            || !identifier_chars(namespace, false)
-            || !resource_path_chars(path)
-        {
+        let (namespace, path) = resource_id_parts(value);
+        if !valid_resource_id_parts(namespace, path) {
             return Err(ResourceError::InvalidId(value.to_owned()));
         }
         Ok(Self {
-            namespace: namespace.to_owned(),
-            path: path.to_owned(),
+            namespace: Cow::Owned(namespace.to_owned()),
+            path: Cow::Owned(path.to_owned()),
         })
+    }
+
+    /// Borrows a static identifier without allocation. Used by `resource_id!`
+    /// to validate identifiers at compile time.
+    pub(crate) const fn literal(value: &'static str) -> Self {
+        let (namespace, path) = resource_id_parts(value);
+        assert!(
+            valid_resource_id_parts(namespace, path),
+            "invalid resource identifier literal"
+        );
+        Self {
+            namespace: Cow::Borrowed(namespace),
+            path: Cow::Borrowed(path),
+        }
     }
 
     pub(crate) fn namespace(&self) -> &str {
@@ -55,9 +66,37 @@ impl ResourceId {
     }
 }
 
-pub(super) fn resource_path_chars(path: &str) -> bool {
-    path.bytes()
-        .all(|c| c.is_ascii_alphanumeric() || b"_./-".contains(&c))
+const fn resource_id_parts(value: &str) -> (&str, &str) {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b':' {
+            let (namespace, rest) = value.split_at(index);
+            return (namespace, rest.split_at(1).1);
+        }
+        index += 1;
+    }
+    ("minecraft", value)
+}
+
+const fn valid_resource_id_parts(namespace: &str, path: &str) -> bool {
+    !namespace.is_empty()
+        && !path.is_empty()
+        && identifier_chars(namespace, false)
+        && resource_path_chars(path)
+}
+
+pub(super) const fn resource_path_chars(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'/' | b'-')) {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 /// The full identifier always includes its namespace.

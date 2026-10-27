@@ -11,9 +11,10 @@ use super::skin_preview::{
     PREVIEW_ALPHA_CUTOFF, Uniform, Vertex, create_pipeline, preview_push_constant_range,
     push_preview_style, write_uniform,
 };
-use crate::resources::{ResourceId, ResourceManager};
+use crate::resources::{ResourceId, ResourceManager, resource_id};
 
-const BOOK_TEXTURE: &str = "minecraft:textures/entity/enchantment/enchanting_table_book.png";
+const BOOK_TEXTURE: ResourceId =
+    resource_id!("minecraft:textures/entity/enchantment/enchanting_table_book.png");
 use crate::renderer::{BookPreview, rhi, util};
 
 /// Base mesh of one book part, posed per frame.
@@ -208,9 +209,7 @@ fn load_book_texture(
     device: &rhi::backend::Device,
     resources: &ResourceManager,
 ) -> rhi::backend::Texture {
-    let image = ResourceId::new(BOOK_TEXTURE)
-        .map_err(|error| error.to_string())
-        .and_then(|id| util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES));
+    let image = util::load_resource_image(resources, &BOOK_TEXTURE, util::MAX_RESOURCE_IMAGE_BYTES);
     let (pixels, tex_w, tex_h) = match image {
         Ok(image) => {
             let (w, h) = image.dimensions();

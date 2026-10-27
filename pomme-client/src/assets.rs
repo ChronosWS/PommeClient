@@ -41,13 +41,21 @@ pub(crate) fn strip_default_namespace(value: &str) -> &str {
 
 /// `Identifier` namespace (`path` false) or path characters; only the path
 /// allows `/`.
-pub(crate) fn identifier_chars(text: &str, path: bool) -> bool {
-    text.bytes().all(|byte| {
-        byte.is_ascii_lowercase()
+pub(crate) const fn identifier_chars(text: &str, path: bool) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if !(byte.is_ascii_lowercase()
             || byte.is_ascii_digit()
             || matches!(byte, b'_' | b'.' | b'-')
-            || path && byte == b'/'
-    })
+            || path && byte == b'/')
+        {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 pub(crate) fn valid_asset_key(asset_key: &str) -> bool {

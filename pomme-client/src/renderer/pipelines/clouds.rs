@@ -2,7 +2,7 @@ use crate::renderer::camera::{Camera, CameraUniform, CloudMode, MIN_FAR};
 use crate::renderer::pipelines::sky::SkyState;
 use crate::renderer::rhi::{self, VertexFormat};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, shader, util};
-use crate::resources::{ResourceId, ResourceManager};
+use crate::resources::{ResourceId, ResourceManager, resource_id};
 
 /// Vertical thickness of the cloud layer in blocks.
 const CLOUD_THICKNESS: f32 = 4.0;
@@ -411,10 +411,8 @@ fn build_extruded_cell(
 /// its alpha is >= 10 (vanilla `isCellEmpty`). The texel colour is ignored —
 /// vanilla colours clouds purely from the uniform tint times the face shade.
 fn load_cloud_grid(resources: &ResourceManager) -> Option<CloudGrid> {
-    let key = "minecraft:textures/environment/clouds.png";
-    let image = ResourceId::new(key)
-        .map_err(|error| error.to_string())
-        .and_then(|id| util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES));
+    const CLOUDS: ResourceId = resource_id!("minecraft:textures/environment/clouds.png");
+    let image = util::load_resource_image(resources, &CLOUDS, util::MAX_RESOURCE_IMAGE_BYTES);
     let image = match image {
         Ok(image) => image,
         Err(error) => {
@@ -455,7 +453,7 @@ fn load_cloud_grid(resources: &ResourceManager) -> Option<CloudGrid> {
         }
     }
 
-    tracing::info!("Clouds: loaded {key} ({w}x{h})");
+    tracing::info!("Clouds: loaded {CLOUDS} ({w}x{h})");
     Some(CloudGrid {
         width: w,
         height: h,

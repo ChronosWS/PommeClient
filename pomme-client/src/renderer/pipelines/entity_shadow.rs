@@ -7,7 +7,7 @@ use glam::{DVec3, Vec3};
 use crate::physics::block_shape::{LocalBox, is_collision_shape_full_block, outline_shape};
 use crate::renderer::camera::CameraUniform;
 use crate::renderer::{rhi, shader, util};
-use crate::resources::{ResourceId, ResourceManager};
+use crate::resources::{ResourceId, ResourceManager, resource_id};
 use crate::world::block::{BlockStateData, BlockStateTable};
 use crate::world::block_entity::is_invisible_block;
 use crate::world::chunk::ChunkStore;
@@ -51,7 +51,7 @@ const MAX_SHADOW_QUADS: usize = 2730;
 const MAX_SHADOW_VERTS: usize = MAX_SHADOW_QUADS * VERTS_PER_QUAD;
 /// Vanilla `EntityRenderer.MAX_SHADOW_RADIUS`.
 const MAX_SHADOW_RADIUS: f32 = 32.0;
-const SHADOW_TEXTURE: &str = "minecraft:textures/misc/shadow.png";
+const SHADOW_TEXTURE: ResourceId = resource_id!("minecraft:textures/misc/shadow.png");
 
 pub struct EntityShadowPipeline {
     pipeline: rhi::backend::RenderPipeline,
@@ -309,9 +309,8 @@ fn load_shadow_texture(
     device: &rhi::backend::Device,
     resources: &ResourceManager,
 ) -> rhi::backend::Texture {
-    let image = ResourceId::new(SHADOW_TEXTURE)
-        .map_err(|error| error.to_string())
-        .and_then(|id| util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES));
+    let image =
+        util::load_resource_image(resources, &SHADOW_TEXTURE, util::MAX_RESOURCE_IMAGE_BYTES);
     let (pixels, w, h) = match image {
         Ok(image) => {
             let (w, h) = image.dimensions();

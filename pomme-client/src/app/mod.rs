@@ -435,23 +435,19 @@ fn create_window(
     core: &AppCore,
 ) -> Result<Arc<Window>, winit::error::OsError> {
     let window_icon = {
-        crate::resources::ResourceId::new(crate::resources::POMME_ICON)
-            .map_err(|error| error.to_string())
-            .and_then(|id| {
-                crate::renderer::util::load_resource_image(
-                    &core.resources,
-                    &id,
-                    MAX_RESOURCE_IMAGE_BYTES,
-                )
-            })
-            .map(|rgba| {
-                let (w, h) = (rgba.width(), rgba.height());
-                winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
-            })
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "Failed to load window icon");
-                None
-            })
+        crate::renderer::util::load_resource_image(
+            &core.resources,
+            &crate::resources::POMME_ICON,
+            MAX_RESOURCE_IMAGE_BYTES,
+        )
+        .map(|rgba| {
+            let (w, h) = (rgba.width(), rgba.height());
+            winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
+        })
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "Failed to load window icon");
+            None
+        })
     };
     let monitor = event_loop
         .primary_monitor()

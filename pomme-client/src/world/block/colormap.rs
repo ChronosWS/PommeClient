@@ -5,7 +5,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::resources::{ResourceId, ResourceManager};
+use crate::resources::{ResourceId, ResourceManager, resource_id};
 
 #[derive(Clone)]
 pub(crate) struct Colormaps {
@@ -19,15 +19,15 @@ impl Colormaps {
         Self {
             grass: Arc::new(Colormap::load(
                 resources,
-                "minecraft:textures/colormap/grass.png",
+                &resource_id!("minecraft:textures/colormap/grass.png"),
             )),
             foliage: Arc::new(Colormap::load(
                 resources,
-                "minecraft:textures/colormap/foliage.png",
+                &resource_id!("minecraft:textures/colormap/foliage.png"),
             )),
             dry_foliage: Arc::new(Colormap::load(
                 resources,
-                "minecraft:textures/colormap/dry_foliage.png",
+                &resource_id!("minecraft:textures/colormap/dry_foliage.png"),
             )),
         }
     }
@@ -61,10 +61,9 @@ pub(crate) struct Colormap {
 }
 
 impl Colormap {
-    fn load(resources: &ResourceManager, name: &str) -> Self {
+    fn load(resources: &ResourceManager, id: &ResourceId) -> Self {
         let load = || -> Result<Self, Box<dyn std::error::Error>> {
-            let id = ResourceId::new(name)?;
-            let resource = resources.get_resource(&id)?.ok_or_else(|| {
+            let resource = resources.get_resource(id)?.ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "colormap not found")
             })?;
             let bytes = resource.content().read_bytes(32 * 1024 * 1024)?;
@@ -111,7 +110,7 @@ impl Colormap {
             Ok(Self::from_pixels(pixels))
         };
         load().unwrap_or_else(|error| {
-            tracing::warn!(colormap = name, %error, "Using generated fallback colormap");
+            tracing::warn!(colormap = %id, %error, "Using generated fallback colormap");
             Self::fallback()
         })
     }

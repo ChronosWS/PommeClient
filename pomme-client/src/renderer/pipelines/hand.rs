@@ -4,7 +4,7 @@ use glam::{Mat4, Vec3};
 use crate::renderer::chunk::block_lighter::LightLevels;
 use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::{SkinData, rhi, shader, util};
-use crate::resources::{ResourceError, ResourceId, ResourceManager};
+use crate::resources::{ResourceError, ResourceId, ResourceManager, resource_id};
 const NEAR: f32 = 0.05;
 const FAR: f32 = 10.0;
 const MAX_DEFAULT_SKIN_BYTES: usize = 32 * 1024 * 1024;
@@ -363,13 +363,13 @@ fn load_skin_texture(
 }
 
 fn load_default_skin(resources: &ResourceManager) -> (Vec<u8>, u32, u32) {
-    let id = ResourceId::new("minecraft:textures/entity/player/wide/steve.png")
-        .expect("valid default skin resource ID");
+    const DEFAULT_SKIN: ResourceId =
+        resource_id!("minecraft:textures/entity/player/wide/steve.png");
     resources
-        .get_resource(&id)
+        .get_resource(&DEFAULT_SKIN)
         .and_then(|resource| {
             resource
-                .ok_or_else(|| ResourceError::Missing(id.clone()))?
+                .ok_or(ResourceError::Missing(DEFAULT_SKIN))?
                 .content()
                 .read_bytes(MAX_DEFAULT_SKIN_BYTES)
         })
@@ -379,7 +379,7 @@ fn load_default_skin(resources: &ResourceManager) -> (Vec<u8>, u32, u32) {
                 .map_err(|error| error.to_string())
         })
         .unwrap_or_else(|error| {
-            tracing::warn!("Failed to load default skin {id}: {error}; using fallback");
+            tracing::warn!("Failed to load default skin {DEFAULT_SKIN}: {error}; using fallback");
             fallback_skin()
         })
 }
