@@ -21,14 +21,21 @@ pub(crate) struct ResourceId {
 
 impl ResourceId {
     pub(crate) fn new(value: &str) -> Result<Self, ResourceError> {
-        let (namespace, path) = resource_id_parts(value);
-        if !valid_resource_id_parts(namespace, path) {
-            return Err(ResourceError::InvalidId(value.to_owned()));
-        }
+        let (namespace, path) = Self::parse_parts(value)?;
         Ok(Self {
             namespace: Cow::Owned(namespace.to_owned()),
             path: Cow::Owned(path.to_owned()),
         })
+    }
+
+    /// Validates an identifier, borrowing its parts without allocation on
+    /// success.
+    pub(crate) fn parse_parts(value: &str) -> Result<(&str, &str), ResourceError> {
+        let (namespace, path) = resource_id_parts(value);
+        if !valid_resource_id_parts(namespace, path) {
+            return Err(ResourceError::InvalidId(value.to_owned()));
+        }
+        Ok((namespace, path))
     }
 
     /// Borrows a static identifier without allocation. Used by `resource_id!`

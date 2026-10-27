@@ -581,12 +581,10 @@ const MAX_EQUIPMENT_JSON_BYTES: usize = 1024 * 1024;
 
 fn equipment_texture_id(texture: &str, layer_type: &str) -> Option<ResourceId> {
     // Unqualified textures default to minecraft, not the definition namespace.
-    ResourceId::new(texture)
-        .and_then(|id| {
+    ResourceId::parse_parts(texture)
+        .and_then(|(namespace, path)| {
             ResourceId::new(&format!(
-                "{}:textures/entity/equipment/{layer_type}/{}.png",
-                id.namespace(),
-                id.path()
+                "{namespace}:textures/entity/equipment/{layer_type}/{path}.png"
             ))
         })
         .map_err(|error| {
