@@ -1625,6 +1625,8 @@ impl AppCore {
         );
 
         game.reset_mesh_columns();
+        game.compiled.clear();
+        game.remesh_all_columns();
         game.section_vis.clear();
         game.section_vis_epoch.clear();
         game.vis_mask.clear();
