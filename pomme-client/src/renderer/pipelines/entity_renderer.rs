@@ -3477,7 +3477,14 @@ mod tests {
         std::fs::write(pack.join("iron.png"), b"outside assets").unwrap();
         let mut packs =
             crate::resources::ResourcePackManager::new(&root, "fixture", &root.join("unused.jar"));
-        packs.enable_local_pack("armor");
+        let pack_id = packs
+            .available_local_packs()
+            .iter()
+            .find(|info| info.name == "armor")
+            .unwrap()
+            .pack_id()
+            .clone();
+        packs.enable_local_pack(&pack_id, true);
         let resources = crate::resources::ResourceManager::new(packs.sources().unwrap()).unwrap();
         let inside = equipment_texture_id("iron", "humanoid").unwrap();
         assert!(resources.get_resource(&inside).unwrap().is_some());

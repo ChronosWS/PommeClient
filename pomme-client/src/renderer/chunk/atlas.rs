@@ -2040,8 +2040,16 @@ mod tests {
             "fixture",
             &root.join("fixture.jar"),
         );
-        packs.enable_local_pack("base_pack");
-        packs.enable_local_pack("test_pack");
+        for name in ["base_pack", "test_pack"] {
+            let pack_id = packs
+                .available_local_packs()
+                .iter()
+                .find(|info| info.name == name)
+                .unwrap()
+                .pack_id()
+                .clone();
+            packs.enable_local_pack(&pack_id, true);
+        }
         let resources = ResourceManager::new(packs.sources().unwrap()).unwrap();
         let source = load_source("item/cocoa_beans", &resources, true);
         let mask = source.alpha_mask.as_ref().unwrap();

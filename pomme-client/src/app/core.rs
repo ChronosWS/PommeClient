@@ -1589,7 +1589,7 @@ impl AppCore {
         }
 
         if let Some((pack_id, enable)) = self.menu.pack_toggle.take() {
-            self.resource_packs.set_local_pack_enabled(&pack_id, enable);
+            self.resource_packs.enable_local_pack(&pack_id, enable);
             self.menu.active_packs = self.resource_packs.active_pack_info();
             self.menu.available_packs = self.resource_packs.available_local_packs().to_vec();
         }

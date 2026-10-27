@@ -3242,7 +3242,14 @@ mod tests {
             "fixture",
             &root.join("fixture.jar"),
         );
-        packs.enable_local_pack("test_pack");
+        let pack_id = packs
+            .available_local_packs()
+            .iter()
+            .find(|info| info.name == "test_pack")
+            .unwrap()
+            .pack_id()
+            .clone();
+        packs.enable_local_pack(&pack_id, true);
         let sources = ModelSources::from_test_files(&[
             ("item/base", models.join("base.json")),
             ("item/generated", models.join("generated.json")),

@@ -379,21 +379,7 @@ impl ResourcePackManager {
         }
     }
 
-    pub fn enable_local_pack(&mut self, name: &str) {
-        // String selections must resolve to an already discovered pack, never
-        // mint identity for an arbitrary caller-supplied path or display title.
-        let Some(pack_id) =
-            self.available_local
-                .iter()
-                .find_map(|info| match info.pack_id.identity() {
-                    PackIdentity::Local { selection, .. } if selection == name => {
-                        Some(info.pack_id.clone())
-                    }
-                    _ => None,
-                })
-        else {
-            return;
-        };
+    fn activate_local_pack(&mut self, name: &str, pack_id: PackId) {
         let path = self.packs_dir.join(name);
         if path.is_dir() && path.join(keys::PACK_METADATA_FILE).exists() {
             self.active_packs.retain(|p| p.id != name);
@@ -437,7 +423,7 @@ impl ResourcePackManager {
     }
 
     /// Menu selections carry issued identity; titles are only presentation.
-    pub fn set_local_pack_enabled(&mut self, pack_id: &PackId, enabled: bool) {
+    pub fn enable_local_pack(&mut self, pack_id: &PackId, enabled: bool) {
         if enabled {
             let Some(info) = self
                 .available_local
@@ -450,7 +436,8 @@ impl ResourcePackManager {
                 return;
             };
             let selection = selection.clone();
-            self.enable_local_pack(&selection);
+            let pack_id = info.pack_id.clone();
+            self.activate_local_pack(&selection, pack_id);
         } else {
             self.active_packs.retain(|pack| {
                 !(pack.provenance == PackProvenance::Local && &pack.info.pack_id == pack_id)

@@ -2018,11 +2018,6 @@ mod tests {
             "jar_assets/example/font/mixed.json",
             r#"{"providers":[{"type":"space","advances":{"B":7.0}}]}"#,
         );
-        let mut packs = ResourcePackManager::new(
-            &fixture.root.join("instance"),
-            "fixture",
-            &fixture.client_jar,
-        );
         let pack = fixture.root.join("instance/resourcepacks/bad");
         std::fs::create_dir_all(pack.join("assets/example/font")).unwrap();
         std::fs::write(
@@ -2035,7 +2030,19 @@ mod tests {
             r#"{"providers":[{"type":"bogus"},{"type":"space","advances":{"B":9.0}}]}"#,
         )
         .unwrap();
-        packs.enable_local_pack("bad");
+        let mut packs = ResourcePackManager::new(
+            &fixture.root.join("instance"),
+            "fixture",
+            &fixture.client_jar,
+        );
+        let pack_id = packs
+            .available_local_packs()
+            .iter()
+            .find(|info| info.name == "bad")
+            .unwrap()
+            .pack_id()
+            .clone();
+        packs.enable_local_pack(&pack_id, true);
 
         let (map, _) = GlyphMap::load(
             FontSources {
