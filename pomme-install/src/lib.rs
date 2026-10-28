@@ -221,16 +221,27 @@ pub async fn install(
             )
         };
         tokio::task::block_in_place(|| {
-            let _ = std::fs::remove_dir_all(&part);
+            remove_extraction_dir(&part)?;
             extract_assets(&jar, &part, &extract_report)?;
             // Inside the `.part`, so it lands with the files in one rename.
             std::fs::write(part.join(EXTRACTED_MARKER), version)
                 .map_err(|e| format!("{}: {e}", part.display()))?;
-            let _ = std::fs::remove_dir_all(&out);
+            remove_extraction_dir(&out)?;
             std::fs::rename(&part, &out).map_err(|e| format!("{}: {e}", out.display()))
         })?;
     }
     Ok(())
+}
+
+fn remove_extraction_dir(path: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Failed to remove extraction directory {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 /// How a download's hash is taken: Mojang publishes plain sha1s, while git

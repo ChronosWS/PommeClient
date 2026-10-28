@@ -442,7 +442,13 @@ fn create_window(
         )
         .map(|rgba| {
             let (w, h) = (rgba.width(), rgba.height());
-            winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
+            match winit::window::Icon::from_rgba(rgba.into_raw(), w, h) {
+                Ok(icon) => Some(icon),
+                Err(error) => {
+                    tracing::warn!(%error, "Failed to create window icon");
+                    None
+                }
+            }
         })
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "Failed to load window icon");

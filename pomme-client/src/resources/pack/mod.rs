@@ -93,8 +93,11 @@ impl ResourcePackManager {
     pub(crate) fn new(instance_dir: &Path, asset_version: &str, client_jar: &Path) -> Self {
         let packs_dir = instance_dir.join("resourcepacks");
         let server_cache_dir = packs_dir.join(".server_cache");
-        let _ = std::fs::create_dir_all(&packs_dir);
-        let _ = std::fs::create_dir_all(&server_cache_dir);
+        for directory in [&packs_dir, &server_cache_dir] {
+            if let Err(error) = std::fs::create_dir_all(directory) {
+                tracing::warn!(path = %directory.display(), %error, "Failed to create resource pack directory");
+            }
+        }
         let mut mgr = Self {
             embedded_pack_id: PackId::new(PackIdentity::Pomme),
             installed_resources: None,
@@ -335,14 +338,24 @@ impl ResourcePackManager {
         self.available_local.clear();
         let entries = match std::fs::read_dir(&self.packs_dir) {
             Ok(e) => e,
-            Err(_) => return,
+            Err(error) => {
+                tracing::warn!(path = %self.packs_dir.display(), %error, "Failed to scan local resource packs");
+                return;
+            }
         };
         let directory = self
             .packs_dir
             .canonicalize()
             .unwrap_or_else(|_| self.packs_dir.clone());
 
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::warn!(path = %self.packs_dir.display(), %error, "Failed to read resource pack directory entry");
+                    continue;
+                }
+            };
             let path = entry.path();
             if path == self.server_cache_dir {
                 continue;
@@ -396,9 +409,14 @@ impl ResourcePackManager {
                 },
             });
             tracing::info!("Enabled local resource pack: {name}");
-        } else if path.extension().is_some_and(|e| e == "zip")
-            && let Ok(data) = std::fs::read(&path)
-        {
+        } else if path.extension().is_some_and(|e| e == "zip") {
+            let data = match std::fs::read(&path) {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "Failed to read local resource pack");
+                    return;
+                }
+            };
             let extract_dir = self.server_cache_dir.join(format!("_local_{name}"));
             if let Err(e) = extract_zip(&data, &extract_dir) {
                 tracing::error!("Failed to extract zip pack {name}: {e}");
@@ -557,7 +575,10 @@ fn parse_pack_meta_dir(
     target_format: Option<PackFormat>,
 ) -> PackInfo {
     PackMetadata::read(dir, None)
-        .unwrap_or_default()
+        .unwrap_or_else(|error| {
+            tracing::warn!(path = %dir.display(), %error, "Failed to read resource pack metadata; using discovery defaults");
+            PackMetadata::default()
+        })
         .info(fallback_name, pack_id, target_format)
 }
 
@@ -567,14 +588,20 @@ fn parse_pack_meta_zip(
     pack_id: PackId,
     target_format: Option<PackFormat>,
 ) -> Option<PackInfo> {
-    let metadata = PackMetadata::read(path, Some(path)).ok()?;
+    let metadata = match PackMetadata::read(path, Some(path)) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "Failed to read ZIP resource pack metadata; skipping pack");
+            return None;
+        }
+    };
     metadata
         .is_present()
         .then(|| metadata.info(fallback_name, pack_id, target_format))
 }
 
 fn extract_zip(data: &[u8], dest: &Path) -> Result<(), PackError> {
-    let _ = std::fs::create_dir_all(dest);
+    create_extract_dir(dest)?;
     let cursor = std::io::Cursor::new(data);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| PackError::Extract(e.to_string()))?;
@@ -590,10 +617,10 @@ fn extract_zip(data: &[u8], dest: &Path) -> Result<(), PackError> {
         let out_path = dest.join(enclosed);
 
         if file.is_dir() {
-            let _ = std::fs::create_dir_all(&out_path);
+            create_extract_dir(&out_path)?;
         } else {
             if let Some(parent) = out_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                create_extract_dir(parent)?;
             }
             let mut out =
                 std::fs::File::create(&out_path).map_err(|e| PackError::Extract(e.to_string()))?;
@@ -603,4 +630,13 @@ fn extract_zip(data: &[u8], dest: &Path) -> Result<(), PackError> {
 
     tracing::info!("Extracted resource pack to {}", dest.display());
     Ok(())
+}
+
+fn create_extract_dir(path: &Path) -> Result<(), PackError> {
+    std::fs::create_dir_all(path).map_err(|error| {
+        PackError::Extract(format!(
+            "Failed to create directory {}: {error}",
+            path.display()
+        ))
+    })
 }

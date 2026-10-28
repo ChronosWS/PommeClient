@@ -1596,7 +1596,7 @@ mod tests {
         menu.set_screen(Screen::Options, &key_bindings);
         assert!(menu.take_options_saved());
         assert!(!menu.take_options_saved());
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir).expect("remove menu test directory");
     }
 
     #[test]
@@ -1655,7 +1655,7 @@ mod tests {
         menu.save_settings(&key_bindings);
         let saved = load_settings(&dir).render_distance;
         let chunk_detail = saved_chunk_detail(&dir);
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dir).expect("remove menu test directory");
         assert_eq!(saved, 12);
         assert_eq!(menu.render_distance, 2);
         assert_eq!(chunk_detail, 4);

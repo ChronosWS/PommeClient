@@ -327,7 +327,7 @@ impl Renderer {
         let sh = swapchain_extent.height as f32;
 
         let mut splash = |menu: &mut MenuOverlayPipeline, progress: f32, status: &str| {
-            let _ = Self::render_splash(
+            if let Err(error) = Self::render_splash(
                 &ctx,
                 &swapchain_state,
                 &mut frames,
@@ -336,7 +336,9 @@ impl Renderer {
                 sh,
                 progress,
                 status,
-            );
+            ) {
+                tracing::warn!(%error, status, "Failed to render loading splash");
+            }
         };
 
         splash(&mut menu_pipeline, 0.0, "Loading block models...");

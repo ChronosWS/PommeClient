@@ -604,7 +604,15 @@ impl BufferPool {
             if buf.capacity() > 4 * hint {
                 buf.shrink_to(hint);
             }
-            let _ = tx.try_send(buf);
+            match tx.try_send(buf) {
+                Ok(()) => {}
+                Err(crossbeam_channel::TrySendError::Full(_)) => {
+                    tracing::trace!("Mesher scratch pool at capacity; releasing recycled buffer");
+                }
+                Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                    tracing::trace!("Mesher scratch pool disconnected; releasing recycled buffer");
+                }
+            }
         }
     }
 
@@ -953,7 +961,9 @@ impl Drop for MeshDispatcher {
         let (_tx, rx) = crossbeam_channel::bounded(0);
         drop(std::mem::replace(&mut self.result_rx, rx));
         for handle in self.workers.drain(..) {
-            let _ = handle.join();
+            if handle.join().is_err() {
+                tracing::warn!("Chunk mesher worker panicked during shutdown");
+            }
         }
     }
 }
@@ -1024,7 +1034,9 @@ impl PendingJob {
                 meshed_at,
             });
         }
-        let _ = self.tx.send(mesh);
+        if self.tx.send(mesh).is_err() {
+            tracing::debug!(chunk = ?self.pos, "Chunk mesh result receiver disconnected");
+        }
     }
 }
 

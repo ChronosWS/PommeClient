@@ -1160,9 +1160,12 @@ impl AppCore {
             // Vanilla centers on grab too; warp before locking, which
             // freezes the position on some platforms.
             self.center_cursor(window);
-            let _ = window
+            if let Err(error) = window
                 .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
+                .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+            {
+                tracing::debug!(%error, "Failed to lock or confine cursor");
+            }
             window.set_cursor_visible(false);
         }
     }
@@ -1202,7 +1205,9 @@ impl AppCore {
     /// gameplay starts with a centered cursor).
     fn release_cursor(&mut self, window: &Window) {
         if let CursorOp::Release { center } = self.step_cursor(false) {
-            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            if let Err(error) = window.set_cursor_grab(CursorGrabMode::None) {
+                tracing::debug!(%error, "Failed to release cursor grab");
+            }
             window.set_cursor_visible(true);
             if center {
                 self.center_cursor(window);
@@ -1214,8 +1219,10 @@ impl AppCore {
     fn center_cursor(&mut self, window: &Window) {
         let size = window.inner_size();
         let (x, y) = (size.width as f32 / 2.0, size.height as f32 / 2.0);
-        if self.unfocused_since.is_none() {
-            let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(x, y));
+        if self.unfocused_since.is_none()
+            && let Err(error) = window.set_cursor_position(winit::dpi::PhysicalPosition::new(x, y))
+        {
+            tracing::debug!(%error, "Failed to center cursor");
         }
         self.input.on_cursor_moved(x, y);
     }
@@ -1289,11 +1296,13 @@ impl AppCore {
         let tx = self.player_skin_tx.clone();
         self.tokio_rt.spawn(async move {
             let result = fetch_skin(&source, Some(uuid)).await;
-            let _ = tx.send(PlayerSkinResult {
+            if let Err(error) = tx.send(PlayerSkinResult {
                 uuid,
                 source,
                 result,
-            });
+            }) {
+                tracing::debug!(uuid = %error.0.uuid, "Player skin receiver disconnected");
+            }
         });
     }
 
@@ -1539,7 +1548,9 @@ impl AppCore {
         let tx = self.head_tx.clone();
         self.tokio_rt.spawn(async move {
             let result = fetch_skin(&source, id).await;
-            let _ = tx.send(HeadResult { profile, result });
+            if tx.send(HeadResult { profile, result }).is_err() {
+                tracing::debug!(profile_id = ?id, "Player head receiver disconnected");
+            }
         });
     }
 

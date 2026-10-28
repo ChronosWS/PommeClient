@@ -1458,7 +1458,9 @@ impl GameState {
                     n,
                     rd,
                 );
-                let _ = tx.send(bfs);
+                if tx.send(bfs).is_err() {
+                    tracing::debug!("Visibility result receiver disconnected");
+                }
             });
             self.vis_task = Some(rx);
         }

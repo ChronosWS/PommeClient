@@ -2049,11 +2049,9 @@ impl TooltipLine {
 }
 
 pub fn item_icon_atlas_key(item_name: &str, item_tints: &[u32]) -> String {
-    use std::fmt::Write as _;
-
     let mut key = format!("{item_name}#");
     for color in item_tints {
-        let _ = write!(key, "{color:06x}-");
+        key.push_str(&format!("{color:06x}-"));
     }
     key
 }

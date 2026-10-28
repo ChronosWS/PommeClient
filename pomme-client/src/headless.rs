@@ -116,8 +116,14 @@ pub fn run(
     drop(connection);
     if let Some(mut world) = world {
         world.begin_close();
+        let mut last_poll_error = None;
         while !world.is_closed() {
-            let _ = world.poll();
+            if let Err(error) = world.poll()
+                && last_poll_error.as_ref() != Some(&error)
+            {
+                tracing::warn!(%error, "Failed to poll world while waiting for shutdown");
+                last_poll_error = Some(error);
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
     }

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
 use self::decoder::{StreamDecoder, decode_all};
 use self::openal::{Buffer, Context, Source, SourceState};
@@ -236,13 +236,18 @@ impl AudioEngine {
                 let context = match Context::open_default(false) {
                     Ok(context) => context,
                     Err(e) => {
-                        let _ = init_tx.send(Err(e));
+                        if let Err(error) = init_tx.send(Err(e)) {
+                            tracing::debug!(initialization_result = ?error.0, "Audio startup receiver disconnected before initialization failure was reported");
+                        }
                         return;
                     }
                 };
                 let version = context.version().unwrap_or_else(|| "unknown".to_string());
                 let limits = (context.static_source_limit, context.streaming_source_limit);
-                let _ = init_tx.send(Ok((version, limits)));
+                if init_tx.send(Ok((version, limits))).is_err() {
+                    tracing::debug!("Audio startup receiver disconnected; stopping worker");
+                    return;
+                }
                 AudioWorker::new(context, volumes, command_rx, event_tx).run();
             });
 
@@ -260,12 +265,16 @@ impl AudioEngine {
                          Releases ship the library next to the binary; for a dev \
                          build run `just openal` to stage it."
                     );
-                    let _ = handle.join();
+                    if handle.join().is_err() {
+                        tracing::warn!("OpenAL worker panicked after initialization failed");
+                    }
                     (None, None)
                 }
                 Err(e) => {
                     tracing::warn!("audio disabled: OpenAL worker exited during startup ({e})");
-                    let _ = handle.join();
+                    if handle.join().is_err() {
+                        tracing::warn!("OpenAL worker panicked during startup");
+                    }
                     (None, None)
                 }
             },
@@ -667,8 +676,10 @@ impl AudioEngine {
 
 impl Drop for AudioEngine {
     fn drop(&mut self) {
-        if let Some(tx) = self.command_tx.take() {
-            let _ = tx.send(AudioCommand::Shutdown);
+        if let Some(tx) = self.command_tx.take()
+            && tx.send(AudioCommand::Shutdown).is_err()
+        {
+            tracing::debug!("Audio worker already disconnected during shutdown");
         }
         if let Some(worker) = self.worker.take()
             && worker.join().is_err()
@@ -773,7 +784,7 @@ impl AudioWorker {
                 // entity sound that never got a source.
                 if !self.play(play) {
                     if report_completion {
-                        let _ = self.events.try_send(AudioEvent::Finished(id));
+                        self.report_event(AudioEvent::Finished(id));
                     }
                     self.report_entity_sound_ended(entity_id);
                 }
@@ -858,7 +869,7 @@ impl AudioWorker {
             tracing::warn!("failed to stop OpenAL source: {e}");
         }
         if sound.report_completion {
-            let _ = self.events.try_send(AudioEvent::Finished(id));
+            self.report_event(AudioEvent::Finished(id));
         }
         self.report_entity_sound_ended(sound.entity_id);
     }
@@ -1087,7 +1098,7 @@ impl AudioWorker {
                 continue;
             };
             if sound.report_completion {
-                let _ = self.events.try_send(AudioEvent::Finished(id));
+                self.report_event(AudioEvent::Finished(id));
             }
             self.report_entity_sound_ended(sound.entity_id);
         }
@@ -1097,9 +1108,25 @@ impl AudioWorker {
     /// must call this exactly once or the engine's count never reaches zero.
     fn report_entity_sound_ended(&self, entity_id: Option<i32>) {
         if let Some(entity_id) = entity_id {
-            let _ = self
-                .events
-                .try_send(AudioEvent::EntitySoundEnded(entity_id));
+            self.report_event(AudioEvent::EntitySoundEnded(entity_id));
+        }
+    }
+
+    fn report_event(&self, event: AudioEvent) {
+        match self.events.try_send(event) {
+            Ok(()) => {}
+            Err(TrySendError::Disconnected(event)) => {
+                tracing::debug!(
+                    ?event,
+                    "Audio event receiver disconnected; completion no longer consumed"
+                );
+            }
+            Err(TrySendError::Full(event)) => {
+                tracing::warn!(
+                    ?event,
+                    "Audio event queue full; sound completion could not be reported"
+                );
+            }
         }
     }
 }

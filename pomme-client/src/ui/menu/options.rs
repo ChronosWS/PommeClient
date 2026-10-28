@@ -1935,8 +1935,11 @@ impl MainMenu {
             true,
         );
         any_hovered |= h;
-        if clicked && h {
-            let _ = open::that_detached(&self.packs_dir);
+        if clicked
+            && h
+            && let Err(error) = open::that_detached(&self.packs_dir)
+        {
+            tracing::warn!(path = %self.packs_dir.display(), %error, "Failed to open resource pack folder");
         }
 
         let h = common::push_button(
@@ -2446,7 +2449,11 @@ mod tests {
             std::env::temp_dir().join(format!("pomme-entity-shadows-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let _cleanup = scopeguard::guard((), |_| {
-            let _ = std::fs::remove_dir_all(&dir);
+            if let Err(error) = std::fs::remove_dir_all(&dir)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %dir.display(), %error, "Failed to remove options test directory");
+            }
         });
         let mut grid = Grid::new("Entity Shadows: ON", "Other");
         grid.menu.settings_dir = dir.clone();
