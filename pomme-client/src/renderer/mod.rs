@@ -368,12 +368,8 @@ impl Renderer {
         let chunk_pipeline =
             ChunkPipeline::new(&ctx.device, swapchain_state.targets(), &atlas, &lightmap);
 
-        let hand_pipeline = HandPipeline::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            resources,
-            &lightmap,
-        );
+        let hand_pipeline =
+            HandPipeline::new(&ctx.device, swapchain_state.targets(), resources, &lightmap);
 
         let block_overlay_pipeline =
             BlockOverlayPipeline::new(&ctx.device, swapchain_state.targets(), resources);
@@ -420,24 +416,16 @@ impl Renderer {
             post_effects.blurred_sampler(),
         );
 
-        let entity_renderer = EntityRenderer::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            resources,
-            &lightmap,
-        );
+        let entity_renderer =
+            EntityRenderer::new(&ctx.device, swapchain_state.targets(), resources, &lightmap);
 
         let moving_block_buffers = MovingBlockBuffers::new(&ctx.device);
 
         let entity_shadow_pipeline =
             EntityShadowPipeline::new(&ctx.device, swapchain_state.targets(), resources);
 
-        let block_entity_pipeline = BlockEntityPipeline::new(
-            &ctx.device,
-            swapchain_state.targets(),
-            resources,
-            &lightmap,
-        );
+        let block_entity_pipeline =
+            BlockEntityPipeline::new(&ctx.device, swapchain_state.targets(), resources, &lightmap);
 
         let chunk_border_pipeline = pipelines::chunk_borders::ChunkBorderPipeline::new(
             &ctx.device,

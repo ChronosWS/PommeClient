@@ -92,7 +92,10 @@ fn load_assets(
     )) {
         Ok(resources) => resources,
         Err(error) => {
-            eprintln!("cpu-bench: failed to open {}: {error}", dirs.client_jar.display());
+            eprintln!(
+                "cpu-bench: failed to open {}: {error}",
+                dirs.client_jar.display()
+            );
             return None;
         }
     };
