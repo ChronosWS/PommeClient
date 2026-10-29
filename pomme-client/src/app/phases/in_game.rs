@@ -40,8 +40,8 @@ use crate::renderer::chunk::occlusion_graph::{self, VisibilitySet};
 use crate::renderer::entity_model::triangle_wave;
 use crate::renderer::pipelines::block_entity;
 use crate::renderer::pipelines::entity_renderer::{
-    EntityRenderInfo, MAX_OVERLAYS, WHITE_TINT, armor_render_infos, dye_color_tint, jeb_sheep_tint,
-    standing_eye_height, wool_color_tint,
+    EntityRenderInfo, MAX_OVERLAYS, PackShadow, WHITE_TINT, armor_render_infos, dye_color_tint,
+    jeb_sheep_tint, standing_eye_height, wool_color_tint,
 };
 use crate::renderer::pipelines::entity_shadow::{ShadowCaster, ShadowScene};
 use crate::renderer::pipelines::lightmap::LightmapInfo;
@@ -3976,7 +3976,7 @@ pub fn update_game(
     });
 
     use crate::entity::glowing::{appears_glowing, outline_color, scoreboard_name};
-    use crate::renderer::pipelines::entity_renderer::{PackShadow, Visibility};
+    use crate::renderer::pipelines::entity_renderer::Visibility;
     let spectating = crate::player::is_spectator(game.player.game_mode);
     let spectator_outlines = spectating && core.input.performing_action(Action::SpectatorOutlines);
     let viewer = scoreboard_name(&game.tab_list, core.user.uuid, Some(core.user.uuid));
@@ -4117,6 +4117,8 @@ pub fn update_game(
                     bat_resting: e.bat_resting,
                     bat_elapsed_secs: extras.bat_elapsed_secs,
                     sniffer: extras.sniffer,
+                    allay: extras.allay,
+                    copper_golem: extras.copper_golem,
                     golem_attack_ticks: extras.golem_attack_ticks,
                     golem_offer_flower_ticks: extras.golem_offer_flower_ticks,
                     body_transform: extras.body_transform,
@@ -4875,7 +4877,8 @@ fn moving_block_renders(
 
 /// Vanilla `extractShadow`'s casters: every rendered entity, and each resting
 /// item entity once, at its own position rather than its bobbing copies'.
-/// Items being picked up are gone in vanilla, so they cast none.
+/// Items being picked up are gone in vanilla, so they cast none, and the
+/// first-person player is only in the list for shader pack shadows.
 fn shadow_casters(
     entities: &[EntityRenderInfo],
     items: &crate::entity::ItemEntityStore,
@@ -4883,7 +4886,10 @@ fn shadow_casters(
     partial_tick: f32,
 ) -> Vec<ShadowCaster> {
     let (item_radius, item_strength) = crate::entity::shadow::ITEM;
-    let entities = entities.iter().map(|e| e.shadow);
+    let entities = entities
+        .iter()
+        .filter(|e| e.pack_shadow != PackShadow::FirstPersonPlayer)
+        .map(|e| e.shadow);
     // A full-strength shadow fades out 16 blocks from the camera.
     let items = items
         .visible_items(camera_pos, 16.0)
@@ -4997,6 +5003,8 @@ struct EntityExtras {
     tentacle_angle: f32,
     bat_elapsed_secs: Option<f32>,
     sniffer: crate::renderer::entity_model::SnifferAnims,
+    allay: crate::renderer::entity_model::AllayAnims,
+    copper_golem: crate::renderer::entity_model::CopperGolemAnims,
     golem_attack_ticks: f32,
     golem_offer_flower_ticks: u32,
 }
@@ -5007,6 +5015,22 @@ const SLOT0_TINTS: [Option<[f32; 4]>; MAX_OVERLAYS] = {
     tints[0] = Some(WHITE_TINT);
     tints
 };
+
+/// An `AbstractSkullBlock` item, which `LivingEntityRenderer` wears as a head.
+fn is_skull(item: &azalea_inventory::ItemStack) -> bool {
+    item.as_present().is_some_and(|d| {
+        matches!(
+            crate::player::inventory::item_resource_name(d.kind).as_str(),
+            "skeleton_skull"
+                | "wither_skeleton_skull"
+                | "zombie_head"
+                | "player_head"
+                | "creeper_head"
+                | "dragon_head"
+                | "piglin_head"
+        )
+    })
+}
 
 /// Slot-0 overlay picked by a 1-based id (0 draws nothing), as
 /// (`overlay_tints`, `overlay_variants`).
@@ -5066,9 +5090,28 @@ fn entity_extras(
         },
         EntityKind::Slime => EntityExtras {
             overlay_tints: SLOT0_TINTS,
-            body_transform: Some(slime_body_transform(e, alpha)),
+            body_transform: Some(cube_body_transform(e, alpha, true)),
             ..Default::default()
         },
+        EntityKind::SulfurCube => sulfur_cube_extras(e, alpha),
+        EntityKind::Allay => EntityExtras {
+            allay: crate::renderer::entity_model::AllayAnims {
+                dancing: e.allay.dancing,
+                spinning: e.allay.is_spinning(),
+                spinning_progress: e
+                    .allay
+                    .prev_spinning_ticks
+                    .lerp(e.allay.spinning_ticks, alpha)
+                    / 15.0,
+                holding_progress: e
+                    .allay
+                    .prev_holding_ticks
+                    .lerp(e.allay.holding_ticks, alpha)
+                    / 5.0,
+            },
+            ..Default::default()
+        },
+        EntityKind::CopperGolem => copper_golem_extras(e, alpha),
         EntityKind::Witch => EntityExtras {
             nose_wobble_speed: 0.01 * (entity_id % 10) as f32,
             ..Default::default()
@@ -5151,11 +5194,79 @@ fn anim_clock_secs(e: &crate::entity::LivingEntity, start: u32, alpha: f32) -> f
     (e.age_in_ticks as f32 - start as f32 + alpha).max(0.0) * 0.05
 }
 
-/// Vanilla `AbstractCubeMobRenderer.applySizeAndSquish` plus the slime-only
+/// Copper golem: weathering picks the body and eyes textures.
+fn copper_golem_extras(e: &crate::entity::LivingEntity, alpha: f32) -> EntityExtras {
+    let g = &e.copper_golem;
+    let clock = |start| Some(anim_clock_secs(e, start, alpha));
+    let interaction = |state| match g.interaction {
+        Some((s, start)) if s == state => clock(start),
+        _ => None,
+    };
+    let (overlay_tints, overlay_variants) = slot0_overlay(g.weather + 1);
+    EntityExtras {
+        variant_index: g.weather,
+        overlay_tints,
+        overlay_variants,
+        copper_golem: crate::renderer::entity_model::CopperGolemAnims {
+            holding_item: [EquipmentSlot::Mainhand, EquipmentSlot::Offhand]
+                .into_iter()
+                .any(|slot| e.equipment(slot).is_some()),
+            idle: g.idle_anim_start.and_then(clock),
+            get_item: interaction(1),
+            get_no_item: interaction(2),
+            drop_item: interaction(3),
+            drop_no_item: interaction(4),
+        },
+        ..Default::default()
+    }
+}
+
+/// Vanilla `SulfurCubeRenderer.scale`: a carried block stops the squish and
+/// hides the inner cube, and a lit fuse swells it like primed TNT. A skull in
+/// the body or head slot only hides the inner cube.
+fn sulfur_cube_extras(e: &crate::entity::LivingEntity, alpha: f32) -> EntityExtras {
+    let body = e.equipment(EquipmentSlot::Body);
+    // TODO: a non-block body item resolves to air in vanilla, which still
+    // squishes and draws the inner cube.
+    let carries_block = body.is_some_and(|item| !is_skull(item));
+    let hides_inner = body.is_some() || e.equipment(EquipmentSlot::Head).is_some_and(is_skull);
+    let fuse = if e.sulfur_fuse >= 0 {
+        e.sulfur_fuse as f32 - alpha + 1.0
+    } else {
+        0.0
+    };
+    // `TntRenderer.getSwellAmount`.
+    let swell = if fuse > 0.0 && fuse < 10.0 {
+        1.0 + (1.0 - fuse / 10.0).clamp(0.0, 1.0).powi(4) * 0.3
+    } else {
+        1.0
+    };
+    let (extra_downscale, v_offset) = if e.is_baby { (1.0, 1.24) } else { (0.5, 0.98) };
+    let one_pixel_up = if e.is_invisible { 0.0 } else { 1.0 / 16.0 };
+    EntityExtras {
+        overlay_tints: if hides_inner {
+            [None; MAX_OVERLAYS]
+        } else {
+            SLOT0_TINTS
+        },
+        body_transform: Some(
+            cube_body_transform(e, alpha, !carries_block)
+                * glam::Mat4::from_scale(glam::Vec3::splat(swell * extra_downscale))
+                * glam::Mat4::from_translation(glam::Vec3::new(0.0, one_pixel_up - v_offset, 0.0)),
+        ),
+        ..Default::default()
+    }
+}
+
+/// Vanilla `AbstractCubeMobRenderer.applySizeAndSquish` plus
 /// `downscaleSlightly` (0.999 shrink + a 0.001 drop that tucks the inner body
 /// under the shell surface; vanilla's +0.001 is in flipped space = down).
-fn slime_body_transform(e: &crate::entity::LivingEntity, alpha: f32) -> glam::Mat4 {
-    let squish = e.prev_squish + (e.squish - e.prev_squish) * alpha;
+fn cube_body_transform(e: &crate::entity::LivingEntity, alpha: f32, squishes: bool) -> glam::Mat4 {
+    let squish = if squishes {
+        e.prev_squish + (e.squish - e.prev_squish) * alpha
+    } else {
+        0.0
+    };
     let size = e.slime_size as f32;
     let ss = squish / (size * 0.5 + 1.0);
     let w = 1.0 / (ss + 1.0);

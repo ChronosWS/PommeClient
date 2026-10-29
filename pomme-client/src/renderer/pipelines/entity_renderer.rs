@@ -13,6 +13,7 @@ use crate::renderer::camera::CameraUniform;
 use crate::renderer::chunk::block_lighter::{LightLevels, UNLIT_LANE};
 use crate::renderer::entity_model::{BakedEntityModel, EntityVertex};
 use crate::renderer::pipelines::lightmap::Lightmap;
+use crate::renderer::pipelines::shaderpack::PackGeometry;
 use crate::renderer::rhi::{self, VertexFormat};
 use crate::renderer::{entity_model, shader, util};
 use crate::resources::{ResourceError, ResourceId, ResourceManager, resource_id};
@@ -177,6 +178,8 @@ pub struct EntityRenderInfo {
     pub bat_elapsed_secs: Option<f32>,
     /// Sniffer search flag + its five animation clocks.
     pub sniffer: entity_model::SnifferAnims,
+    pub allay: entity_model::AllayAnims,
+    pub copper_golem: entity_model::CopperGolemAnims,
     /// Iron golem countdowns; the punch one is partial-tick adjusted.
     pub golem_attack_ticks: f32,
     pub golem_offer_flower_ticks: u32,
@@ -255,6 +258,8 @@ impl Default for EntityRenderInfo {
             bat_resting: false,
             bat_elapsed_secs: None,
             sniffer: entity_model::SnifferAnims::default(),
+            allay: entity_model::AllayAnims::default(),
+            copper_golem: entity_model::CopperGolemAnims::default(),
             golem_attack_ticks: 0.0,
             golem_offer_flower_ticks: 0,
             base_tint: WHITE_TINT,
@@ -814,6 +819,8 @@ pub struct EntityRenderer {
     outline_pipelines: [rhi::backend::RenderPipeline; 2],
     /// This frame's outline draws, paired with `outline_pipelines`.
     outline_records: [Vec<DrawRecord>; 2],
+    /// This frame's [`PackLayer`] draws, kept for their own pack passes.
+    pack_layers: [Vec<DrawRecord>; PackLayer::ALL.len()],
     /// The instances this frame's buffer holds.
     instance_count: usize,
     pipeline_layout: rhi::backend::PipelineLayout,
@@ -823,8 +830,9 @@ pub struct EntityRenderer {
     camera_buffers: Vec<rhi::backend::Buffer>,
     /// The shared [`Lightmap`]'s group, set 2.
     lightmap_set: rhi::backend::BindGroup,
-    /// A shader pack's `gbuffers_entities`, which every layer draws with
-    /// while set; the texture binds at set 3.
+    /// The shader pack program being drawn through: `gbuffers_entities`
+    /// in `draw`, which keeps the [`PackLayer`]s for their own programs, or
+    /// a shadow one, which draws every layer. The texture binds at set 3.
     pub pack_binding: Option<super::shaderpack::PackBinding>,
     /// Per-instance vertex buffer (bound at binding 1), one per frame in
     /// flight.
@@ -876,6 +884,9 @@ enum AnimationType {
     Squid,
     Bat,
     Sniffer,
+    Allay,
+    SnowGolem,
+    CopperGolem,
     /// Cod, salmon, tropical fish, pufferfish.
     Fish,
     Golem,
@@ -1083,6 +1094,24 @@ fn mob_definitions() -> Vec<MobDef> {
     const BAT_TEX: &[&[ResourceId]] = tex_table!("bat" => "bat");
     const SNIFFER_TEX: &[&[ResourceId]] = tex_table!("sniffer" => "sniffer");
     const SNIFFLET_TEX: &[&[ResourceId]] = tex_table!("sniffer" => "snifflet");
+    const ALLAY_TEX: &[&[ResourceId]] = tex_table!("allay" => "allay");
+    const SNOW_GOLEM_TEX: &[&[ResourceId]] = tex_table!("snow_golem" => "snow_golem");
+    const WANDERING_TRADER_TEX: &[&[ResourceId]] =
+        tex_table!("wandering_trader" => "wandering_trader");
+    // Indexed by `WeatheringCopper.WeatherState`.
+    const COPPER_GOLEM_TEX: &[&[ResourceId]] = tex_table!("copper_golem" =>
+        "copper_golem", "copper_golem_exposed", "copper_golem_weathered", "copper_golem_oxidized");
+    const COPPER_GOLEM_EYES_TEX: &[&[ResourceId]] = tex_table!("copper_golem" =>
+        "copper_golem_eyes", "copper_golem_eyes_exposed", "copper_golem_eyes_weathered",
+        "copper_golem_eyes_oxidized");
+    const SULFUR_CUBE_OUTER_TEX: &[&[ResourceId]] =
+        tex_table!("sulfur_cube" => "sulfur_cube_outer");
+    const SULFUR_CUBE_OUTER_SMALL_TEX: &[&[ResourceId]] =
+        tex_table!("sulfur_cube" => "sulfur_cube_outer_small");
+    const SULFUR_CUBE_INNER_TEX: &[&[ResourceId]] =
+        tex_table!("sulfur_cube" => "sulfur_cube_inner");
+    const SULFUR_CUBE_INNER_SMALL_TEX: &[&[ResourceId]] =
+        tex_table!("sulfur_cube" => "sulfur_cube_inner_small");
     const COD_TEX: &[&[ResourceId]] = tex_table!("fish" => "cod");
     const SALMON_TEX: &[&[ResourceId]] = tex_table!("fish" => "salmon");
     const PUFFERFISH_TEX: &[&[ResourceId]] = tex_table!("fish" => "pufferfish");
@@ -1135,6 +1164,17 @@ fn mob_definitions() -> Vec<MobDef> {
             tex_size,
             overlay_kind: OverlayKind::Opaque,
             invisible_outline: false,
+        }
+    }
+    // Vanilla `entityTranslucent`, as a body or a layer.
+    fn translucent(
+        model: BakedEntityModel,
+        tex_variants: &'static [&'static [ResourceId]],
+        tex_size: u32,
+    ) -> VariantDef {
+        VariantDef {
+            overlay_kind: OverlayKind::BodyTranslucent,
+            ..opaque(model, tex_variants, tex_size)
         }
     }
 
@@ -1694,6 +1734,94 @@ fn mob_definitions() -> Vec<MobDef> {
             adult_overlays: vec![],
             baby_overlays: vec![],
         },
+        // TODO: `ItemInHandLayer` (the held item) needs a held-item layer.
+        MobDef {
+            kind: EntityKind::Allay,
+            anim: AnimationType::Allay,
+            adult: vec![translucent(entity_model::bake_allay_model(), ALLAY_TEX, 32)],
+            baby: None,
+            adult_overlays: vec![],
+            baby_overlays: vec![],
+        },
+        // TODO: `SnowGolemHeadLayer` (the carved pumpkin) needs block models
+        // rendered inside an entity pose, and the pumpkin flag (bit 0x10 of
+        // `DATA_PUMPKIN_ID`) tracked.
+        MobDef {
+            kind: EntityKind::SnowGolem,
+            anim: AnimationType::SnowGolem,
+            adult: vec![opaque(
+                entity_model::bake_snow_golem_model(),
+                SNOW_GOLEM_TEX,
+                64,
+            )],
+            baby: None,
+            adult_overlays: vec![],
+            baby_overlays: vec![],
+        },
+        // Variant = weathering state. TODO: `ItemInHandLayer`,
+        // `BlockDecorationLayer` (the antenna block) and `CustomHeadLayer`
+        // need held-item and block-model layers.
+        MobDef {
+            kind: EntityKind::CopperGolem,
+            anim: AnimationType::CopperGolem,
+            adult: vec![opaque(
+                entity_model::bake_copper_golem_model(),
+                COPPER_GOLEM_TEX,
+                64,
+            )],
+            baby: None,
+            // Slot 0: the glowing eyes, same variant as the body.
+            adult_overlays: vec![VariantDef {
+                model: entity_model::bake_copper_golem_model(),
+                tex_variants: COPPER_GOLEM_EYES_TEX,
+                tex_size: 64,
+                overlay_kind: OverlayKind::EyesTranslucent,
+                invisible_outline: false,
+            }],
+            baby_overlays: vec![],
+        },
+        // TODO: `CustomHeadLayer` and `CrossedArmsItemLayer` need a
+        // held-item layer, as on the villager.
+        MobDef {
+            kind: EntityKind::WanderingTrader,
+            anim: AnimationType::Villager,
+            adult: vec![opaque(
+                entity_model::bake_villager_model(false),
+                WANDERING_TRADER_TEX,
+                64,
+            )],
+            baby: None,
+            adult_overlays: vec![],
+            baby_overlays: vec![],
+        },
+        // Slot 0: the inner cube, drawn before the shell. TODO: a contained
+        // block replaces the inner cube, which needs block models rendered
+        // inside an entity pose; a worn skull needs `CustomHeadLayer`; the lit
+        // fuse's white flash needs an overlay flash.
+        MobDef {
+            kind: EntityKind::SulfurCube,
+            anim: AnimationType::Static,
+            adult: vec![translucent(
+                entity_model::bake_sulfur_cube_model(false, false),
+                SULFUR_CUBE_OUTER_TEX,
+                128,
+            )],
+            baby: Some(translucent(
+                entity_model::bake_sulfur_cube_model(true, false),
+                SULFUR_CUBE_OUTER_SMALL_TEX,
+                64,
+            )),
+            adult_overlays: vec![translucent(
+                entity_model::bake_sulfur_cube_model(false, true),
+                SULFUR_CUBE_INNER_TEX,
+                128,
+            )],
+            baby_overlays: vec![translucent(
+                entity_model::bake_sulfur_cube_model(true, true),
+                SULFUR_CUBE_INNER_SMALL_TEX,
+                64,
+            )],
+        },
         MobDef {
             kind: EntityKind::Cod,
             anim: AnimationType::Fish,
@@ -1909,6 +2037,7 @@ impl EntityRenderer {
             swirl_pipeline,
             outline_pipelines,
             outline_records: Default::default(),
+            pack_layers: Default::default(),
             instance_count: 0,
             pipeline_layout,
             camera_layout,
@@ -2326,6 +2455,26 @@ impl EntityRenderer {
                 info.walk_anim_speed,
                 &info.sniffer,
             ),
+            AnimationType::Allay => entity_model::compute_allay_anim(
+                model,
+                info.head_x_rot_deg,
+                local_head_y,
+                info.walk_anim_pos,
+                info.walk_anim_speed,
+                info.age_in_ticks,
+                &info.allay,
+            ),
+            AnimationType::SnowGolem => {
+                entity_model::compute_snow_golem_anim(model, info.head_x_rot_deg, local_head_y)
+            }
+            AnimationType::CopperGolem => entity_model::compute_copper_golem_anim(
+                model,
+                info.head_x_rot_deg,
+                local_head_y,
+                info.walk_anim_pos,
+                info.walk_anim_speed,
+                &info.copper_golem,
+            ),
             AnimationType::Fish => entity_model::compute_fish_anim(
                 model,
                 info.age_in_ticks,
@@ -2415,6 +2564,7 @@ impl EntityRenderer {
     ) {
         if shadow.is_none() {
             self.outline_records = Default::default();
+            self.pack_layers = Default::default();
         }
         if entities.is_empty() {
             return;
@@ -2467,6 +2617,8 @@ impl EntityRenderer {
             let mut translucent = VariantGroups::default();
             // An invisible glowing mob's parts that only leave their outline.
             let mut outline_only = VariantGroups::default();
+            // Translucent bodies, drawn after their translucent layers.
+            let mut translucent_bodies = Vec::new();
             for (vi, v) in vis.iter().enumerate() {
                 let base = v
                     .entry
@@ -2476,6 +2628,9 @@ impl EntityRenderer {
                 match body_route(v.info) {
                     Route::Draw if base.overlay_kind == OverlayKind::OpaqueCulled => {
                         culled.add(base, texture_set, member);
+                    }
+                    Route::Draw if base.overlay_kind == OverlayKind::BodyTranslucent => {
+                        translucent_bodies.push((base, texture_set, member));
                     }
                     Route::Draw => opaque.add(base, texture_set, member),
                     Route::Translucent => {
@@ -2512,18 +2667,23 @@ impl EntityRenderer {
                 }
             }
 
-            let body = collect_overlays(&vis, OverlayKind::BodyTranslucent, &mut outline_only);
+            let mut body = collect_overlays(&vis, OverlayKind::BodyTranslucent, &mut outline_only);
+            for (base, texture_set, member) in translucent_bodies {
+                body.add(base, texture_set, member);
+            }
             let eyes = collect_overlays(&vis, OverlayKind::EyesTranslucent, &mut outline_only);
             let swirl = collect_overlays(&vis, OverlayKind::SwirlAdditive, &mut outline_only);
 
-            let opaque = opaque.emit(&vis, &mut instances);
+            // Vanilla's EMISSIVE eyes and swirl skip the lightmap; Iris lights
+            // the swirl through `gbuffers_entities`.
+            let opaque = opaque.emit(&vis, &mut instances, false);
             let armor = self.collect_armor_draws(&vis, &mut instances);
-            let culled = culled.emit(&vis, &mut instances);
-            let translucent = translucent.emit(&vis, &mut instances);
-            let body = body.emit(&vis, &mut instances);
-            let eyes = eyes.emit(&vis, &mut instances);
-            let swirl = swirl.emit(&vis, &mut instances);
-            let outline_only = outline_only.emit(&vis, &mut instances);
+            let culled = culled.emit(&vis, &mut instances, false);
+            let translucent = translucent.emit(&vis, &mut instances, false);
+            let body = body.emit(&vis, &mut instances, false);
+            let eyes = eyes.emit(&vis, &mut instances, true);
+            let swirl = swirl.emit(&vis, &mut instances, self.pack_binding.is_none());
+            let outline_only = outline_only.emit(&vis, &mut instances, false);
             // Eyes and the energy swirl don't affect the outline; vanilla's
             // outline-only parts use the unculled `RenderTypes.outline`.
             let outline = [
@@ -2567,17 +2727,61 @@ impl EntityRenderer {
         buffer.write(bytes);
         let buffer = buffer.handle();
 
-        for (pipeline, records) in [
-            (self.pipeline, &opaque),
-            (self.pipeline, &armor),
-            (self.culled_pipeline, &culled),
-            (self.translucent_culled_pipeline, &translucent),
-            (self.body_translucent_pipeline, &body),
-            (self.eyes_pipeline, &eyes),
-            (self.swirl_pipeline, &swirl),
+        let pack_pipeline = self.pack_binding.map(|pack| pack.pipeline);
+        for (layer, pipeline, records) in [
+            (None, self.pipeline, opaque),
+            (None, self.pipeline, armor),
+            (None, self.culled_pipeline, culled),
+            (
+                Some(PackLayer::TranslucentCulled),
+                self.translucent_culled_pipeline,
+                translucent,
+            ),
+            (
+                Some(PackLayer::Translucent),
+                self.body_translucent_pipeline,
+                body,
+            ),
+            (Some(PackLayer::Eyes), self.eyes_pipeline, eyes),
+            (Some(PackLayer::Swirl), self.swirl_pipeline, swirl),
         ] {
-            self.record_pass(pass, frame, buffer, pipeline, records, count);
+            match layer {
+                Some(layer) if pack_pipeline.is_some() && shadow.is_none() => {
+                    self.pack_layers[layer as usize].extend(records);
+                }
+                _ => {
+                    let pipeline = pack_pipeline.unwrap_or(pipeline);
+                    self.record_pass(pass, frame, buffer, pipeline, &records, count);
+                }
+            }
         }
+    }
+
+    /// Whether the last `draw` kept any of `layer` for a pack pass.
+    pub fn has_pack_layer(&self, layer: PackLayer) -> bool {
+        !self.pack_layers[layer as usize].is_empty()
+    }
+
+    /// Draws, and drops, the last `draw`'s `layer` through the bound pack
+    /// program.
+    pub fn draw_pack_layer(
+        &mut self,
+        pass: &mut rhi::backend::RenderPassEncoder,
+        frame: usize,
+        layer: PackLayer,
+    ) {
+        let Some(pack) = self.pack_binding else {
+            return;
+        };
+        let pipeline = match layer {
+            PackLayer::TranslucentCulled | PackLayer::Swirl => {
+                pack.variant.unwrap_or(pack.pipeline)
+            }
+            PackLayer::Translucent | PackLayer::Eyes => pack.pipeline,
+        };
+        let buffer = self.instance_buffers[frame].handle();
+        let records = std::mem::take(&mut self.pack_layers[layer as usize]);
+        self.record_pass(pass, frame, buffer, pipeline, &records, self.instance_count);
     }
 
     /// Whether the last `draw` left any glowing outline to draw.
@@ -2607,7 +2811,6 @@ impl EntityRenderer {
         if records.is_empty() {
             return;
         }
-        let pipeline = self.pack_binding.map_or(pipeline, |pack| pack.pipeline);
         pass.set_pipeline(&pipeline);
         // Per-instance data (binding 1) is the same buffer for the whole pass;
         // gl_InstanceIndex (incl. firstInstance) indexes into it.
@@ -2720,6 +2923,35 @@ impl EntityRenderer {
     }
 }
 
+/// The entity layers a shader pack draws after the opaque ones, each in its
+/// own pass through its program (Iris's `IrisPipelines`), in draw order.
+#[derive(Clone, Copy)]
+pub enum PackLayer {
+    /// `entityTranslucentCull`: an invisible mob the viewer sees.
+    TranslucentCulled,
+    /// `entityTranslucent`.
+    Translucent,
+    Eyes,
+    Swirl,
+}
+
+impl PackLayer {
+    pub const ALL: [Self; 4] = [
+        Self::TranslucentCulled,
+        Self::Translucent,
+        Self::Eyes,
+        Self::Swirl,
+    ];
+
+    pub fn geometry(self) -> PackGeometry {
+        match self {
+            Self::TranslucentCulled | Self::Translucent => PackGeometry::EntitiesTranslucent,
+            Self::Eyes => PackGeometry::EntityEyes,
+            Self::Swirl => PackGeometry::Entities,
+        }
+    }
+}
+
 /// A culled, drawable entity with its world transform, animation, and the
 /// base model's per-part matrices precomputed.
 struct VisEntity<'a> {
@@ -2824,14 +3056,10 @@ impl<'a> VariantGroups<'a> {
         self.groups[gi].2.push(member);
     }
 
-    fn emit(&self, vis: &[VisEntity], instances: &mut Instances) -> Vec<DrawRecord> {
+    /// The groups' draws; `unlit` ones skip the lightmap.
+    fn emit(&self, vis: &[VisEntity], instances: &mut Instances, unlit: bool) -> Vec<DrawRecord> {
         let mut records = Vec::new();
         for (variant, texture_set, members) in &self.groups {
-            // Vanilla's EMISSIVE eyes and swirl layers skip the lightmap.
-            let emissive = matches!(
-                variant.overlay_kind,
-                OverlayKind::EyesTranslucent | OverlayKind::SwirlAdditive
-            );
             let own: Option<Vec<Vec<glam::Mat4>>> = variant.own_pivots.then(|| {
                 members
                     .iter()
@@ -2849,7 +3077,7 @@ impl<'a> VariantGroups<'a> {
                         None => vis[*vi].part_transforms[p],
                     };
                     let model = vis[*vi].entity_mat * part;
-                    let light = if emissive {
+                    let light = if unlit {
                         UNLIT_LANE
                     } else {
                         vis[*vi].info.light.lane()
@@ -3056,7 +3284,10 @@ fn entity_bounds(kind: EntityKind, is_baby: bool) -> (f32, f32) {
         EntityKind::Pufferfish => (0.7, 0.7),
         EntityKind::IronGolem => (1.4, 2.7),
         EntityKind::Player => (0.6, 1.8),
-        _ => (1.0, 1.0),
+        _ => {
+            let d = dimensions::EntityDimensions::of(kind);
+            (d.width, d.height)
+        }
     };
     let s = if is_baby { 0.5 } else { 1.0 };
     (w * s, h * s)
@@ -3343,6 +3574,19 @@ pub(super) enum ModelInput {
     PushConstant,
 }
 
+/// The energy swirl's glow.
+// TODO: vanilla `ENERGY_SWIRL` is `BlendFunction.ADDITIVE`, one and one.
+pub(crate) const SWIRL_BLEND: rhi::BlendState = rhi::BlendState {
+    color: rhi::BlendComponent {
+        src: rhi::BlendFactor::SrcAlpha,
+        dst: rhi::BlendFactor::One,
+    },
+    alpha: rhi::BlendComponent {
+        src: rhi::BlendFactor::One,
+        dst: rhi::BlendFactor::One,
+    },
+};
+
 pub(super) fn create_pipeline(
     device: &rhi::backend::Device,
     targets: rhi::backend::PipelineTargets,
@@ -3385,17 +3629,7 @@ pub(super) fn create_pipeline(
                 BlendMode::Translucent
                 | BlendMode::TranslucentDepthWrite
                 | BlendMode::TranslucentCulled => Some(rhi::BlendState::TRANSLUCENT),
-                // Energy swirl glow.
-                BlendMode::Additive => Some(rhi::BlendState {
-                    color: rhi::BlendComponent {
-                        src: rhi::BlendFactor::SrcAlpha,
-                        dst: rhi::BlendFactor::One,
-                    },
-                    alpha: rhi::BlendComponent {
-                        src: rhi::BlendFactor::One,
-                        dst: rhi::BlendFactor::One,
-                    },
-                }),
+                BlendMode::Additive => Some(SWIRL_BLEND),
             },
             ..rhi::RenderPipelineDesc::new(
                 "entity",
