@@ -36,7 +36,9 @@ struct Settings {
     key_bindings: KeyBindings,
     gui_scale: u32,
     render_distance: u32,
-    #[serde(default = "default_chunk_detail")]
+    // Renamed when the default became Off, so saves holding the old default
+    // of 8 move to Off too.
+    #[serde(rename = "chunk_detail_v2", default = "default_chunk_detail")]
     chunk_detail: u32,
     simulation_distance: u32,
     #[serde(default = "default_fov")]
@@ -142,6 +144,11 @@ fn default_max_framerate() -> u32 {
 /// vanilla, which treats the slider's max as unlimited).
 pub const MAX_FRAMERATE_UNLIMITED: u32 = 260;
 
+const CHUNK_DETAIL_MIN: u32 = 8;
+/// Top of the Chunk Detail slider, where every column meshes at full detail.
+pub const CHUNK_DETAIL_OFF: u32 = 49;
+const CHUNK_DETAIL_SPAN: f32 = (CHUNK_DETAIL_OFF - CHUNK_DETAIL_MIN) as f32;
+
 fn default_fov_effect_scale() -> f32 {
     1.0
 }
@@ -199,7 +206,7 @@ fn default_japanese_glyph_variants() -> bool {
 }
 
 fn default_chunk_detail() -> u32 {
-    8
+    CHUNK_DETAIL_OFF
 }
 
 fn default_volume() -> f32 {
@@ -212,7 +219,7 @@ impl Default for Settings {
             key_bindings: KeyBindings::default(),
             gui_scale: 0,
             render_distance: 12,
-            chunk_detail: 8,
+            chunk_detail: CHUNK_DETAIL_OFF,
             simulation_distance: 12,
             fov: 70,
             fov_effect_scale: 1.0,
@@ -1662,6 +1669,16 @@ mod tests {
         assert_eq!(settled(&mut menu), Some(vec!["face".to_owned()]));
         menu.set_screen(Screen::Main, &key_bindings);
         assert_eq!(settled(&mut menu), both);
+    }
+
+    #[test]
+    fn saves_from_before_chunk_detail_off_load_as_off() {
+        let mut json = serde_json::to_value(Settings::default()).unwrap();
+        let fields = json.as_object_mut().unwrap();
+        fields.remove("chunk_detail_v2");
+        fields.insert("chunk_detail".into(), 8.into());
+        let settings: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(settings.chunk_detail, CHUNK_DETAIL_OFF);
     }
 
     #[test]
