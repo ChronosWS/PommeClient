@@ -71,7 +71,9 @@ pub struct Device {
     /// A GPU with memory of its own, which uploads reach through a copy.
     pub discrete: bool,
     pub max_texture_array_layers: u32,
-    pub max_texture_dimension_2d: u32,
+    /// The widest 2D texture, in texels.
+    pub max_texture_size: u32,
+    depth_clamp: bool,
 }
 
 impl Device {
@@ -103,7 +105,8 @@ impl Device {
             device_local_bytes,
             discrete: properties.device_type == vk::PhysicalDeviceType::DiscreteGpu,
             max_texture_array_layers: properties.limits.max_image_array_layers,
-            max_texture_dimension_2d: properties.limits.max_image_dimension2_d,
+            max_texture_size: properties.limits.max_image_dimension2_d,
+            depth_clamp: physical_device.get_features().depth_clamp == vk::TRUE,
         }
     }
 
@@ -902,6 +905,7 @@ pub fn try_create_render_pipeline(
             FrontFace::Cw => vk::FrontFace::Clockwise,
         },
         line_width: 1.0,
+        depth_clamp_enable: (desc.depth_clamp && device.depth_clamp).into(),
         ..Default::default()
     };
     if let Some(bias) = desc.depth.and_then(|depth| depth.bias) {
@@ -928,10 +932,11 @@ pub fn try_create_render_pipeline(
         None => vk::PipelineDepthStencilStateCreateInfo::default(),
     };
 
-    let color_count = 1 + targets.extra_colors.iter().flatten().count();
     // Vulkan doesn't guarantee blending 32-bit float targets: they're
     // written unblended.
-    let blend_attachments: Vec<_> = std::iter::once(targets.color)
+    let blend_attachments: Vec<_> = targets
+        .color
+        .into_iter()
         .chain(targets.extra_colors.iter().flatten().copied())
         .map(|format| {
             let blendable = !matches!(
@@ -942,7 +947,7 @@ pub fn try_create_render_pipeline(
         })
         .collect();
     let color_blending = vk::PipelineColorBlendStateCreateInfo {
-        attachment_count: color_count as u32,
+        attachment_count: blend_attachments.len() as u32,
         attachments: blend_attachments.as_ptr(),
         ..Default::default()
     };
@@ -1930,7 +1935,7 @@ struct FramebufferKey {
 /// The color keys of `targets`, none loading.
 fn target_colors(targets: &PipelineTargets) -> ColorKeys {
     let mut colors = [None; MAX_COLOR_TARGETS];
-    colors[0] = Some((targets.color, false));
+    colors[0] = targets.color.map(|f| (f, false));
     for (slot, format) in colors[1..].iter_mut().zip(targets.extra_colors) {
         *slot = format.map(|f| (f, false));
     }
@@ -1939,7 +1944,7 @@ fn target_colors(targets: &PipelineTargets) -> ColorKeys {
 
 /// The color attachments of `desc`, in location order.
 fn pass_colors(desc: &RenderPassDesc) -> impl Iterator<Item = &ColorAttachment> {
-    std::iter::once(&desc.color).chain(&desc.extra_colors)
+    desc.color.iter().chain(&desc.extra_colors)
 }
 
 impl RenderTargets {
@@ -1969,7 +1974,7 @@ impl RenderTargets {
             device,
             PassKey {
                 colors,
-                color_store: desc.color.store,
+                color_store: desc.color.as_ref().map_or(StoreOp::Store, |c| c.store),
                 depth: desc
                     .depth
                     .map(|depth| (matches!(depth.load, LoadOp::Load), depth.store)),

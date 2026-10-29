@@ -175,6 +175,8 @@ pub struct EntityRenderInfo {
     /// Bat pose flag + its fly/rest animation clock.
     pub bat_resting: bool,
     pub bat_elapsed_secs: Option<f32>,
+    /// Sniffer search flag + its five animation clocks.
+    pub sniffer: entity_model::SnifferAnims,
     /// Iron golem countdowns; the punch one is partial-tick adjusted.
     pub golem_attack_ticks: f32,
     pub golem_offer_flower_ticks: u32,
@@ -197,6 +199,7 @@ pub struct EntityRenderInfo {
     pub visibility: Visibility,
     /// Vanilla `EntityRenderState.lightCoords`.
     pub light: LightLevels,
+    pub pack_shadow: PackShadow,
 }
 
 /// Everything inert: mob-family animation inputs zeroed, no overlays, white
@@ -251,6 +254,7 @@ impl Default for EntityRenderInfo {
             tentacle_angle: 0.0,
             bat_resting: false,
             bat_elapsed_secs: None,
+            sniffer: entity_model::SnifferAnims::default(),
             golem_attack_ticks: 0.0,
             golem_offer_flower_ticks: 0,
             base_tint: WHITE_TINT,
@@ -262,8 +266,25 @@ impl Default for EntityRenderInfo {
             visibility: Visibility::Visible,
             shadow: Default::default(),
             light: LightLevels::FULL_BRIGHT,
+            pack_shadow: PackShadow::Entity,
         }
     }
+}
+
+/// What an entity is to a shader pack's shadow pass (Iris's `ShadowRenderer`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PackShadow {
+    /// Cast with the pack's `shadowEntities`.
+    #[default]
+    Entity,
+    /// The local player or its vehicle, cast with `shadowEntities` or
+    /// `shadowPlayer`.
+    Player,
+    /// The local player in first person: a [`Self::Player`] the camera
+    /// doesn't draw.
+    FirstPersonPlayer,
+    /// A spectator player, which casts none.
+    Spectator,
 }
 
 /// Vanilla `isInvisible` with `isInvisibleToPlayer`.
@@ -808,6 +829,8 @@ pub struct EntityRenderer {
     /// Per-instance vertex buffer (bound at binding 1), one per frame in
     /// flight.
     instance_buffers: Vec<rhi::backend::Buffer>,
+    /// The same for a shader pack's shadow pass, which draws first.
+    shadow_instance_buffers: Vec<rhi::backend::Buffer>,
     texture_sampler: rhi::backend::Sampler,
     /// REPEAT-wrap sampler for the scrolling swirl overlay.
     texture_sampler_repeat: rhi::backend::Sampler,
@@ -852,6 +875,7 @@ enum AnimationType {
     Equine,
     Squid,
     Bat,
+    Sniffer,
     /// Cod, salmon, tropical fish, pufferfish.
     Fish,
     Golem,
@@ -1057,6 +1081,8 @@ fn mob_definitions() -> Vec<MobDef> {
     const GLOW_SQUID_TEX: &[&[ResourceId]] = tex_table!("squid" => "glow_squid");
     const GLOW_SQUID_BABY_TEX: &[&[ResourceId]] = tex_table!("squid" => "glow_squid_baby");
     const BAT_TEX: &[&[ResourceId]] = tex_table!("bat" => "bat");
+    const SNIFFER_TEX: &[&[ResourceId]] = tex_table!("sniffer" => "sniffer");
+    const SNIFFLET_TEX: &[&[ResourceId]] = tex_table!("sniffer" => "snifflet");
     const COD_TEX: &[&[ResourceId]] = tex_table!("fish" => "cod");
     const SALMON_TEX: &[&[ResourceId]] = tex_table!("fish" => "salmon");
     const PUFFERFISH_TEX: &[&[ResourceId]] = tex_table!("fish" => "pufferfish");
@@ -1657,6 +1683,18 @@ fn mob_definitions() -> Vec<MobDef> {
             baby_overlays: vec![],
         },
         MobDef {
+            kind: EntityKind::Sniffer,
+            anim: AnimationType::Sniffer,
+            adult: vec![opaque(entity_model::bake_sniffer_model(), SNIFFER_TEX, 192)],
+            baby: Some(opaque(
+                entity_model::bake_snifflet_model(),
+                SNIFFLET_TEX,
+                128,
+            )),
+            adult_overlays: vec![],
+            baby_overlays: vec![],
+        },
+        MobDef {
             kind: EntityKind::Cod,
             anim: AnimationType::Fish,
             adult: vec![opaque(entity_model::bake_cod_model(), COD_TEX, 32)],
@@ -1780,12 +1818,16 @@ impl EntityRenderer {
         );
         // Per-instance data is a vertex buffer (bound at binding 1), not an SSBO:
         // MoltenVK can't translate a storage-buffer read in a vertex shader.
-        let instance_buffers = util::create_per_frame_host_buffers(
-            device,
-            (MAX_INSTANCES * size_of::<EntityInstance>()) as u64,
-            rhi::BufferUsages::VERTEX,
-            "entity_instances",
-        );
+        let instances = |label| {
+            util::create_per_frame_host_buffers(
+                device,
+                (MAX_INSTANCES * size_of::<EntityInstance>()) as u64,
+                rhi::BufferUsages::VERTEX,
+                label,
+            )
+        };
+        let instance_buffers = instances("entity_instances");
+        let shadow_instance_buffers = instances("entity_shadow_instances");
 
         let texture_sampler = rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST);
         let texture_sampler_repeat =
@@ -1876,6 +1918,7 @@ impl EntityRenderer {
             lightmap_set: lightmap.group,
             pack_binding: None,
             instance_buffers,
+            shadow_instance_buffers,
             texture_sampler,
             texture_sampler_repeat,
             mobs,
@@ -2275,6 +2318,14 @@ impl EntityRenderer {
                 info.bat_elapsed_secs,
                 info.bat_resting,
             ),
+            AnimationType::Sniffer => entity_model::compute_sniffer_anim(
+                model,
+                info.head_x_rot_deg,
+                local_head_y,
+                info.walk_anim_pos,
+                info.walk_anim_speed,
+                &info.sniffer,
+            ),
             AnimationType::Fish => entity_model::compute_fish_anim(
                 model,
                 info.age_in_ticks,
@@ -2348,6 +2399,8 @@ impl EntityRenderer {
         }
     }
 
+    /// Draws `entities` for the camera, or into a shader pack's shadow maps
+    /// with `shadow`, which leaves the camera's outlines alone.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -2358,8 +2411,11 @@ impl EntityRenderer {
         anchor: glam::DVec3,
         eye: glam::DVec3,
         cull_dist: f32,
+        shadow: Option<super::shaderpack::ShadowCasters>,
     ) {
-        self.outline_records = Default::default();
+        if shadow.is_none() {
+            self.outline_records = Default::default();
+        }
         if entities.is_empty() {
             return;
         }
@@ -2375,7 +2431,11 @@ impl EntityRenderer {
                 let Some(entry) = self.mobs.get(&info.entity_kind) else {
                     continue;
                 };
-                if !info.skip_cull && !entity_visible(info, frustum, eye, cull_dist) {
+                let drawn = match shadow {
+                    Some(casters) => casters.casts(info.pack_shadow),
+                    None => info.pack_shadow != PackShadow::FirstPersonPlayer,
+                };
+                if !drawn || !info.skip_cull && !entity_visible(info, frustum, eye, cull_dist) {
                     continue;
                 }
                 let variant = entry.base_variant(info.is_baby, self.effective_variant_index(info));
@@ -2497,23 +2557,27 @@ impl EntityRenderer {
             );
         }
         let bytes = bytemuck::cast_slice(&instances.data[..count]);
-        self.instance_buffers[frame].write(bytes);
-        self.instance_count = count;
-        self.outline_records = outline;
+        let buffer = if shadow.is_some() {
+            &mut self.shadow_instance_buffers[frame]
+        } else {
+            self.instance_count = count;
+            self.outline_records = outline;
+            &mut self.instance_buffers[frame]
+        };
+        buffer.write(bytes);
+        let buffer = buffer.handle();
 
-        self.record_pass(pass, frame, self.pipeline, &opaque, count);
-        self.record_pass(pass, frame, self.pipeline, &armor, count);
-        self.record_pass(pass, frame, self.culled_pipeline, &culled, count);
-        self.record_pass(
-            pass,
-            frame,
-            self.translucent_culled_pipeline,
-            &translucent,
-            count,
-        );
-        self.record_pass(pass, frame, self.body_translucent_pipeline, &body, count);
-        self.record_pass(pass, frame, self.eyes_pipeline, &eyes, count);
-        self.record_pass(pass, frame, self.swirl_pipeline, &swirl, count);
+        for (pipeline, records) in [
+            (self.pipeline, &opaque),
+            (self.pipeline, &armor),
+            (self.culled_pipeline, &culled),
+            (self.translucent_culled_pipeline, &translucent),
+            (self.body_translucent_pipeline, &body),
+            (self.eyes_pipeline, &eyes),
+            (self.swirl_pipeline, &swirl),
+        ] {
+            self.record_pass(pass, frame, buffer, pipeline, records, count);
+        }
     }
 
     /// Whether the last `draw` left any glowing outline to draw.
@@ -2525,8 +2589,9 @@ impl EntityRenderer {
 
     /// The last `draw`'s glowing outlines, into the outline target's pass.
     pub fn draw_outlines(&self, pass: &mut rhi::backend::RenderPassEncoder, frame: usize) {
+        let buffer = self.instance_buffers[frame].handle();
         for (pipeline, records) in self.outline_pipelines.iter().zip(&self.outline_records) {
-            self.record_pass(pass, frame, *pipeline, records, self.instance_count);
+            self.record_pass(pass, frame, buffer, *pipeline, records, self.instance_count);
         }
     }
 
@@ -2534,6 +2599,7 @@ impl EntityRenderer {
         &self,
         pass: &mut rhi::backend::RenderPassEncoder,
         frame: usize,
+        instances: rhi::backend::BufferHandle,
         pipeline: rhi::backend::RenderPipeline,
         records: &[DrawRecord],
         count: usize,
@@ -2545,7 +2611,7 @@ impl EntityRenderer {
         pass.set_pipeline(&pipeline);
         // Per-instance data (binding 1) is the same buffer for the whole pass;
         // gl_InstanceIndex (incl. firstInstance) indexes into it.
-        pass.set_vertex_buffer(1, self.instance_buffers[frame].handle());
+        pass.set_vertex_buffer(1, instances);
         let mut last_vb = rhi::backend::BufferHandle::default();
         let mut last_texture_set = rhi::backend::BindGroup::default();
         for r in records {
@@ -2610,6 +2676,7 @@ impl EntityRenderer {
 
         util::destroy_buffers(device, &mut self.camera_buffers);
         util::destroy_buffers(device, &mut self.instance_buffers);
+        util::destroy_buffers(device, &mut self.shadow_instance_buffers);
 
         for mesh in self
             .armor_meshes
@@ -2921,6 +2988,8 @@ const PLAYER_MODEL_SCALE: f32 = 0.9375;
 pub(crate) fn standing_eye_height(kind: EntityKind, is_baby: bool) -> f32 {
     match kind {
         EntityKind::Villager if is_baby => 0.63,
+        // An explicit `eyeHeight(1.05)`, which the 0.85 ratio would miss.
+        EntityKind::Sniffer if is_baby => dimensions::EntityDimensions::eye_height(kind) * 0.5,
         _ if is_baby => entity_bounds(kind, is_baby).1 * dimensions::DEFAULT_EYE_HEIGHT_RATIO,
         _ => dimensions::EntityDimensions::eye_height(kind),
     }
@@ -2979,6 +3048,7 @@ fn entity_bounds(kind: EntityKind, is_baby: bool) -> (f32, f32) {
         EntityKind::Squid | EntityKind::GlowSquid if is_baby => return (0.5, 0.5),
         EntityKind::Squid | EntityKind::GlowSquid => (0.8, 0.8),
         EntityKind::Bat => (0.5, 0.9),
+        EntityKind::Sniffer => (1.9, 1.75),
         EntityKind::Cod => (0.5, 0.3),
         // Salmon/pufferfish scale with their variant; use the largest.
         EntityKind::Salmon => (1.05, 0.6),
@@ -3002,6 +3072,14 @@ fn entity_visible(
     cull_dist: f32,
 ) -> bool {
     let (w, h) = entity_bounds(info.entity_kind, info.is_baby);
+    // Renderer `getBoundingBoxForCulling().inflate(..)` overrides grow the
+    // box on every side around the same center (the sniffer's head reaches
+    // well past its hitbox).
+    let inflate = match info.entity_kind {
+        EntityKind::Sniffer => 0.6,
+        _ => 0.0,
+    };
+    let (cw, ch) = (w + 2.0 * inflate, h + 2.0 * inflate);
     // A body transform (slime size/squish) can grow the entity well past its
     // base bounds: scale the sphere and its center by the largest axis scale,
     // and pad the radius by the translation (pure-rotation transforms still
@@ -3016,7 +3094,7 @@ fn entity_visible(
             .max(1.0);
         (s, m.w_axis.truncate().length())
     });
-    let radius = (0.5 * (2.0 * w * w + h * h).sqrt() + ANIM_MARGIN) * scale + shift;
+    let radius = (0.5 * (2.0 * cw * cw + ch * ch).sqrt() + ANIM_MARGIN) * scale + shift;
     let mut q = (*info.position - eye).as_vec3();
     q.y += h * 0.5 * scale;
     // Distance-cull with the radius as margin so an oversized entity stays

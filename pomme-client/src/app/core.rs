@@ -311,6 +311,37 @@ fn enqueue_edits(game: &mut GameState, sections: &[(crate::position::ChunkPos, i
     }
 }
 
+/// A sound following an entity, skipped while it's silent (vanilla
+/// `EntityBoundSoundInstance.canPlaySound`); the playing instance's id.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn play_entity_sound(
+    audio: &mut crate::audio::AudioEngine,
+    game: &mut GameState,
+    entity_id: i32,
+    sound: &crate::audio::SoundRef,
+    category: u8,
+    volume: f32,
+    pitch: f32,
+    seed: u64,
+) -> Option<u64> {
+    if game.silent_entities.contains(&entity_id) {
+        return None;
+    }
+    let pos = (entity_id == game.player.entity_id)
+        .then_some(game.player.position)
+        .or_else(|| game.entity_positions.get(&entity_id).copied())?;
+    #[cfg(feature = "test-harness")]
+    game.record_sound(sound);
+    audio.play_entity_sound(
+        sound,
+        category,
+        crate::audio::EntitySoundTarget { id: entity_id, pos },
+        volume,
+        pitch,
+        seed,
+    )
+}
+
 /// Vanilla `LevelEventHandler` case 2001: a broken block's sound and
 /// particles.
 fn block_break_effect(
@@ -2494,25 +2525,16 @@ impl AppCore {
                     pitch,
                     seed,
                 } => {
-                    if game.silent_entities.contains(&entity_id) {
-                        continue;
-                    }
-                    let pos = (entity_id == game.player.entity_id)
-                        .then_some(game.player.position)
-                        .or_else(|| game.entity_positions.get(&entity_id).copied());
-
-                    if let Some(pos) = pos {
-                        #[cfg(feature = "test-harness")]
-                        game.record_sound(&sound);
-                        self.audio.play_entity_sound(
-                            &sound,
-                            category,
-                            crate::audio::EntitySoundTarget { id: entity_id, pos },
-                            volume,
-                            pitch,
-                            seed,
-                        );
-                    }
+                    play_entity_sound(
+                        &mut self.audio,
+                        game,
+                        entity_id,
+                        &sound,
+                        category,
+                        volume,
+                        pitch,
+                        seed,
+                    );
                 }
                 NetworkEvent::StopSound { sound_id, category } => {
                     self.audio.stop_sounds(sound_id.as_deref(), category);
@@ -2890,6 +2912,9 @@ impl AppCore {
                 }
                 NetworkEvent::RabbitJump { id } => {
                     game.entity_store.start_rabbit_jump(id);
+                }
+                NetworkEvent::SnifferDigging { id } => {
+                    super::sniffer::start_digging_sound(&mut self.audio, game, id);
                 }
                 NetworkEvent::SquidTentacleReset { id } => {
                     game.entity_store.squid_tentacle_reset(id);
@@ -3338,6 +3363,7 @@ impl AppCore {
         // TODO: a same-dimension `handleRespawn` re-adds it after them.
         self.tick_local_player(renderer, connection, game);
         self.tick_remote_entities(game);
+        super::sniffer::tick(&mut self.audio, game, renderer.camera_render_position());
     }
 
     /// `LivingEntity.pushEntities` from every remote living entity's tick,

@@ -1,23 +1,33 @@
 //! A loaded shader pack's render path, Iris's pipeline in milestone 1: the
-//! `gbuffers_*` programs draw terrain, entities and block entities into the
-//! pack's `colortex` targets, `deferred*` and `composite*` passes run over
-//! them, and `final` writes the swapchain. No shadow pass yet.
+//! `shadow` program draws terrain into the shadow maps from the sun or moon,
+//! the `gbuffers_*` programs draw the sky, terrain, entities and block
+//! entities into the pack's `colortex` targets, `deferred*` and `composite*`
+//! passes run over them, and `final` writes the swapchain.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use glam::{DVec3, IVec3, Mat4, Vec3, Vec4};
+use glam::{DVec3, IVec2, IVec3, Mat4, Vec3, Vec4};
 
 use crate::renderer::chunk::atlas::TextureAtlas;
 use crate::renderer::chunk::buffer::CHUNK_VERTEX_BUFFERS;
 use crate::renderer::entity_model::EntityVertex;
+use crate::renderer::pipelines::entity_renderer::PackShadow;
 use crate::renderer::pipelines::lightmap::Lightmap;
+use crate::renderer::pipelines::sky::{
+    SKY_PUSH_SIZE, SkyDraw, SkyPipeline, SkyVertex, celestial_pose,
+};
 use crate::renderer::rhi::{self, TextureTransition, TextureUse};
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, util};
-use crate::shaderpack::directives::{TargetSettings, buffer_index};
+use crate::shaderpack::directives::{
+    BufferSettings, ShadowSettings, TargetSettings, buffer_index, shadow_buffer_index,
+};
+use crate::shaderpack::expr::Value;
 use crate::shaderpack::glsl::translate::{SamplerKind, UniformType};
 use crate::shaderpack::prelude::Geometry;
 use crate::shaderpack::programs::{Gbuffers, full_screen_names};
-use crate::shaderpack::{self, CompiledProgram, ShaderPack};
+use crate::shaderpack::uniforms::CustomUniforms;
+use crate::shaderpack::{self, CompiledProgram, PackError, ProgramText, ShaderPack};
 
 /// Buffers a pack can name, `colortex0` to `colortex31`.
 const BUFFERS: usize = 32;
@@ -25,6 +35,16 @@ const BUFFERS: usize = 32;
 /// What the geometry passes draw, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PackGeometry {
+    /// The `shadow` program over solid and cutout terrain.
+    ShadowTerrain,
+    /// `shadow_entities`, or `shadow`, over entities.
+    ShadowEntities,
+    /// `shadow_block`, or `shadow`, over block entities.
+    ShadowBlockEntities,
+    /// The `shadow` program over translucent terrain.
+    ShadowWater,
+    SkyBasic,
+    SkyTextured,
     Terrain,
     Entities,
     BlockEntities,
@@ -32,12 +52,107 @@ pub enum PackGeometry {
 }
 
 impl PackGeometry {
-    fn program(self) -> Gbuffers {
+    /// The geometry it draws: itself, or the one a shadow geometry casts.
+    fn drawn(self) -> Self {
         match self {
+            Self::ShadowTerrain => Self::Terrain,
+            Self::ShadowEntities => Self::Entities,
+            Self::ShadowBlockEntities => Self::BlockEntities,
+            Self::ShadowWater => Self::Water,
+            other => other,
+        }
+    }
+
+    /// Whether it draws into the shadow maps.
+    pub fn shadow(self) -> bool {
+        self != self.drawn()
+    }
+
+    /// Whether it draws chunk sections, which read the sprite rectangles.
+    fn terrain(self) -> bool {
+        matches!(self.drawn(), Self::Terrain | Self::Water)
+    }
+
+    /// Whether it draws `draw_water`'s translucent sections.
+    fn water(self) -> bool {
+        self.drawn() == Self::Water
+    }
+
+    /// Its `gbuffers_*` program, if it isn't a shadow one.
+    fn gbuffers(self) -> Option<Gbuffers> {
+        Some(match self {
+            Self::ShadowTerrain
+            | Self::ShadowEntities
+            | Self::ShadowBlockEntities
+            | Self::ShadowWater => return None,
+            Self::SkyBasic => Gbuffers::SkyBasic,
+            Self::SkyTextured => Gbuffers::SkyTextured,
             Self::Terrain => Gbuffers::Terrain,
             Self::Entities => Gbuffers::Entities,
             Self::BlockEntities => Gbuffers::Block,
             Self::Water => Gbuffers::Water,
+        })
+    }
+
+    /// Its program's source in `pack`'s `dimension`, `None` if it has none.
+    fn source(self, pack: &ShaderPack, dimension: &str) -> Result<Option<ProgramText>, PackError> {
+        if let Some(program) = self.gbuffers() {
+            return pack.gbuffers(dimension, program);
+        }
+        let own = match self {
+            Self::ShadowEntities => pack.program(dimension, "shadow_entities")?,
+            Self::ShadowBlockEntities => pack.program(dimension, "shadow_block")?,
+            _ => None,
+        };
+        match own {
+            Some(text) => Ok(Some(text)),
+            None => pack.program(dimension, "shadow"),
+        }
+    }
+
+    /// The vertices it draws.
+    fn vertices(self) -> Geometry {
+        let program = self.drawn().gbuffers();
+        shaderpack::gbuffers_geometry(program.expect("drawn geometry has a gbuffers program"))
+    }
+}
+
+/// Which entities a pack's shadow pass draws: `shaders.properties`'s
+/// `shadowEntities`, `shadowPlayer` and `shadowBlockEntities`, with Iris's
+/// defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShadowCasters {
+    entities: bool,
+    player: bool,
+    block_entities: bool,
+}
+
+impl ShadowCasters {
+    fn read(pack: &ShaderPack) -> Self {
+        Self {
+            entities: pack.property_bool("shadowEntities", true),
+            player: pack.property_bool("shadowPlayer", false),
+            // TODO: `shadowLightBlockEntities`, which keeps the light-emitting
+            // ones with this off.
+            block_entities: pack.property_bool("shadowBlockEntities", true),
+        }
+    }
+
+    /// Whether an entity that is `role` to the pass casts a shadow.
+    pub fn casts(self, role: PackShadow) -> bool {
+        match role {
+            PackShadow::Entity => self.entities,
+            PackShadow::Player | PackShadow::FirstPersonPlayer => self.entities || self.player,
+            PackShadow::Spectator => false,
+        }
+    }
+
+    /// Whether the pass draws `geometry` at all.
+    fn draws(self, geometry: PackGeometry) -> bool {
+        match geometry {
+            PackGeometry::ShadowEntities => self.casts(PackShadow::Player),
+            PackGeometry::ShadowBlockEntities => self.block_entities,
+            _ => true,
         }
     }
 }
@@ -76,6 +191,21 @@ pub struct PackFrame {
     pub screen_brightness: f32,
     /// The block atlas's width and height, in texels.
     pub atlas_size: u32,
+    pub world: PackWorld,
+}
+
+/// The player's surroundings as Iris reports them, from the game state.
+#[derive(Clone, Default)]
+pub struct PackWorld {
+    /// The biome's registry id at the feet.
+    pub biome: i32,
+    /// Every biome's name, by registry id, for the `BIOME_*` constants.
+    pub biome_names: Arc<[String]>,
+    /// `PPT_NONE`, `PPT_RAIN` or `PPT_SNOW` at the feet.
+    pub precipitation: i32,
+    pub temperature: f32,
+    pub rainfall: f32,
+    pub blindness: f32,
 }
 
 /// `PommeFrame` in the preludes.
@@ -94,6 +224,8 @@ struct FrameUniform {
 /// One compiled program on the GPU.
 struct Program {
     pipeline: rhi::backend::RenderPipeline,
+    /// The sky programs' additive variant, for the sun, moon and stars.
+    overlay: Option<rhi::backend::RenderPipeline>,
     layout: rhi::backend::PipelineLayout,
     uniform_layout: rhi::backend::BindGroupLayout,
     sampler_layout: rhi::backend::BindGroupLayout,
@@ -103,6 +235,25 @@ struct Program {
     compiled: CompiledProgram,
     /// The colortex indices its outputs write, in output order.
     draw_buffers: Vec<u8>,
+}
+
+/// The shadow pass's targets, when the pack has a `shadow` program.
+struct ShadowTargets {
+    extent: rhi::Extent,
+    /// `shadowtex0`: everything the shadow pass drew.
+    depth: rhi::backend::Texture,
+    /// `shadowtex1`: `shadowtex0` copied before translucents.
+    depth_opaque: rhi::backend::Texture,
+    /// The `shadowcolor` buffers a program uses.
+    colors: BTreeMap<u8, ShadowColor>,
+    /// `PommeFrame` seen from the sun or moon.
+    frame_buffers: Vec<rhi::backend::Buffer>,
+}
+
+struct ShadowColor {
+    texture: rhi::backend::Texture,
+    format: rhi::TextureFormat,
+    clear: Clear,
 }
 
 /// A colortex buffer: two textures, flipped between when a full-screen pass
@@ -139,7 +290,9 @@ pub struct PackRenderer {
     far_depth: rhi::backend::Texture,
     nearest: rhi::backend::Sampler,
     linear: rhi::backend::Sampler,
+    /// `linear` and `nearest` comparing, for `sampler2DShadow`s.
     shadow: rhi::backend::Sampler,
+    shadow_nearest: rhi::backend::Sampler,
     frame_buffers: Vec<rhi::backend::Buffer>,
     empty_layout: rhi::backend::BindGroupLayout,
     empty_group: rhi::backend::BindGroup,
@@ -153,10 +306,17 @@ pub struct PackRenderer {
     composite: Vec<Program>,
     final_pass: Option<Program>,
     lightmap: (rhi::backend::TextureHandle, rhi::backend::Sampler),
+    shadow_settings: ShadowSettings,
+    pub shadow_casters: ShadowCasters,
+    shadow_targets: Option<ShadowTargets>,
+    /// The shadow view's projection times model-view, from the last
+    /// [`Self::prepare`].
+    shadow_view_projection: Mat4,
     previous: Option<Previous>,
     frame_counter: u32,
     started: std::time::Instant,
     last_prepare: Option<std::time::Instant>,
+    custom: CustomUniforms,
     /// `eyeBrightnessSmooth`, eased toward `eyeBrightness`.
     eye_brightness_smooth: Option<[f32; 2]>,
 }
@@ -206,18 +366,24 @@ impl PackRenderer {
         atlas: &TextureAtlas,
         lightmap: &Lightmap,
     ) -> Result<Self, String> {
+        let shadow_casters = ShadowCasters::read(pack);
         let gbuffers: Vec<(PackGeometry, CompiledProgram)> = [
+            PackGeometry::ShadowTerrain,
+            PackGeometry::ShadowEntities,
+            PackGeometry::ShadowBlockEntities,
+            PackGeometry::ShadowWater,
+            PackGeometry::SkyBasic,
+            PackGeometry::SkyTextured,
             PackGeometry::Terrain,
             PackGeometry::Entities,
             PackGeometry::BlockEntities,
             PackGeometry::Water,
         ]
         .into_iter()
+        .filter(|&g| shadow_casters.draws(g))
         .filter_map(|g| {
-            let text = pack.gbuffers(dimension, g.program()).transpose()?;
-            Some(text.and_then(|t| {
-                shaderpack::compile(&t, shaderpack::gbuffers_geometry(g.program())).map(|c| (g, c))
-            }))
+            let text = g.source(pack, dimension).transpose()?;
+            Some(text.and_then(|t| shaderpack::compile(&t, g.vertices()).map(|c| (g, c))))
         })
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
@@ -240,34 +406,69 @@ impl PackRenderer {
         // `const` settings across all of them.
         let mut settings = TargetSettings::default();
         let mut used: Vec<u8> = Vec::new();
-        for c in gbuffers
-            .iter()
-            .map(|(_, c)| c)
-            .chain(&deferred)
-            .chain(&composite)
-            .chain([&final_pass])
-        {
+        let mut used_shadow: Vec<u8> = Vec::new();
+        for (geometry, c) in gbuffers.iter().map(|(g, c)| (Some(*g), c)).chain(
+            deferred
+                .iter()
+                .chain(&composite)
+                .chain([&final_pass])
+                .map(|c| (None, c)),
+        ) {
             settings.read(&c.text);
-            used.extend(draw_buffers(c));
-            used.extend(
-                c.interface
-                    .samplers
-                    .iter()
-                    .filter_map(|s| buffer_index(&s.name)),
-            );
+            if geometry.is_some_and(PackGeometry::shadow) {
+                used_shadow.extend(draw_buffers(c));
+            } else {
+                used.extend(draw_buffers(c));
+            }
+            for s in &c.interface.samplers {
+                used.extend(buffer_index(&s.name));
+                used_shadow.extend(shadow_buffer_index(&s.name));
+            }
         }
-        used.sort_unstable();
-        used.dedup();
+        for list in [&mut used, &mut used_shadow] {
+            list.sort_unstable();
+            list.dedup();
+        }
+        let shadow_targets = gbuffers.iter().any(|(g, _)| g.shadow()).then(|| {
+            let size = settings.shadow.resolution.clamp(1, device.max_texture_size);
+            let extent = rhi::Extent {
+                width: size,
+                height: size,
+            };
+            let shadowcolor = &settings.shadowcolor;
+            ShadowTargets {
+                extent,
+                depth: create_depth(device, extent),
+                depth_opaque: create_depth(device, extent),
+                colors: used_shadow
+                    .iter()
+                    .map(|&i| {
+                        let format = buffer_format(shadowcolor.formats.get(&i).map(String::as_str));
+                        let color = ShadowColor {
+                            texture: create_color(device, extent, format),
+                            format,
+                            clear: buffer_clear(shadowcolor, i, Clear::Color([1.0; 4])),
+                        };
+                        (i, color)
+                    })
+                    .collect(),
+                frame_buffers: create_frame_buffers(device),
+            }
+        });
 
         let nearest = rhi::backend::create_sampler(device, &rhi::SamplerDesc::NEAREST);
         let linear = rhi::backend::create_sampler(device, &rhi::SamplerDesc::LINEAR);
-        let shadow = rhi::backend::create_sampler(
-            device,
-            &rhi::SamplerDesc {
-                compare: Some(rhi::CompareFunction::LessEqual),
-                ..rhi::SamplerDesc::LINEAR
-            },
-        );
+        let compare = |desc| {
+            rhi::backend::create_sampler(
+                device,
+                &rhi::SamplerDesc {
+                    compare: Some(rhi::CompareFunction::LessEqual),
+                    ..desc
+                },
+            )
+        };
+        let shadow = compare(rhi::SamplerDesc::LINEAR);
+        let shadow_nearest = compare(rhi::SamplerDesc::NEAREST);
         let empty_layout = rhi::backend::create_bind_group_layout(device, &[]);
         let empty_group = device.create_bind_group(empty_layout, &[]);
         let sprite_layout = rhi::backend::create_bind_group_layout(
@@ -293,12 +494,7 @@ impl PackRenderer {
             atlas.texture.handle(),
             atlas.sampler,
         );
-        let frame_buffers = util::create_per_frame_host_buffers(
-            device,
-            size_of::<FrameUniform>() as u64,
-            rhi::BufferUsages::UNIFORM,
-            "pack_frame",
-        );
+        let frame_buffers = create_frame_buffers(device);
 
         let mut this = Self {
             dimension: dimension.to_owned(),
@@ -313,6 +509,7 @@ impl PackRenderer {
             nearest,
             linear,
             shadow,
+            shadow_nearest,
             frame_buffers,
             empty_layout,
             empty_group,
@@ -325,21 +522,30 @@ impl PackRenderer {
             composite: Vec::new(),
             final_pass: None,
             lightmap: lightmap.texture(),
+            shadow_settings: settings.shadow.clone(),
+            shadow_casters,
+            shadow_targets,
+            shadow_view_projection: Mat4::IDENTITY,
             previous: None,
             frame_counter: 0,
             started: std::time::Instant::now(),
             last_prepare: None,
+            custom: pack.custom_uniforms.clone(),
             eye_brightness_smooth: None,
         };
 
         for index in used.into_iter().filter(|&i| (i as usize) < BUFFERS) {
-            let format = buffer_format(settings.formats.get(&index).map(String::as_str));
-            let clear = match settings.clear_colors.get(&index) {
-                _ if settings.no_clear.contains(&index) => Clear::Keep,
-                Some(color) => Clear::Color(*color),
-                None if index == 0 => Clear::FogColor,
-                None => Clear::Color([if index == 1 { 1.0 } else { 0.0 }; 4]),
-            };
+            let colortex = &settings.colortex;
+            let format = buffer_format(colortex.formats.get(&index).map(String::as_str));
+            let clear = buffer_clear(
+                colortex,
+                index,
+                match index {
+                    0 => Clear::FogColor,
+                    1 => Clear::Color([1.0; 4]),
+                    _ => Clear::Color([0.0; 4]),
+                },
+            );
             this.buffers.insert(
                 index,
                 Buffer {
@@ -397,23 +603,35 @@ impl PackRenderer {
         compiled: CompiledProgram,
         geometry: Option<PackGeometry>,
     ) -> Result<Program, String> {
+        let shadow = geometry.is_some_and(PackGeometry::shadow);
         let buffers = draw_buffers(&compiled);
         let formats = buffers
             .iter()
             .map(|b| {
-                self.buffers
-                    .get(b)
-                    .map(|buffer| rhi::backend::texture_format(buffer.format))
-                    .ok_or_else(|| {
-                        format!("{}: writes colortex{b}, past colortex31", compiled.path)
-                    })
+                let format = if shadow {
+                    self.shadow_targets
+                        .as_ref()
+                        .and_then(|t| t.colors.get(b))
+                        .map(|c| c.format)
+                } else {
+                    self.buffers.get(b).map(|buffer| buffer.format)
+                };
+                format.map(rhi::backend::texture_format).ok_or_else(|| {
+                    let family = if shadow { "shadowcolor" } else { "colortex" };
+                    format!(
+                        "{}: writes {family}{b}, which isn't a buffer",
+                        compiled.path
+                    )
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let Some((&first, rest)) = formats.split_first() else {
-            return Err(format!("{}: writes no buffers", compiled.path));
+        let mut targets = match formats.split_first() {
+            Some((&first, _)) => rhi::backend::PipelineTargets::new(first, geometry.is_some()),
+            // Iris draws a shadow program that writes no buffers into depth alone.
+            None if shadow => rhi::backend::PipelineTargets::depth_only(),
+            None => return Err(format!("{}: writes no buffers", compiled.path)),
         };
-        let mut targets = rhi::backend::PipelineTargets::new(first, geometry.is_some());
-        for (slot, format) in targets.extra_colors.iter_mut().zip(rest) {
+        for (slot, format) in targets.extra_colors.iter_mut().zip(formats.iter().skip(1)) {
             *slot = Some(*format);
         }
         self.build(device, compiled, targets, geometry, buffers)
@@ -446,20 +664,29 @@ impl PackRenderer {
             })
             .collect();
         let sampler_layout = rhi::backend::create_bind_group_layout(device, &sampler_entries);
-        let resources = match geometry {
-            Some(PackGeometry::Terrain | PackGeometry::Water) => self.sprite_layout,
-            _ => self.empty_layout,
+        let resources = if geometry.is_some_and(PackGeometry::terrain) {
+            self.sprite_layout
+        } else {
+            self.empty_layout
         };
+        let sky = matches!(
+            geometry,
+            Some(PackGeometry::SkyBasic | PackGeometry::SkyTextured)
+        );
         let push_constants = match geometry {
             // `draw_water`'s section origin and fade.
-            Some(PackGeometry::Water) => Some(rhi::PushConstants {
+            Some(g) if g.water() => Some(rhi::PushConstants {
                 visibility: rhi::ShaderStages::VERTEX,
                 size: 16,
             }),
             // The block-entity push block: model, tint, overlay, uv params.
-            Some(PackGeometry::BlockEntities) => Some(rhi::PushConstants {
+            Some(g) if g.drawn() == PackGeometry::BlockEntities => Some(rhi::PushConstants {
                 visibility: rhi::ShaderStages::VERTEX,
                 size: 112,
+            }),
+            _ if sky => Some(rhi::PushConstants {
+                visibility: rhi::ShaderStages::VERTEX_FRAGMENT,
+                size: SKY_PUSH_SIZE,
             }),
             _ => None,
         };
@@ -477,38 +704,62 @@ impl PackRenderer {
         let fragment = bytemuck::cast_slice(&compiled.fragment);
         let entity_buffers = crate::renderer::pipelines::entity_renderer::INSTANCED_BUFFERS;
         let block_entity_buffers = [EntityVertex::BUFFER];
-        let vertex_buffers: &[rhi::VertexBufferLayout] = match geometry {
+        let sky_buffers = [SkyVertex::BUFFER];
+        let vertex_buffers: &[rhi::VertexBufferLayout] = match geometry.map(PackGeometry::drawn) {
+            Some(PackGeometry::SkyBasic | PackGeometry::SkyTextured) => &sky_buffers,
             Some(PackGeometry::Terrain) => &CHUNK_VERTEX_BUFFERS,
             Some(PackGeometry::Water) => &CHUNK_VERTEX_BUFFERS[..1],
             Some(PackGeometry::Entities) => &entity_buffers,
             Some(PackGeometry::BlockEntities) => &block_entity_buffers,
+            Some(_) => unreachable!("drawn geometries aren't shadow ones"),
             None => &[],
         };
         let desc = rhi::RenderPipelineDesc {
             // The pack draws in OpenGL's orientation, which Vulkan flips:
-            // front faces wind the other way round.
+            // front faces wind the other way round. Iris draws the shadow
+            // pass unculled.
             cull_mode: match geometry {
                 Some(PackGeometry::Terrain) => rhi::CullMode::Back,
                 _ => rhi::CullMode::None,
             },
             front_face: rhi::FrontFace::Cw,
-            depth: geometry.map(|_| rhi::DepthState {
-                compare: rhi::CompareFunction::LessEqual,
-                ..rhi::DepthState::WRITE
+            // Vanilla's sky writes no depth.
+            depth: geometry.map(|_| {
+                if sky {
+                    rhi::DepthState::READ_ONLY
+                } else {
+                    rhi::DepthState::WRITE
+                }
             }),
-            blend: (geometry == Some(PackGeometry::Water)).then_some(rhi::BlendState::TRANSLUCENT),
+            blend: (sky || geometry.is_some_and(PackGeometry::water))
+                .then_some(rhi::BlendState::TRANSLUCENT),
+            // As the normal sky does, so the disc has no cracks.
+            depth_clamp: sky,
             ..rhi::RenderPipelineDesc::new(&compiled.path, vertex, fragment, vertex_buffers)
         };
-        let pipeline =
-            match rhi::backend::try_create_render_pipeline(device, targets, layout, &desc) {
-                Ok(pipeline) => pipeline,
-                Err(e) => {
-                    layout.destroy(device);
-                    uniform_layout.destroy(device);
-                    sampler_layout.destroy(device);
-                    return Err(format!("{}: {e}", compiled.path));
-                }
-            };
+        let overlay = rhi::RenderPipelineDesc {
+            blend: Some(rhi::BlendState::OVERLAY),
+            ..desc
+        };
+        let pipelines = rhi::backend::try_create_render_pipeline(device, targets, layout, &desc)
+            .and_then(|pipeline| {
+                let overlay = sky
+                    .then(|| {
+                        rhi::backend::try_create_render_pipeline(device, targets, layout, &overlay)
+                    })
+                    .transpose()
+                    .inspect_err(|_| pipeline.destroy(device))?;
+                Ok((pipeline, overlay))
+            });
+        let (pipeline, overlay) = match pipelines {
+            Ok(pipelines) => pipelines,
+            Err(e) => {
+                layout.destroy(device);
+                uniform_layout.destroy(device);
+                sampler_layout.destroy(device);
+                return Err(format!("{}: {e}", compiled.path));
+            }
+        };
         let uniform_size = u64::from(compiled.interface.uniform_size);
         let uniform_buffers = util::create_per_frame_host_buffers(
             device,
@@ -516,6 +767,10 @@ impl PackRenderer {
             rhi::BufferUsages::UNIFORM,
             "pack_uniforms",
         );
+        let frame_buffers = match &self.shadow_targets {
+            Some(targets) if geometry.is_some_and(PackGeometry::shadow) => &targets.frame_buffers,
+            _ => &self.frame_buffers,
+        };
         let uniform_sets = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|frame| {
                 device.create_bind_group(
@@ -531,7 +786,7 @@ impl PackRenderer {
                         (
                             1,
                             rhi::backend::BindingResource::uniform(
-                                &self.frame_buffers[frame],
+                                &frame_buffers[frame],
                                 size_of::<FrameUniform>() as u64,
                             ),
                         ),
@@ -546,6 +801,7 @@ impl PackRenderer {
             .collect();
         Ok(Program {
             pipeline,
+            overlay,
             layout,
             uniform_layout,
             sampler_layout,
@@ -565,6 +821,11 @@ impl PackRenderer {
     ) -> Vec<(u32, rhi::backend::BindingResource)> {
         use rhi::backend::BindingResource as R;
         let mut bindings = Vec::new();
+        let watershadow = compiled
+            .interface
+            .samplers
+            .iter()
+            .any(|s| s.name == "watershadow");
         for s in &compiled.interface.samplers {
             let name = s.name.as_str();
             let colortex = buffer_index(name)
@@ -573,6 +834,8 @@ impl PackRenderer {
                 colortex.and_then(|i| self.buffers.get(&i))
             {
                 (buffer.textures[buffer.current].handle(), self.linear)
+            } else if let Some(shadow) = self.shadow_map(name, watershadow) {
+                shadow
             } else {
                 match name {
                     // Geometry passes draw into `depthtex0`, so they read
@@ -586,20 +849,68 @@ impl PackRenderer {
                     _ if s.kind == SamplerKind::Tex2DShadow => {
                         (self.far_depth.handle(), self.shadow)
                     }
-                    // TODO: shadow maps, normals/specular atlases and custom
-                    // textures; they read white until then.
+                    // TODO: normals/specular atlases and custom textures;
+                    // they read white until then.
                     _ => (self.white.handle(), self.nearest),
                 }
             };
-            let sampler = if s.kind == SamplerKind::Tex2DShadow {
-                self.shadow
-            } else {
-                sampler
+            // A `sampler2DShadow` always compares, as Vulkan needs, keeping
+            // its filter; Iris compares only with `shadowHardwareFiltering`
+            // and leaves the read without it to the driver.
+            let sampler = match s.kind {
+                SamplerKind::Tex2DShadow if sampler == self.nearest => self.shadow_nearest,
+                SamplerKind::Tex2DShadow => self.shadow,
+                _ => sampler,
             };
             bindings.push((s.binding, R::Texture(texture)));
             bindings.push((s.binding + 1, R::Sampler(sampler)));
         }
         bindings
+    }
+
+    /// What the sampler `name` reads of the shadow pass: `shadow` is
+    /// `shadowtex1` when the program also declares `watershadow`, as in Iris.
+    fn shadow_map(
+        &self,
+        name: &str,
+        watershadow: bool,
+    ) -> Option<(rhi::backend::TextureHandle, rhi::backend::Sampler)> {
+        let targets = self.shadow_targets.as_ref()?;
+        let settings = &self.shadow_settings;
+        let filter = |nearest: bool| if nearest { self.nearest } else { self.linear };
+        let depth = |opaque: bool| {
+            let texture = if opaque {
+                &targets.depth_opaque
+            } else {
+                &targets.depth
+            };
+            let nearest = settings.depth_nearest[usize::from(opaque)];
+            (texture.handle(), filter(nearest))
+        };
+        Some(match name {
+            "shadowtex0" | "watershadow" | "shadowtex0HW" => depth(false),
+            "shadowtex1" | "shadowtex1HW" => depth(true),
+            "shadow" => depth(watershadow),
+            _ => {
+                let i = shadow_buffer_index(name)?;
+                let color = targets.colors.get(&i)?;
+                let nearest = settings.color_nearest.get(usize::from(i)) == Some(&true);
+                (color.texture.handle(), filter(nearest))
+            }
+        })
+    }
+
+    /// `sunPathRotation`, which tilts the sky's sun and moon too.
+    pub fn sun_path_rotation(&self) -> f32 {
+        self.shadow_settings.sun_path_rotation
+    }
+
+    /// The shadow view's projection times model-view, or `None` if the pack
+    /// has no shadow pass.
+    pub fn shadow_view_projection(&self) -> Option<Mat4> {
+        self.shadow_targets
+            .is_some()
+            .then_some(self.shadow_view_projection)
     }
 
     /// Fills the frame's uniforms for every program.
@@ -609,16 +920,31 @@ impl PackRenderer {
             projection: data.projection,
             camera: data.camera,
         };
-        let frame_uniform = FrameUniform {
-            view: data.view.to_cols_array(),
-            projection: data.projection.to_cols_array(),
+        let frame_uniform = |view: Mat4, projection: Mat4| FrameUniform {
+            view: view.to_cols_array(),
+            projection: projection.to_cols_array(),
             eye: data.eye.extend(0.0).to_array(),
             anchor: data.anchor.extend(0).to_array(),
             atlas_size: [data.atlas_size as f32, data.atlas_size as f32, 0.0, 0.0],
             fog: [data.fog[0], data.fog[1], 0.0, 0.0],
             fog_color: data.fog_color.extend(1.0).to_array(),
         };
-        self.frame_buffers[frame].write(bytemuck::bytes_of(&frame_uniform));
+        self.frame_buffers[frame].write(bytemuck::bytes_of(&frame_uniform(
+            data.view,
+            data.projection,
+        )));
+        let shadow = shadow_matrices(
+            &self.shadow_settings,
+            shadow_angle(data.sun_angle_degrees),
+            data.camera,
+        );
+        self.shadow_view_projection = shadow.projection * shadow.model_view;
+        if let Some(targets) = &mut self.shadow_targets {
+            targets.frame_buffers[frame].write(bytemuck::bytes_of(&frame_uniform(
+                shadow.model_view,
+                shadow.projection,
+            )));
+        }
 
         let now = std::time::Instant::now();
         let frame_time = self
@@ -637,6 +963,8 @@ impl PackRenderer {
         let values = UniformValues::new(
             data,
             self.previous.unwrap_or(current),
+            shadow,
+            self.sun_path_rotation(),
             self.extent,
             Timing {
                 frame_counter: self.frame_counter,
@@ -645,6 +973,7 @@ impl PackRenderer {
             },
             eye_brightness_smooth,
         );
+        self.custom.evaluate(&|name| values.get(name), frame_time);
         for program in self
             .geometry
             .values_mut()
@@ -652,7 +981,7 @@ impl PackRenderer {
             .chain(&mut self.composite)
             .chain(&mut self.final_pass)
         {
-            let bytes = values.block(&program.compiled);
+            let bytes = values.block(&program.compiled, &self.custom);
             program.uniform_buffers[frame].write(&bytes);
         }
         self.previous = Some(current);
@@ -692,28 +1021,35 @@ impl PackRenderer {
         }
     }
 
-    /// Clears both textures of the buffers that clear each frame, and the
-    /// depth targets.
+    /// Clears both textures of the buffers that clear each frame, the
+    /// shadow buffers that do, and the depth targets.
     pub fn clear(&mut self, encoder: &rhi::backend::CommandEncoder, fog_color: Vec3) {
+        let color = |clear| match clear {
+            Clear::Keep => None,
+            Clear::FogColor => Some(fog_color.extend(1.0).to_array()),
+            Clear::Color(color) => Some(color),
+        };
+        let shadow = self.shadow_targets.as_ref();
         let cleared: Vec<(rhi::backend::TextureHandle, [f32; 4])> = self
             .buffers
             .values()
-            .flat_map(|b| {
-                let color = match b.clear {
-                    Clear::Keep => None,
-                    Clear::FogColor => Some(fog_color.extend(1.0).to_array()),
-                    Clear::Color(color) => Some(color),
-                };
-                b.textures
-                    .iter()
-                    .filter_map(move |t| Some((t.handle(), color?)))
-            })
+            .flat_map(|b| b.textures.iter().map(move |t| (t, b.clear)))
+            .chain(
+                shadow
+                    .into_iter()
+                    .flat_map(|s| s.colors.values().map(|c| (&c.texture, c.clear))),
+            )
+            .filter_map(|(t, clear)| Some((t.handle(), color(clear)?)))
             .collect();
-        let depths = [self.depth.handle(), self.depth_opaque.handle()];
+        let depths: Vec<_> = [&self.depth, &self.depth_opaque]
+            .into_iter()
+            .chain(shadow.into_iter().flat_map(|s| [&s.depth, &s.depth_opaque]))
+            .map(|d| d.handle())
+            .collect();
         let transitions: Vec<_> = cleared
             .iter()
             .map(|(t, _)| TextureTransition::color(*t, TextureUse::ShaderRead, TextureUse::CopyDst))
-            .chain(depths.map(|d| {
+            .chain(depths.iter().map(|&d| {
                 TextureTransition::color(d, TextureUse::DepthRead, TextureUse::DepthCopyDst)
             }))
             .collect();
@@ -727,23 +1063,32 @@ impl PackRenderer {
         encoder.transition_textures(&reversed(&transitions));
     }
 
-    /// Copies `depthtex0` into `depthtex1`, as Iris does before the
-    /// translucent geometry.
-    pub fn copy_opaque_depth(&self, encoder: &rhi::backend::CommandEncoder) {
+    /// The depth target, its opaque copy and their extent: the screen's, or
+    /// the shadow pass's.
+    fn depths(
+        &self,
+        shadow: bool,
+    ) -> (
+        rhi::backend::TextureHandle,
+        rhi::backend::TextureHandle,
+        rhi::Extent,
+    ) {
+        match &self.shadow_targets {
+            Some(t) if shadow => (t.depth.handle(), t.depth_opaque.handle(), t.extent),
+            _ => (self.depth.handle(), self.depth_opaque.handle(), self.extent),
+        }
+    }
+
+    /// Copies `depthtex0` into `depthtex1`, or `shadowtex0` into `shadowtex1`,
+    /// as Iris does before the translucent geometry.
+    pub fn copy_opaque_depth(&self, encoder: &rhi::backend::CommandEncoder, shadow: bool) {
+        let (depth, opaque, extent) = self.depths(shadow);
         let transitions = [
-            TextureTransition::color(
-                self.depth.handle(),
-                TextureUse::DepthRead,
-                TextureUse::DepthCopySrc,
-            ),
-            TextureTransition::color(
-                self.depth_opaque.handle(),
-                TextureUse::DepthRead,
-                TextureUse::DepthCopyDst,
-            ),
+            TextureTransition::color(depth, TextureUse::DepthRead, TextureUse::DepthCopySrc),
+            TextureTransition::color(opaque, TextureUse::DepthRead, TextureUse::DepthCopyDst),
         ];
         encoder.transition_textures(&transitions);
-        encoder.copy_depth(self.depth.handle(), self.depth_opaque.handle(), self.extent);
+        encoder.copy_depth(depth, opaque, extent);
         encoder.transition_textures(&reversed(&transitions));
     }
 
@@ -759,23 +1104,41 @@ impl PackRenderer {
                 } else {
                     buffer.current
                 };
-                rhi::backend::ColorAttachment {
-                    texture: buffer.textures[side].handle(),
-                    format: rhi::backend::texture_format(buffer.format),
-                    load: rhi::LoadOp::Load,
-                    store: rhi::StoreOp::Store,
-                }
+                attachment(&buffer.textures[side], buffer.format)
             })
             .collect()
     }
 
+    /// A geometry program's color attachments, its depth target and their
+    /// extent.
+    fn geometry_targets(
+        &self,
+        program: &Program,
+        shadow: bool,
+    ) -> (
+        Vec<rhi::backend::ColorAttachment>,
+        rhi::backend::TextureHandle,
+        rhi::Extent,
+    ) {
+        let (depth, _, extent) = self.depths(shadow);
+        let attachments = match &self.shadow_targets {
+            Some(targets) if shadow => program
+                .draw_buffers
+                .iter()
+                .map(|b| attachment(&targets.colors[b].texture, targets.colors[b].format))
+                .collect(),
+            _ => self.attachments(&program.draw_buffers, false),
+        };
+        (attachments, depth, extent)
+    }
+
     /// Moves `attachments` between being sampled and being drawn into, with
-    /// the depth target too if `depth`.
+    /// the `depth` target too.
     fn transition(
         &self,
         encoder: &rhi::backend::CommandEncoder,
         attachments: &[rhi::backend::ColorAttachment],
-        depth: bool,
+        depth: Option<rhi::backend::TextureHandle>,
         to_attachment: bool,
     ) {
         let between = |texture, read, write| {
@@ -795,9 +1158,9 @@ impl PackRenderer {
                 )
             })
             .collect();
-        if depth {
+        if let Some(depth) = depth {
             transitions.push(between(
-                self.depth.handle(),
+                depth,
                 TextureUse::DepthRead,
                 TextureUse::DepthAttachment,
             ));
@@ -809,28 +1172,31 @@ impl PackRenderer {
         &self,
         device: &rhi::backend::Device,
         encoder: &rhi::backend::CommandEncoder,
-        mut attachments: Vec<rhi::backend::ColorAttachment>,
-        depth: bool,
+        attachments: Vec<rhi::backend::ColorAttachment>,
+        depth: Option<rhi::backend::TextureHandle>,
+        extent: rhi::Extent,
     ) -> rhi::backend::RenderPassEncoder {
-        let color = attachments.remove(0);
+        let mut colors = attachments.into_iter();
         encoder.begin_render_pass(
             device,
             &rhi::backend::RenderPassDesc {
-                color,
-                extra_colors: attachments,
-                depth: depth.then(|| rhi::backend::DepthAttachment {
-                    texture: self.depth.handle(),
+                color: colors.next(),
+                extra_colors: colors.collect(),
+                depth: depth.map(|texture| rhi::backend::DepthAttachment {
+                    texture,
                     load: rhi::LoadOp::Load,
                     store: rhi::StoreOp::Store,
                 }),
-                extent: self.extent,
+                extent,
             },
         )
     }
 
-    /// Begins `geometry`'s pass into its program's buffers and the depth
-    /// target, with the program bound; `None` if the pack has no program
-    /// for it.
+    /// Begins `geometry`'s pass into its program's buffers and depth target,
+    /// the shadow pass's for a shadow geometry, with the program bound;
+    /// `None` if the pack has no program for it.
+    // TODO: Iris draws a geometry with no program, even through the fallback
+    // chain, with its built-in fallback shader into colortex0.
     pub fn begin_geometry(
         &mut self,
         device: &rhi::backend::Device,
@@ -841,17 +1207,18 @@ impl PackRenderer {
         let sampler_set =
             self.bind_samplers(device, frame, ProgramRef::Geometry(geometry), false)?;
         let program = self.program_ref(ProgramRef::Geometry(geometry))?;
-        let resources = match geometry {
-            PackGeometry::Terrain | PackGeometry::Water => self.sprite_group,
-            _ => self.empty_group,
+        let resources = if geometry.terrain() {
+            self.sprite_group
+        } else {
+            self.empty_group
         };
         let binding = PackBinding {
             pipeline: program.pipeline,
             sets: [program.uniform_sets[frame], sampler_set, resources],
         };
-        let attachments = self.attachments(&program.draw_buffers, false);
-        self.transition(encoder, &attachments, true, true);
-        let mut pass = self.begin(device, encoder, attachments, true);
+        let (attachments, depth, extent) = self.geometry_targets(program, geometry.shadow());
+        self.transition(encoder, &attachments, Some(depth), true);
+        let mut pass = self.begin(device, encoder, attachments, Some(depth), extent);
         pass.set_pipeline(&binding.pipeline);
         pass.set_bind_groups(0, &binding.sets);
         Some((pass, binding))
@@ -866,8 +1233,38 @@ impl PackRenderer {
     ) {
         pass.end();
         if let Some(program) = self.program_ref(ProgramRef::Geometry(geometry)) {
-            let attachments = self.attachments(&program.draw_buffers, false);
-            self.transition(encoder, &attachments, true, false);
+            let (attachments, depth, _) = self.geometry_targets(program, geometry.shadow());
+            self.transition(encoder, &attachments, Some(depth), false);
+        }
+    }
+
+    /// Draws `draws` through `gbuffers_skybasic` and `gbuffers_skytextured`,
+    /// a pass for each run of draws one program takes.
+    pub fn draw_sky(
+        &mut self,
+        device: &rhi::backend::Device,
+        encoder: &rhi::backend::CommandEncoder,
+        frame: usize,
+        sky: &SkyPipeline,
+        draws: &[SkyDraw],
+    ) {
+        for run in draws.chunk_by(|a, b| a.stage.textured() == b.stage.textured()) {
+            let geometry = if run[0].stage.textured() {
+                PackGeometry::SkyTextured
+            } else {
+                PackGeometry::SkyBasic
+            };
+            let Some((mut pass, binding)) = self.begin_geometry(device, encoder, frame, geometry)
+            else {
+                continue;
+            };
+            let overlay = self.geometry[&geometry].overlay;
+            for draw in run {
+                let pipeline = overlay.filter(|_| draw.stage.overlay());
+                pass.set_pipeline(&pipeline.unwrap_or(binding.pipeline));
+                sky.record(&pass, draw, 3);
+            }
+            self.end_geometry(encoder, pass, geometry);
         }
     }
 
@@ -901,8 +1298,8 @@ impl PackRenderer {
             // Writes go to each buffer's other texture, so the pass still
             // reads the current one.
             let attachments = self.attachments(&written, true);
-            self.transition(encoder, &attachments, false, true);
-            let mut pass = self.begin(device, encoder, attachments.clone(), false);
+            self.transition(encoder, &attachments, None, true);
+            let mut pass = self.begin(device, encoder, attachments.clone(), None, self.extent);
             pass.set_pipeline(&pipeline);
             pass.set_bind_groups(
                 0,
@@ -910,7 +1307,7 @@ impl PackRenderer {
             );
             pass.draw(3, 1, 0, 0);
             pass.end();
-            self.transition(encoder, &attachments, false, false);
+            self.transition(encoder, &attachments, None, false);
             for b in written {
                 if let Some(buffer) = self.buffers.get_mut(&b) {
                     buffer.current = 1 - buffer.current;
@@ -973,6 +1370,9 @@ impl PackRenderer {
             .collect();
         for mut program in programs {
             program.pipeline.destroy(device);
+            if let Some(overlay) = program.overlay {
+                overlay.destroy(device);
+            }
             program.layout.destroy(device);
             util::destroy_buffers(device, &mut program.uniform_buffers);
             util::destroy_bind_groups(device, program.uniform_sets.drain(..));
@@ -985,6 +1385,15 @@ impl PackRenderer {
                 texture.destroy(device);
             }
         }
+        if let Some(mut targets) = self.shadow_targets.take() {
+            for texture in [targets.depth, targets.depth_opaque]
+                .into_iter()
+                .chain(targets.colors.into_values().map(|c| c.texture))
+            {
+                texture.destroy(device);
+            }
+            util::destroy_buffers(device, &mut targets.frame_buffers);
+        }
         for texture in [
             &mut self.depth,
             &mut self.depth_opaque,
@@ -994,7 +1403,7 @@ impl PackRenderer {
         ] {
             std::mem::take(texture).destroy(device);
         }
-        for sampler in [self.nearest, self.linear, self.shadow] {
+        for sampler in [self.nearest, self.linear, self.shadow, self.shadow_nearest] {
             sampler.destroy(device);
         }
         util::destroy_buffers(device, &mut self.frame_buffers);
@@ -1004,6 +1413,87 @@ impl PackRenderer {
         self.empty_layout.destroy(device);
         self.sprite_layout.destroy(device);
         self.albedo_layout.destroy(device);
+    }
+}
+
+/// Drawing into `texture` over what it holds.
+fn attachment(
+    texture: &rhi::backend::Texture,
+    format: rhi::TextureFormat,
+) -> rhi::backend::ColorAttachment {
+    rhi::backend::ColorAttachment {
+        texture: texture.handle(),
+        format: rhi::backend::texture_format(format),
+        load: rhi::LoadOp::Load,
+        store: rhi::StoreOp::Store,
+    }
+}
+
+/// What buffer `index` clears to each frame: `default`, unless `settings`
+/// keep it or name a colour.
+fn buffer_clear(settings: &BufferSettings, index: u8, default: Clear) -> Clear {
+    if settings.no_clear.contains(&index) {
+        Clear::Keep
+    } else {
+        settings
+            .clear_colors
+            .get(&index)
+            .map_or(default, |&color| Clear::Color(color))
+    }
+}
+
+/// `PommeFrame`'s buffer for each frame in flight.
+fn create_frame_buffers(device: &rhi::backend::Device) -> Vec<rhi::backend::Buffer> {
+    util::create_per_frame_host_buffers(
+        device,
+        size_of::<FrameUniform>() as u64,
+        rhi::BufferUsages::UNIFORM,
+        "pack_frame",
+    )
+}
+
+/// The shadow pass's matrices.
+#[derive(Clone, Copy)]
+struct ShadowMatrices {
+    model_view: Mat4,
+    projection: Mat4,
+}
+
+/// Iris's `shadowAngle`: the sun's angle by day, the moon's by night, as a
+/// fraction of a turn from sunrise.
+fn shadow_angle(sun_angle_degrees: f32) -> f32 {
+    let sun_angle = (sun_angle_degrees / 360.0 + 0.25).fract();
+    if sun_angle <= 0.5 {
+        sun_angle
+    } else {
+        sun_angle - 0.5
+    }
+}
+
+/// Iris's `ShadowMatrices`: the world seen from the sun or moon, eye-relative,
+/// snapped to `interval` blocks so the shadows don't crawl as the eye moves,
+/// through an orthographic box `distance` blocks across each way.
+fn shadow_matrices(settings: &ShadowSettings, shadow_angle: f32, camera: DVec3) -> ShadowMatrices {
+    let sky = if shadow_angle < 0.25 {
+        shadow_angle + 0.75
+    } else {
+        shadow_angle - 0.25
+    };
+    let mut model_view = Mat4::from_rotation_x(90f32.to_radians())
+        * Mat4::from_rotation_z((-360.0 * sky).to_radians())
+        * Mat4::from_rotation_x(settings.sun_path_rotation.to_radians());
+    let interval = settings.interval;
+    if interval != 0.0 {
+        // Java's float `%`, which keeps the camera coordinate's sign.
+        let offset = camera.as_vec3().map(|c| c % interval - interval / 2.0);
+        model_view *= Mat4::from_translation(offset);
+    }
+    let d = settings.distance;
+    // Iris's `ShadowMatrices.NEAR` and `FAR`.
+    let projection = glam::camera::rh::proj::opengl::orthographic(-d, d, -d, d, -100.05, 156.0);
+    ShadowMatrices {
+        model_view,
+        projection,
     }
 }
 
@@ -1140,21 +1630,43 @@ struct Previous {
 }
 
 /// A frame's values for Iris's uniforms, by name.
-struct UniformValues(BTreeMap<&'static str, Value>);
-
-#[derive(Clone, Copy)]
-enum Value {
-    Float(f32),
-    Int(i32),
-    Vec3([f32; 3]),
-    IVec2([i32; 2]),
-    Mat4(Mat4),
+struct UniformValues {
+    values: BTreeMap<&'static str, Value>,
+    biome_names: Arc<[String]>,
 }
+
+/// Iris's precipitation and biome-category constants.
+const CONSTANTS: &[(&str, i32)] = &[
+    ("PPT_NONE", 0),
+    ("PPT_RAIN", 1),
+    ("PPT_SNOW", 2),
+    ("CAT_NONE", 0),
+    ("CAT_TAIGA", 1),
+    ("CAT_EXTREME_HILLS", 2),
+    ("CAT_JUNGLE", 3),
+    ("CAT_MESA", 4),
+    ("CAT_PLAINS", 5),
+    ("CAT_SAVANNA", 6),
+    ("CAT_ICY", 7),
+    ("CAT_THE_END", 8),
+    ("CAT_BEACH", 9),
+    ("CAT_FOREST", 10),
+    ("CAT_OCEAN", 11),
+    ("CAT_DESERT", 12),
+    ("CAT_RIVER", 13),
+    ("CAT_SWAMP", 14),
+    ("CAT_MUSHROOM", 15),
+    ("CAT_NETHER", 16),
+    ("CAT_MOUNTAIN", 17),
+    ("CAT_UNDERGROUND", 18),
+];
 
 impl UniformValues {
     fn new(
         data: &PackFrame,
         previous: Previous,
+        shadow: ShadowMatrices,
+        sun_path_rotation: f32,
         extent: rhi::Extent,
         timing: Timing,
         eye_brightness_smooth: [f32; 2],
@@ -1162,8 +1674,7 @@ impl UniformValues {
         let sky_angle = data.sun_angle_degrees / 360.0;
         // Iris's `CelestialUniforms`: the sun 100 blocks up the celestial
         // rotation, in view space.
-        let celestial = Mat4::from_rotation_y(-90f32.to_radians())
-            * Mat4::from_rotation_x(data.sun_angle_degrees.to_radians());
+        let celestial = celestial_pose(data.sun_angle_degrees, sun_path_rotation);
         let sun = (data.view * celestial * Vec4::new(0.0, 100.0, 0.0, 0.0)).truncate();
         let moon = (data.view * celestial * Vec4::new(0.0, -100.0, 0.0, 0.0)).truncate();
         let up = (data.view * Vec4::new(0.0, 100.0, 0.0, 0.0)).truncate();
@@ -1189,31 +1700,25 @@ impl UniformValues {
             "gbufferPreviousProjection",
             Value::Mat4(previous.projection),
         );
-        set("cameraPosition", Value::Vec3(camera.as_vec3().to_array()));
-        set("cameraPositionFract", Value::Vec3(camera_fract.to_array()));
-        set(
-            "cameraPositionInt",
-            Value::Vec3(camera.floor().as_vec3().to_array()),
-        );
+        set("cameraPosition", Value::Vec3(camera.as_vec3()));
+        set("cameraPositionFract", Value::Vec3(camera_fract));
+        set("cameraPositionInt", Value::Vec3(camera.floor().as_vec3()));
         set(
             "previousCameraPosition",
-            Value::Vec3(previous.camera.as_vec3().to_array()),
+            Value::Vec3(previous.camera.as_vec3()),
         );
-        set(
-            "previousCameraPositionFract",
-            Value::Vec3(previous_fract.to_array()),
-        );
-        set("sunPosition", Value::Vec3(sun.to_array()));
-        set("moonPosition", Value::Vec3(moon.to_array()));
+        set("previousCameraPositionFract", Value::Vec3(previous_fract));
+        set("sunPosition", Value::Vec3(sun));
+        set("moonPosition", Value::Vec3(moon));
         set(
             "shadowLightPosition",
-            Value::Vec3(if day { sun } else { moon }.to_array()),
+            Value::Vec3(if day { sun } else { moon }),
         );
-        set("upPosition", Value::Vec3(up.to_array()));
+        set("upPosition", Value::Vec3(up));
         set("sunAngle", Value::Float(sun_angle));
         set(
             "shadowAngle",
-            Value::Float(if day { sun_angle } else { sun_angle - 0.5 }),
+            Value::Float(shadow_angle(data.sun_angle_degrees)),
         );
         set("worldTime", Value::Int((data.day_time % 24000) as i32));
         set("worldDay", Value::Int((data.day_time / 24000) as i32));
@@ -1231,68 +1736,200 @@ impl UniformValues {
         set("aspectRatio", Value::Float(w / h.max(1.0)));
         set("near", Value::Float(data.near));
         set("far", Value::Float(data.far));
-        set("fogColor", Value::Vec3(data.fog_color.to_array()));
-        set("skyColor", Value::Vec3(data.sky_color.to_array()));
+        set("fogColor", Value::Vec3(data.fog_color));
+        set("skyColor", Value::Vec3(data.sky_color));
         set("fogStart", Value::Float(data.fog[0]));
         set("fogEnd", Value::Float(data.fog[1]));
         set(
             "eyeBrightness",
-            Value::IVec2(data.eye_light.map(|l| l as i32)),
+            Value::IVec2(IVec2::from_array(data.eye_light.map(|l| l as i32))),
         );
         set(
             "eyeBrightnessSmooth",
-            Value::IVec2(eye_brightness_smooth.map(|l| l.round() as i32)),
+            Value::IVec2(IVec2::from_array(
+                eye_brightness_smooth.map(|l| l.round() as i32),
+            )),
         );
         set("isEyeInWater", Value::Int(i32::from(data.eye_in_water)));
-        set("blindness", Value::Float(0.0));
+        set("blindness", Value::Float(data.world.blindness));
+        set("eyeAltitude", Value::Float(camera.y as f32));
+        set("biome", Value::Int(data.world.biome));
+        // TODO: Iris's biome categories, from the biome tags.
+        set("biome_category", Value::Int(0));
+        set("biome_precipitation", Value::Int(data.world.precipitation));
+        set("temperature", Value::Float(data.world.temperature));
+        set("rainfall", Value::Float(data.world.rainfall));
         set("darknessFactor", Value::Float(0.0));
         set("nightVision", Value::Float(0.0));
         set("screenBrightness", Value::Float(data.screen_brightness));
         set("heldBlockLightValue", Value::Int(0));
         set("heldBlockLightValue2", Value::Int(0));
-        set("renderStage", Value::Int(0));
-        set("atlasSize", Value::IVec2([data.atlas_size as i32; 2]));
+        set(
+            "atlasSize",
+            Value::IVec2(IVec2::splat(data.atlas_size as i32)),
+        );
         set("gtexture", Value::Int(0));
-        // TODO: the shadow pass's matrices, entity colour, held item ids,
-        // biome and player-mood uniforms read zero until they're fed.
-        set("shadowModelView", Value::Mat4(Mat4::IDENTITY));
-        set("shadowModelViewInverse", Value::Mat4(Mat4::IDENTITY));
-        set("shadowProjection", Value::Mat4(Mat4::IDENTITY));
-        set("shadowProjectionInverse", Value::Mat4(Mat4::IDENTITY));
-        Self(values)
+        set("shadowModelView", Value::Mat4(shadow.model_view));
+        set(
+            "shadowModelViewInverse",
+            Value::Mat4(shadow.model_view.inverse()),
+        );
+        set("shadowProjection", Value::Mat4(shadow.projection));
+        set(
+            "shadowProjectionInverse",
+            Value::Mat4(shadow.projection.inverse()),
+        );
+        Self {
+            values,
+            biome_names: Arc::clone(&data.world.biome_names),
+        }
     }
 
-    /// `compiled`'s uniforms block, std140, from the values it declares.
-    fn block(&self, compiled: &CompiledProgram) -> Vec<u8> {
+    /// A built-in uniform or constant, by name.
+    fn get(&self, name: &str) -> Option<Value> {
+        if let Some(value) = self.values.get(name) {
+            return Some(*value);
+        }
+        if let Some(biome) = name.strip_prefix("BIOME_") {
+            let id = self.biome_names.iter().position(|n| {
+                n.rsplit(':')
+                    .next()
+                    .is_some_and(|path| path.eq_ignore_ascii_case(biome))
+            })?;
+            return Some(Value::Int(id as i32));
+        }
+        CONSTANTS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| Value::Int(*v))
+    }
+
+    /// `compiled`'s uniforms block, std140, from the values it declares:
+    /// the pack's custom uniforms first, then the built-in ones.
+    fn block(&self, compiled: &CompiledProgram, custom: &CustomUniforms) -> Vec<u8> {
         let mut bytes = vec![0u8; compiled.interface.uniform_size as usize];
         for uniform in &compiled.interface.uniforms {
-            let Some(value) = self.0.get(uniform.name.as_str()) else {
+            let name = uniform.name.as_str();
+            let Some(value) = custom.get(name).or_else(|| self.get(name)) else {
+                continue;
+            };
+            let floats = |n: usize| {
+                value
+                    .components()
+                    .map(|(c, _)| bytemuck::cast_slice::<f32, u8>(&c.to_array()[..n]).to_vec())
+            };
+            let ints = |n: usize| {
+                value.components().map(|(c, _)| {
+                    let ints = c.to_array().map(|v| v as i32);
+                    bytemuck::cast_slice::<i32, u8>(&ints[..n]).to_vec()
+                })
+            };
+            let data = match (uniform.ty, value) {
+                (UniformType::Mat4, Value::Mat4(m)) => {
+                    Some(bytemuck::cast_slice(&m.to_cols_array()).to_vec())
+                }
+                (UniformType::Float, _) => Some(value.as_f32().to_le_bytes().to_vec()),
+                (UniformType::Int | UniformType::Bool, _) => {
+                    Some(value.as_i32().to_le_bytes().to_vec())
+                }
+                (UniformType::UInt, _) => Some((value.as_i32() as u32).to_le_bytes().to_vec()),
+                (UniformType::Vec2, _) => floats(2),
+                (UniformType::Vec3, _) => floats(3),
+                (UniformType::Vec4, _) => floats(4),
+                (UniformType::IVec2, _) => ints(2),
+                (UniformType::IVec3, _) => ints(3),
+                (UniformType::IVec4, _) => ints(4),
+                _ => None,
+            };
+            let Some(data) = data else {
                 continue;
             };
             let at = uniform.offset as usize;
-            let mut put = |data: &[u8]| {
-                let end = (at + data.len()).min(bytes.len());
-                bytes[at..end].copy_from_slice(&data[..end - at]);
-            };
-            match (uniform.ty, value) {
-                (UniformType::Float, Value::Float(v)) => put(&v.to_le_bytes()),
-                (UniformType::Float, Value::Int(v)) => put(&(*v as f32).to_le_bytes()),
-                (UniformType::Int | UniformType::Bool, Value::Int(v)) => put(&v.to_le_bytes()),
-                (UniformType::Int, Value::Float(v)) => put(&(*v as i32).to_le_bytes()),
-                (UniformType::Vec2, Value::IVec2(v)) => {
-                    put(bytemuck::cast_slice(&v.map(|c| c as f32)));
-                }
-                (UniformType::IVec2, Value::IVec2(v)) => put(bytemuck::cast_slice(v)),
-                (UniformType::Vec3, Value::Vec3(v)) => put(bytemuck::cast_slice(v)),
-                (UniformType::IVec3, Value::Vec3(v)) => {
-                    put(bytemuck::cast_slice(&v.map(|c| c as i32)));
-                }
-                (UniformType::Mat4, Value::Mat4(m)) => {
-                    put(bytemuck::cast_slice(&m.to_cols_array()))
-                }
-                _ => {}
-            }
+            let end = (at + data.len()).min(bytes.len());
+            bytes[at..end].copy_from_slice(&data[..end - at]);
         }
         bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: Vec3, b: Vec3) {
+        assert!(a.abs_diff_eq(b, 1e-4), "{a} != {b}");
+    }
+
+    #[test]
+    fn entities_cast_with_their_own_program_or_shadow() {
+        let pack = ShaderPack::for_test(
+            &[
+                "shadow.vsh",
+                "shadow.fsh",
+                "shadow_block.vsh",
+                "shadow_block.fsh",
+            ],
+            &[],
+        );
+        let path = |g: PackGeometry| {
+            g.source(&pack, "minecraft:overworld")
+                .unwrap()
+                .unwrap()
+                .path
+        };
+        assert_eq!(path(PackGeometry::ShadowEntities), "shadow");
+        assert_eq!(path(PackGeometry::ShadowBlockEntities), "shadow_block");
+        assert_eq!(path(PackGeometry::ShadowTerrain), "shadow");
+        assert_eq!(PackGeometry::ShadowEntities.vertices(), Geometry::Entity);
+    }
+
+    #[test]
+    fn shadow_casters_follow_the_properties() {
+        let casters = |properties| ShadowCasters::read(&ShaderPack::for_test(&[], properties));
+        let iris = casters(&[]);
+        assert!(iris.casts(PackShadow::Entity) && iris.casts(PackShadow::FirstPersonPlayer));
+        assert!(!iris.casts(PackShadow::Spectator));
+        assert!(iris.draws(PackGeometry::ShadowBlockEntities));
+
+        let player = casters(&[("shadowEntities", "false"), ("shadowPlayer", "true")]);
+        assert!(!player.casts(PackShadow::Entity) && player.casts(PackShadow::Player));
+        let none = casters(&[
+            ("shadowEntities", "false"),
+            ("shadowBlockEntities", "false"),
+        ]);
+        assert!(!none.draws(PackGeometry::ShadowEntities));
+        assert!(!none.draws(PackGeometry::ShadowBlockEntities));
+    }
+
+    #[test]
+    fn noon_shadows_look_straight_down() {
+        let settings = ShadowSettings {
+            interval: 0.0,
+            ..ShadowSettings::default()
+        };
+        let noon = shadow_angle(0.0);
+        assert_eq!(noon, 0.25);
+        let m = shadow_matrices(&settings, noon, DVec3::ZERO);
+        // Up faces the light, along the view's +z.
+        close(m.model_view.transform_vector3(Vec3::Y), Vec3::Z);
+        close(
+            m.projection
+                .project_point3(Vec3::new(settings.distance, 0.0, 0.0)),
+            Vec3::new(1.0, 0.0, m.projection.project_point3(Vec3::ZERO).z),
+        );
+        // Night swaps in the moon, half a turn round.
+        assert_eq!(shadow_angle(180.0), 0.25);
+    }
+
+    #[test]
+    fn shadows_snap_to_the_interval() {
+        let settings = ShadowSettings::default();
+        let m = shadow_matrices(&settings, 0.25, DVec3::new(5.3, 0.0, -0.5));
+        // Java's `%` keeps the sign: (5.3 % 2 - 1, 0 % 2 - 1, -0.5 % 2 - 1).
+        let offset = Vec3::new(0.3, -1.0, -1.5);
+        close(
+            m.model_view.transform_point3(Vec3::ZERO),
+            Mat4::from_rotation_x(90f32.to_radians()).transform_point3(offset),
+        );
     }
 }

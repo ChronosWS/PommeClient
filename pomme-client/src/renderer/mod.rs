@@ -24,7 +24,7 @@ use azalea_block::BlockState;
 pub use camera::CloudMode;
 use camera::{Camera, CameraUniform};
 use chunk::atlas::{AtlasUVMap, TextureAtlas};
-use chunk::buffer::ChunkBufferStore;
+use chunk::buffer::{ChunkBufferStore, View};
 use chunk::mesh_source::MeshSource;
 use chunk::mesher::ChunkMeshData;
 use chunk::moving_blocks::{MovingBlockBuffers, MovingBlockRender};
@@ -287,6 +287,8 @@ pub struct Renderer {
     /// The pack last asked for, loaded or not, so a broken one isn't retried
     /// every frame.
     shader_pack_selected: Option<std::path::PathBuf>,
+    /// What the selected pack reads about the player's surroundings.
+    pack_world: pipelines::shaderpack::PackWorld,
     chunk_buffers: ChunkBufferStore,
     frames: rhi::backend::Frames,
     screenshot: screenshot::ScreenshotCapture,
@@ -503,6 +505,7 @@ impl Renderer {
             block_entity_pipeline,
             shader_pack: None,
             shader_pack_selected: None,
+            pack_world: Default::default(),
             chunk_border_pipeline,
             item_entity_pipeline,
             held_item_pipeline,
@@ -708,6 +711,11 @@ impl Renderer {
         Ok(())
     }
 
+    /// Sets what the shader pack reads about the player's surroundings.
+    pub fn set_pack_world(&mut self, world: pipelines::shaderpack::PackWorld) {
+        self.pack_world = world;
+    }
+
     /// Draws a world frame's geometry and full-screen passes through the
     /// selected shader pack, before the swapchain pass draws its `final`;
     /// `false` when no pack draws this frame.
@@ -800,55 +808,97 @@ impl Renderer {
                 eye_in_water: *eyes_in_water,
                 screen_brightness: self.lightmap.brightness(),
                 atlas_size: self.atlas.size,
+                world: self.pack_world.clone(),
             },
         );
         pack.clear(encoder, sky.fog_color);
         self.moving_block_buffers
             .upload(device, frame, moving_blocks);
+        let shadow_planes = pack.shadow_view_projection().map(|shadow| {
+            let planes = Camera::planes_from_view_projection(shadow);
+            self.chunk_buffers
+                .dispatch_shadow_cull(device, encoder, frame, &planes, anchor, eye);
+            planes
+        });
+
+        let chunks = &self.chunk_buffers;
+        let moving_blocks = &self.moving_block_buffers;
+        let terrain = |pack: &mut PackRenderer, geometry, view| {
+            if let Some((pass, _)) = pack.begin_geometry(device, encoder, frame, geometry) {
+                pass.set_bind_group(3, pack.atlas_group);
+                for cutout in [false, true] {
+                    chunks.draw_indirect(&pass, frame, cutout, view);
+                    moving_blocks.draw(&pass, frame, cutout);
+                }
+                pack.end_geometry(encoder, pass, geometry);
+            }
+        };
+        let water = |pack: &mut PackRenderer, geometry, frustum: &[[f32; 4]; 6]| {
+            if let Some((pass, _)) = pack.begin_geometry(device, encoder, frame, geometry) {
+                pass.set_bind_group(3, pack.atlas_group);
+                chunks.draw_water(&pass, frustum, anchor, eye);
+                pack.end_geometry(encoder, pass, geometry);
+            }
+        };
+        let cull_distance = entity_cull_distance(*render_distance);
+        let entity_renderer = &mut self.entity_renderer;
+        let mut draw_entities =
+            |pack: &mut PackRenderer, geometry, frustum: &[[f32; 4]; 6], shadow| {
+                if let Some((mut pass, binding)) =
+                    pack.begin_geometry(device, encoder, frame, geometry)
+                {
+                    entity_renderer.pack_binding = Some(binding);
+                    entity_renderer.draw(
+                        &mut pass,
+                        frame,
+                        entities,
+                        frustum,
+                        anchor,
+                        eye,
+                        cull_distance,
+                        shadow,
+                    );
+                    entity_renderer.pack_binding = None;
+                    pack.end_geometry(encoder, pass, geometry);
+                }
+            };
+        let block_entity_pipeline = &mut self.block_entity_pipeline;
+        let mut draw_block_entities = |pack: &mut PackRenderer, geometry| {
+            if let Some((mut pass, binding)) = pack.begin_geometry(device, encoder, frame, geometry)
+            {
+                block_entity_pipeline.pack_binding = Some(binding);
+                block_entity_pipeline.draw(&mut pass, frame, anchor, block_entities);
+                block_entity_pipeline.pack_binding = None;
+                pack.end_geometry(encoder, pass, geometry);
+            }
+        };
+
+        // Iris's shadow pass: terrain, entities and block entities from the
+        // sun or moon, `shadowtex1` copied before its translucents.
+        // TODO: `shadowDistanceRenderMul` and `entityShadowDistanceMul`.
+        if let Some(planes) = shadow_planes {
+            terrain(&mut pack, PackGeometry::ShadowTerrain, View::Shadow);
+            let casters = Some(pack.shadow_casters);
+            draw_entities(&mut pack, PackGeometry::ShadowEntities, &planes, casters);
+            draw_block_entities(&mut pack, PackGeometry::ShadowBlockEntities);
+            pack.copy_opaque_depth(encoder, true);
+            water(&mut pack, PackGeometry::ShadowWater, &planes);
+        }
+        // Drawn underwater too, as Iris does; the pack fogs it.
+        // TODO: skipped in lava and powder snow, or under an effect that
+        // blocks the sky (`LevelRenderer.addSkyPass`).
+        let draws = self
+            .sky_pipeline
+            .draws(&self.camera, sky, pack.sun_path_rotation());
+        pack.draw_sky(device, encoder, frame, &self.sky_pipeline, &draws);
 
         let frustum = self.camera.frustum_planes();
-        let cull_distance = entity_cull_distance(*render_distance);
-        if let Some((pass, _)) = pack.begin_geometry(device, encoder, frame, PackGeometry::Terrain)
-        {
-            pass.set_bind_group(3, pack.atlas_group);
-            for cutout in [false, true] {
-                self.chunk_buffers.draw_indirect(&pass, frame, cutout);
-                self.moving_block_buffers.draw(&pass, frame, cutout);
-            }
-            pack.end_geometry(encoder, pass, PackGeometry::Terrain);
-        }
-        if let Some((mut pass, binding)) =
-            pack.begin_geometry(device, encoder, frame, PackGeometry::Entities)
-        {
-            self.entity_renderer.pack_binding = Some(binding);
-            self.entity_renderer.draw(
-                &mut pass,
-                frame,
-                entities,
-                &frustum,
-                anchor,
-                eye,
-                cull_distance,
-            );
-            self.entity_renderer.pack_binding = None;
-            pack.end_geometry(encoder, pass, PackGeometry::Entities);
-        }
-        if let Some((mut pass, binding)) =
-            pack.begin_geometry(device, encoder, frame, PackGeometry::BlockEntities)
-        {
-            self.block_entity_pipeline.pack_binding = Some(binding);
-            self.block_entity_pipeline
-                .draw(&mut pass, frame, anchor, block_entities);
-            self.block_entity_pipeline.pack_binding = None;
-            pack.end_geometry(encoder, pass, PackGeometry::BlockEntities);
-        }
-        pack.copy_opaque_depth(encoder);
+        terrain(&mut pack, PackGeometry::Terrain, View::Camera);
+        draw_entities(&mut pack, PackGeometry::Entities, &frustum, None);
+        draw_block_entities(&mut pack, PackGeometry::BlockEntities);
+        pack.copy_opaque_depth(encoder, false);
         pack.run_full_screen(device, encoder, frame, true);
-        if let Some((pass, _)) = pack.begin_geometry(device, encoder, frame, PackGeometry::Water) {
-            pass.set_bind_group(3, pack.atlas_group);
-            self.chunk_buffers.draw_water(&pass, &frustum, anchor, eye);
-            pack.end_geometry(encoder, pass, PackGeometry::Water);
-        }
+        water(&mut pack, PackGeometry::Water, &frustum);
         pack.run_full_screen(device, encoder, frame, false);
         // TODO: particles, weather, clouds, dropped items, the block-break
         // overlay and entity shadows through their `gbuffers_*` programs; the
@@ -1956,10 +2006,12 @@ impl Renderer {
                     self.moving_block_buffers
                         .upload(&self.ctx.device, frame, moving_blocks);
                     self.chunk_pipeline.bind(&mut pass, frame, false);
-                    self.chunk_buffers.draw_indirect(&pass, frame, false);
+                    self.chunk_buffers
+                        .draw_indirect(&pass, frame, false, View::Camera);
                     self.moving_block_buffers.draw(&pass, frame, false);
                     self.chunk_pipeline.bind(&mut pass, frame, true);
-                    self.chunk_buffers.draw_indirect(&pass, frame, true);
+                    self.chunk_buffers
+                        .draw_indirect(&pass, frame, true, View::Camera);
                     self.moving_block_buffers.draw(&pass, frame, true);
                     let cull_ms = t_cull.elapsed().as_secs_f32() * 1000.0;
 
@@ -1992,6 +2044,7 @@ impl Renderer {
                         anchor,
                         eye,
                         ent_cull_dist,
+                        None,
                     );
 
                     self.block_entity_pipeline
