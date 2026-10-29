@@ -2035,22 +2035,23 @@ mod tests {
         replacement.put_pixel(1, 3, image::Rgba([255, 255, 255, 255]));
         replacement.save(&pack_path).unwrap();
 
-        let mut packs = crate::resources::ResourcePackManager::new(
-            &instance,
-            "fixture",
-            &root.join("fixture.jar"),
+        let mut packs = crate::resources::packs::ResourceConfiguration::new(
+            instance.join("resourcepacks/.server_cache"),
         );
+        packs
+            .set_resource_pack_paths(vec![instance.join("resourcepacks")])
+            .unwrap();
         for name in ["base_pack", "test_pack"] {
             let pack_id = packs
-                .available_local_packs()
-                .iter()
+                .resource_packs()
+                .filter(|info| info.provenance == crate::resources::packs::PackProvenance::Local)
                 .find(|info| info.name == name)
                 .unwrap()
                 .pack_id()
                 .clone();
-            packs.enable_local_pack(&pack_id, true);
+            packs.enable_resource_pack(&pack_id).unwrap();
         }
-        let resources = ResourceManager::new(packs.sources().unwrap()).unwrap();
+        let resources = ResourceManager::from_configuration(&packs).unwrap();
         let source = load_source("item/cocoa_beans", &resources, true);
         let mask = source.alpha_mask.as_ref().unwrap();
         assert_eq!((source.w, source.h), (2, 4));

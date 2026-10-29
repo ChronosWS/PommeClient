@@ -1,146 +1,32 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use super::PackId;
-use super::filter::ResourceFilter;
-use super::resource::{ResourceContent, ResourceError, ResourceId, resource_path_chars};
-use crate::assets::{AssetIndex, identifier_chars};
+use crate::resources::resource::{resource_namespace_chars, resource_path_chars};
+use crate::resources::{ReadStream, ResourceContent, ResourceError, ResourceId, ResourceOrigin};
 
-mod directory;
+pub(super) mod directory;
 pub(super) mod embedded;
-mod indexed;
-mod overlay;
-mod zip;
+pub(super) mod indexed;
+pub(super) mod overlay;
+pub(super) mod zip;
 
-use directory::{DirectoryLayout, DirectoryPackResources};
-use indexed::IndexedPackResources;
-use zip::ZipPackResources;
-
-/// Storage selected by pack management, independent of identity and priority.
-pub(super) enum PackStorage {
-    /// Pack root with base assets and metadata-selected overlays.
-    Directory {
-        root: PathBuf,
-        overlays: Vec<String>,
-    },
-    Zip {
-        path: PathBuf,
-        overlays: Vec<String>,
-    },
-    Indexed(AssetIndex),
-    NamespaceDirectory {
-        root: PathBuf,
-        namespace: String,
-        remappings: Option<Arc<BTreeMap<ResourceId, PathBuf>>>,
-    },
-    Embedded,
-}
-
-/// One logical pack, with zero or more physical layers in low-to-high order.
-/// Its filter affects only lower packs, never any of its own layers.
-pub(super) struct ResourcePackDescriptor {
-    pub(super) storage: Vec<PackStorage>,
-    pub(super) origin: ResourceOrigin,
-    pub(super) filter: ResourceFilter,
-}
-
-#[derive(Clone)]
-pub(super) struct OpenedResourcePack {
-    pub(super) sources: Vec<SharedPackResources>,
-    pub(super) filter: Rc<ResourceFilter>,
-}
-
-impl ResourcePackDescriptor {
-    pub(super) fn open(self) -> Result<OpenedResourcePack, ResourceError> {
-        let sources = self
-            .storage
-            .into_iter()
-            .map(|storage| {
-                let origin = self.origin.clone();
-                let source: SharedPackResources = match storage {
-                    PackStorage::Directory { root, overlays } => {
-                        let mut children: Vec<SharedPackResources> =
-                            vec![Rc::new(DirectoryPackResources::open(
-                                DirectoryLayout::ResourcePack {
-                                    root: root.clone(),
-                                    overlay: None,
-                                },
-                                origin.clone(),
-                            )?)];
-                        for directory in overlays {
-                            children.push(Rc::new(DirectoryPackResources::open(
-                                DirectoryLayout::ResourcePack {
-                                    root: root.clone(),
-                                    overlay: Some(directory),
-                                },
-                                origin.clone(),
-                            )?));
-                        }
-                        Rc::new(overlay::OverlayPackResources::new(origin, children))
-                    }
-                    PackStorage::Zip { path, overlays } => {
-                        let base = Rc::new(ZipPackResources::open(path, origin.clone())?);
-                        base.check_pack_root()?;
-                        let mut children: Vec<SharedPackResources> = vec![base.clone()];
-                        for directory in overlays {
-                            children.push(Rc::new(base.overlay(&directory)?));
-                        }
-                        Rc::new(overlay::OverlayPackResources::new(origin, children))
-                    }
-                    PackStorage::Indexed(index) => {
-                        Rc::new(IndexedPackResources::open(index, origin)?)
-                    }
-                    PackStorage::NamespaceDirectory {
-                        root,
-                        namespace,
-                        remappings,
-                    } => Rc::new(DirectoryPackResources::open(
-                        DirectoryLayout::Mapped {
-                            root,
-                            namespace,
-                            remappings,
-                        },
-                        origin,
-                    )?),
-                    PackStorage::Embedded => Rc::new(embedded::EmbeddedPackResources::new(origin)),
-                };
-                Ok(source)
-            })
-            .collect::<Result<_, ResourceError>>()?;
-        Ok(OpenedResourcePack {
-            sources,
-            filter: Rc::new(self.filter),
-        })
-    }
-}
-
-/// Owned byte stream; dropping it releases its backing state.
-pub(crate) type ReadStream = Box<dyn Read + 'static>;
-pub(super) type SharedPackResources = Rc<dyn PackResources>;
+pub(in crate::resources) type SharedPackResourceProvider = Rc<dyn PackResourceProvider>;
 
 /// Exact-source opening only; streams remain local to the opening thread.
-pub(super) trait ThreadSafeResourceSource: Send + Sync {
+pub(in crate::resources) trait ThreadSafePackResourceProvider:
+    Send + Sync
+{
     fn open(&self, id: &ResourceId) -> io::Result<ReadStream>;
 }
 
-impl<T: PackResources + Send + Sync> ThreadSafeResourceSource for T {
+impl<T: PackResourceProvider + Send + Sync> ThreadSafePackResourceProvider for T {
     fn open(&self, id: &ResourceId) -> io::Result<ReadStream> {
-        PackResources::open(self, id)
+        PackResourceProvider::open(self, id)
     }
-}
-
-/// Logical pack provenance and diagnostic display metadata, not source
-/// identity. Compare pack_id for identity; names can change and layers can
-/// share a pack. Metadata carries its own origin, which may belong to a
-/// different pack.
-#[derive(Clone, Debug)]
-pub(crate) struct ResourceOrigin {
-    pub(super) pack_id: PackId,
-    pub(super) name: String,
 }
 
 /// Resource bytes from one source layer, with syntax-checked logical IDs.
@@ -148,7 +34,7 @@ pub(crate) struct ResourceOrigin {
 /// Current adapters access the assets tree; other resource domains are not
 /// wired. Access failures must not become absence or empty results.
 /// Providers and resource acquisition stay on the application thread.
-pub(super) trait PackResources {
+pub(in crate::resources) trait PackResourceProvider {
     fn origin(&self) -> &ResourceOrigin;
 
     /// Exact lookup: None is absence in a usable source, Err is access failure.
@@ -165,7 +51,7 @@ pub(super) trait PackResources {
 
     /// Cheap source retention only: no lookup, filesystem checks or entry open.
     /// Composite sources must return child content rather than reselect here.
-    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafePackResourceProvider>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "source does not support thread-safe resource content",
@@ -283,10 +169,13 @@ fn enumeration_error(
 }
 
 fn valid_namespace(namespace: &str) -> bool {
-    !namespace.is_empty() && identifier_chars(namespace, false)
+    !namespace.is_empty() && resource_namespace_chars(namespace)
 }
 
-pub(super) fn validate_query(namespace: Option<&str>, prefix: &str) -> Result<(), ResourceError> {
+pub(in crate::resources) fn validate_query(
+    namespace: Option<&str>,
+    prefix: &str,
+) -> Result<(), ResourceError> {
     if namespace.is_some_and(|namespace| !valid_namespace(namespace))
         || !resource_path_chars(prefix)
         || prefix.ends_with('/')

@@ -520,7 +520,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use crate::resources::ResourcePackManager;
+    use crate::resources::packs::ResourceConfiguration;
 
     fn file(name: &str, weight: u32) -> SoundEntry {
         SoundEntry::File(SoundVariant {
@@ -555,12 +555,9 @@ mod tests {
             .unwrap();
         archive.write_all(b"sound-fixture").unwrap();
         drop(archive.finish().unwrap());
-        let resources = ResourceManager::new(ResourcePackManager::builtin_sources(
-            "sound-fixture",
-            &path,
-            None,
-        ))
-        .unwrap();
+        let resources =
+            ResourceManager::from_sources(ResourceConfiguration::jar_fixture_sources(&path))
+                .unwrap();
         let content = resources
             .get_resource(&id)
             .unwrap()

@@ -308,7 +308,10 @@ pub fn load_atlas_sprite(
 ) -> Option<SpriteFrames> {
     let lookup = AssetLookup { resources };
     let sprite_id = ResourceId::new(sprite).ok()?;
-    let sprite = sprite_id.as_asset_id();
+    let sprite = AssetId {
+        namespace: sprite_id.namespace(),
+        path: sprite_id.path(),
+    };
     let mut candidate: Option<Recipe> = None;
 
     let atlas = ResourceId::new(atlas).ok()?;

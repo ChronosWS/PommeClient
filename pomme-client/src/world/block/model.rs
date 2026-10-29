@@ -3237,19 +3237,20 @@ mod tests {
         )
         .unwrap();
 
-        let mut packs = crate::resources::ResourcePackManager::new(
-            &instance,
-            "fixture",
-            &root.join("fixture.jar"),
+        let mut packs = crate::resources::packs::ResourceConfiguration::new(
+            instance.join("resourcepacks/.server_cache"),
         );
+        packs
+            .set_resource_pack_paths(vec![instance.join("resourcepacks")])
+            .unwrap();
         let pack_id = packs
-            .available_local_packs()
-            .iter()
+            .resource_packs()
+            .filter(|info| info.provenance == crate::resources::packs::PackProvenance::Local)
             .find(|info| info.name == "test_pack")
             .unwrap()
             .pack_id()
             .clone();
-        packs.enable_local_pack(&pack_id, true);
+        packs.enable_resource_pack(&pack_id).unwrap();
         let sources = ModelSources::from_test_files(&[
             ("item/base", models.join("base.json")),
             ("item/generated", models.join("generated.json")),
@@ -3272,7 +3273,8 @@ mod tests {
         )
         .unwrap();
         archive.finish().unwrap();
-        let resources = ResourceManager::new(packs.fixture_sources(&fixture_jar).unwrap()).unwrap();
+        let resources =
+            ResourceManager::from_sources(packs.fixture_sources(&fixture_jar).unwrap()).unwrap();
         let items = ItemDefinitionSources::load(&resources).unwrap();
         let baked = bake_item_models(&items, &Colormap::fallback(), &sources);
         assert_eq!(

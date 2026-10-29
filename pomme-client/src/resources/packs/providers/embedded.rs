@@ -4,8 +4,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, matches_prefix,
-    validate_query,
+    PackResourceProvider, ReadStream, ResourceOrigin, ThreadSafePackResourceProvider,
+    matches_prefix, validate_query,
 };
 use crate::resources::{ResourceContent, ResourceError, ResourceId, resource_id};
 
@@ -18,22 +18,22 @@ pub(crate) const POMME_ICON: ResourceId = resource_id!("pomme:textures/icon.png"
 const ENTRIES: &[(ResourceId, &[u8])] = &[
     (
         POMME_UI_FONT,
-        include_bytes!("../../renderer/fonts/Montserrat-Medium.ttf"),
+        include_bytes!("../../../renderer/fonts/Montserrat-Medium.ttf"),
     ),
     (
         POMME_ICONS_FONT,
-        include_bytes!("../../renderer/fonts/fa-solid-900.ttf"),
+        include_bytes!("../../../renderer/fonts/fa-solid-900.ttf"),
     ),
-    (POMME_ICON, include_bytes!("../../../assets/icon.png")),
+    (POMME_ICON, include_bytes!("../../../../assets/icon.png")),
 ];
 
 #[derive(Clone)]
-pub(super) struct EmbeddedPackResources {
+pub(in crate::resources::packs) struct EmbeddedPackResourceProvider {
     origin: ResourceOrigin,
 }
 
-impl EmbeddedPackResources {
-    pub(super) fn new(origin: ResourceOrigin) -> Self {
+impl EmbeddedPackResourceProvider {
+    pub(in crate::resources::packs) fn new(origin: ResourceOrigin) -> Self {
         Self { origin }
     }
 
@@ -44,8 +44,8 @@ impl EmbeddedPackResources {
     }
 }
 
-impl PackResources for EmbeddedPackResources {
-    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+impl PackResourceProvider for EmbeddedPackResourceProvider {
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafePackResourceProvider>> {
         Ok(Arc::new(self.clone()))
     }
 

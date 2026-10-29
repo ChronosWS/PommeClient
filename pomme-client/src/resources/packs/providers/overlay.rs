@@ -2,18 +2,23 @@ use std::collections::BTreeSet;
 use std::io;
 use std::rc::Rc;
 
-use super::{PackResources, ReadStream, ResourceOrigin, SharedPackResources, validate_query};
+use super::{
+    PackResourceProvider, ReadStream, ResourceOrigin, SharedPackResourceProvider, validate_query,
+};
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// One stack contribution. Content and sidecars independently search the same
 /// children, while returned handles pin the exact winning child.
-pub(super) struct OverlayPackResources {
+pub(in crate::resources::packs) struct OverlayPackResourceProvider {
     origin: ResourceOrigin,
-    children: Vec<SharedPackResources>,
+    children: Vec<SharedPackResourceProvider>,
 }
 
-impl OverlayPackResources {
-    pub(super) fn new(origin: ResourceOrigin, children: Vec<SharedPackResources>) -> Self {
+impl OverlayPackResourceProvider {
+    pub(in crate::resources::packs) fn new(
+        origin: ResourceOrigin,
+        children: Vec<SharedPackResourceProvider>,
+    ) -> Self {
         Self { origin, children }
     }
 
@@ -27,7 +32,7 @@ impl OverlayPackResources {
     }
 }
 
-impl PackResources for OverlayPackResources {
+impl PackResourceProvider for OverlayPackResourceProvider {
     fn origin(&self) -> &ResourceOrigin {
         &self.origin
     }

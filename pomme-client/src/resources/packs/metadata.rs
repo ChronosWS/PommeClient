@@ -4,18 +4,40 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::super::filter::ResourceFilter;
-use super::super::metadata;
-use super::super::pack_format::{MAX_COMPONENT, PackFormat, PackFormatRange, format_component};
-use super::super::pack_resource::ResourceOrigin;
-use super::{PackCompat, PackId, PackInfo, PackProvenance};
+use super::filter::ResourceFilter;
+use super::format::{MAX_COMPONENT, PackFormat, PackFormatRange, format_component};
+use super::{PackCompat, PackId, PackInfo, ResourcePackSource, metadata};
+use crate::resources::ResourceOrigin;
+
+pub(super) const PACK_METADATA_FILE: &str = "pack.mcmeta";
+pub(super) const PACK_SECTION: &str = "pack";
+pub(super) const PACK_DESCRIPTION: &str = "description";
+pub(super) const PACK_NAME: &str = "name";
+pub(super) const FILTER_SECTION: &str = "filter";
+pub(super) const OVERLAYS_SECTION: &str = "overlays";
+pub(super) const OVERLAY_ENTRIES: &str = "entries";
+pub(super) const OVERLAY_DIRECTORY: &str = "directory";
+pub(super) const OVERLAY_FORMATS: &str = "formats";
+
+// Format fields in pack.mcmeta's pack section and overlay entries.
+pub(super) const PACK_FORMAT: &str = "pack_format";
+pub(super) const PACK_SUPPORTED_FORMATS: &str = "supported_formats";
+pub(super) const PACK_MIN_FORMAT: &str = "min_format";
+pub(super) const PACK_MAX_FORMAT: &str = "max_format";
+pub(super) const FORMAT_MIN_INCLUSIVE: &str = "min_inclusive";
+pub(super) const FORMAT_MAX_INCLUSIVE: &str = "max_inclusive";
+
+// Installed JAR version.json, distinct from selected-pack metadata.
+pub(super) const VERSION_METADATA_FILE: &str = "version.json";
+pub(super) const VERSION_RESOURCE_FORMAT: &str = "resource";
+pub(super) const VERSION_RESOURCE_MAJOR: &str = "resource_major";
+pub(super) const VERSION_RESOURCE_MINOR: &str = "resource_minor";
 
 const LAST_PRE_MINOR_RESOURCE_FORMAT: u32 = 64;
 
 /// A single root decode, with independent section failures. Discovery can use
 /// presentation metadata even when a resource-only section is invalid.
 pub(super) struct PackMetadata {
-    present: bool,
     object: bool,
     name: Option<String>,
     description: Option<String>,
@@ -25,37 +47,21 @@ pub(super) struct PackMetadata {
     overlay_warnings: Vec<String>,
 }
 
-impl Default for PackMetadata {
-    fn default() -> Self {
-        Self {
-            present: false,
-            object: true,
-            name: None,
-            description: None,
-            format_range: None,
-            filter: Ok(ResourceFilter::default()),
-            overlays: Ok(Vec::new()),
-            overlay_warnings: Vec::new(),
-        }
-    }
-}
-
 impl PackMetadata {
     /// Local ZIPs use the original archive, not the legacy extraction cache.
-    /// Absence is explicit so ZIP discovery can omit metadata-less archives
-    /// while resource registration treats missing metadata as empty defaults.
-    pub(super) fn read(root: &Path, archive: Option<&Path>) -> io::Result<Self> {
+    /// Discovery omits metadata-less packs; manual registration permits them.
+    pub(super) fn read(root: &Path, archive: Option<&Path>) -> io::Result<Option<Self>> {
         if let Some(path) = archive {
             let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)?;
             match archive.by_name(metadata::PACK_METADATA_FILE) {
-                Ok(metadata) => Self::decode(metadata),
-                Err(zip::result::ZipError::FileNotFound) => Ok(Self::default()),
+                Ok(metadata) => Self::decode(metadata).map(Some),
+                Err(zip::result::ZipError::FileNotFound) => Ok(None),
                 Err(error) => Err(error.into()),
             }
         } else {
             match std::fs::File::open(root.join(metadata::PACK_METADATA_FILE)) {
-                Ok(metadata) => Self::decode(metadata),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
+                Ok(metadata) => Self::decode(metadata).map(Some),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(error),
             }
         }
@@ -72,7 +78,6 @@ impl PackMetadata {
         let mut overlay_warnings = Vec::new();
         let overlays = parse_overlays(root.get(metadata::OVERLAYS_SECTION), &mut overlay_warnings);
         Ok(Self {
-            present: true,
             object: root.is_object(),
             name: text(metadata::PACK_NAME),
             description: text(metadata::PACK_DESCRIPTION),
@@ -83,8 +88,8 @@ impl PackMetadata {
         })
     }
 
-    pub(super) fn is_present(&self) -> bool {
-        self.present
+    pub(super) fn format_range(&self) -> Option<PackFormatRange> {
+        self.format_range
     }
 
     pub(super) fn require_object(self) -> io::Result<Self> {
@@ -95,23 +100,6 @@ impl PackMetadata {
                 io::ErrorKind::InvalidData,
                 "pack.mcmeta must be an object",
             ))
-        }
-    }
-
-    pub(super) fn info(
-        self,
-        fallback: &str,
-        pack_id: PackId,
-        target: Option<PackFormat>,
-    ) -> PackInfo {
-        PackInfo {
-            pack_id,
-            format_range: self.format_range,
-            name: self.name.unwrap_or_else(|| fallback.to_owned()),
-            description: self.description.unwrap_or_else(|| fallback.to_owned()),
-            compat: PackCompat::for_format(self.format_range, target),
-            provenance: PackProvenance::Local,
-            enabled: false,
         }
     }
 
@@ -146,6 +134,42 @@ impl PackMetadata {
             ResourceFilter::default()
         });
         Ok((filter, overlays))
+    }
+}
+
+impl PackInfo {
+    pub(super) fn from_metadata(
+        metadata: Option<&PackMetadata>,
+        source: &ResourcePackSource,
+        pack_id: PackId,
+        target: Option<PackFormat>,
+    ) -> Self {
+        let (name, description, compat) = match metadata {
+            Some(metadata) => (
+                metadata
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| source.fallback_name.clone()),
+                metadata
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| source.fallback_name.clone()),
+                PackCompat::for_format(metadata.format_range(), target),
+            ),
+            None => (
+                source.fallback_name.clone(),
+                source.fallback_name.clone(),
+                PackCompat::Unknown,
+            ),
+        };
+        Self {
+            pack_id,
+            name,
+            description,
+            compat,
+            provenance: source.provenance.clone(),
+            enabled: false,
+        }
     }
 }
 

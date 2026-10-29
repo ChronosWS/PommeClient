@@ -9,8 +9,9 @@ use self_cell::{MutBorrow, self_cell};
 use zip::ZipArchive;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, enumeration_error,
-    id_from_key, lookup_error, matches_prefix, overlay_directory, valid_namespace, validate_query,
+    PackResourceProvider, ReadStream, ResourceOrigin, ThreadSafePackResourceProvider,
+    enumeration_error, id_from_key, lookup_error, matches_prefix, overlay_directory,
+    valid_namespace, validate_query,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
@@ -83,14 +84,17 @@ impl Read for OwnedZipEntry {
 /// edits are not protected: this is an opened source view, not an immutable
 /// byte snapshot.
 #[derive(Clone)]
-pub(super) struct ZipPackResources {
+pub(in crate::resources::packs) struct ZipPackResourceProvider {
     origin: ResourceOrigin,
     archive: Arc<ZipArchive<SharedFileCursor>>,
     prefix: String,
 }
 
-impl ZipPackResources {
-    pub(super) fn open(path: PathBuf, origin: ResourceOrigin) -> Result<Self, ResourceError> {
+impl ZipPackResourceProvider {
+    pub(in crate::resources::packs) fn open(
+        path: PathBuf,
+        origin: ResourceOrigin,
+    ) -> Result<Self, ResourceError> {
         let archive = (|| -> io::Result<_> {
             let cursor = SharedFileCursor {
                 file: Arc::new(Mutex::new(File::open(path)?)),
@@ -111,7 +115,10 @@ impl ZipPackResources {
         })
     }
 
-    pub(super) fn overlay(&self, directory: &str) -> Result<Self, ResourceError> {
+    pub(in crate::resources::packs) fn overlay(
+        &self,
+        directory: &str,
+    ) -> Result<Self, ResourceError> {
         let directory = overlay_directory(directory)
             .map_err(|source| enumeration_error(&self.origin, "open ZIP overlay", source))?;
         let prefix = if directory.is_empty() {
@@ -128,7 +135,7 @@ impl ZipPackResources {
         Ok(view)
     }
 
-    pub(super) fn check_pack_root(&self) -> Result<(), ResourceError> {
+    pub(in crate::resources::packs) fn check_pack_root(&self) -> Result<(), ResourceError> {
         let check = || -> io::Result<()> {
             let mut path = String::new();
             for component in self.prefix.trim_end_matches('/').split('/') {
@@ -154,8 +161,7 @@ impl ZipPackResources {
     }
 
     fn entry_name(&self, id: &ResourceId) -> String {
-        let id = id.as_asset_id();
-        format!("{}{}/{}", self.prefix, id.namespace, id.path)
+        format!("{}{}/{}", self.prefix, id.namespace(), id.path())
     }
 
     fn open_entry(&self, name: &str) -> io::Result<Option<OwnedZipEntry>> {
@@ -198,8 +204,8 @@ impl ZipPackResources {
     }
 }
 
-impl PackResources for ZipPackResources {
-    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+impl PackResourceProvider for ZipPackResourceProvider {
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafePackResourceProvider>> {
         Ok(Arc::new(self.clone()))
     }
 

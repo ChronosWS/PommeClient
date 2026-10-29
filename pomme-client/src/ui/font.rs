@@ -1573,13 +1573,13 @@ mod tests {
     use std::cell::OnceCell;
 
     use super::*;
-    use crate::resources::ResourcePackManager;
+    use crate::resources::packs::ResourceConfiguration;
 
-    /// A temp dir with an empty pack manager, removed on drop.
+    /// A temp dir with an empty resource configuration, removed on drop.
     struct Fixture {
         root: PathBuf,
         client_jar: PathBuf,
-        packs: ResourcePackManager,
+        packs: ResourceConfiguration,
         resources: OnceCell<ResourceManager>,
     }
 
@@ -1587,7 +1587,8 @@ mod tests {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!("pomme-font-{}", uuid::Uuid::new_v4()));
             let client_jar = root.join("fixture.jar");
-            let packs = ResourcePackManager::new(&root.join("instance"), "fixture", &client_jar);
+            let packs =
+                ResourceConfiguration::new(root.join("instance/resourcepacks/.server_cache"));
             Self {
                 root,
                 client_jar,
@@ -1663,9 +1664,15 @@ mod tests {
             }
         }
 
-        fn resource_manager(&self, packs: &ResourcePackManager, assets: &Path) -> ResourceManager {
-            ResourceManager::new(packs.fixture_sources(self.client_jar_from(assets)).unwrap())
-                .unwrap()
+        fn resource_manager(
+            &self,
+            packs: &ResourceConfiguration,
+            assets: &Path,
+        ) -> ResourceManager {
+            ResourceManager::from_sources(
+                packs.fixture_sources(self.client_jar_from(assets)).unwrap(),
+            )
+            .unwrap()
         }
     }
 
@@ -2034,19 +2041,19 @@ mod tests {
             r#"{"providers":[{"type":"bogus"},{"type":"space","advances":{"B":9.0}}]}"#,
         )
         .unwrap();
-        let mut packs = ResourcePackManager::new(
-            &fixture.root.join("instance"),
-            "fixture",
-            &fixture.client_jar,
-        );
+        let mut packs =
+            ResourceConfiguration::new(fixture.root.join("instance/resourcepacks/.server_cache"));
+        packs
+            .set_resource_pack_paths(vec![fixture.root.join("instance/resourcepacks")])
+            .unwrap();
         let pack_id = packs
-            .available_local_packs()
-            .iter()
+            .resource_packs()
+            .filter(|info| info.provenance == crate::resources::packs::PackProvenance::Local)
             .find(|info| info.name == "bad")
             .unwrap()
             .pack_id()
             .clone();
-        packs.enable_local_pack(&pack_id, true);
+        packs.enable_resource_pack(&pack_id).unwrap();
 
         let (map, _) = GlyphMap::load(
             FontSources {
@@ -2092,14 +2099,20 @@ mod tests {
             r#"{"providers":[{"type":"bitmap","file":"example:font/color.png","ascent":7,"chars":["X"]}]}"#,
         );
 
-        let mut packs = ResourcePackManager::new(
-            &fixture.root.join("instance"),
-            "fixture",
-            &fixture.client_jar,
-        );
-        packs.apply_server_pack(uuid::Uuid::from_u128(1), "low");
-        packs.apply_server_pack(uuid::Uuid::from_u128(2), "high");
-        let load = |packs: &ResourcePackManager| {
+        let mut packs = ResourceConfiguration::new(fixture.root.join(cache));
+        for name in ["low", "high"] {
+            let pack_id = packs
+                .register_resource_pack(crate::resources::packs::ResourcePackSource {
+                    location: crate::resources::packs::ResourcePackLocation::Directory(
+                        fixture.root.join(cache).join(name),
+                    ),
+                    provenance: crate::resources::packs::PackProvenance::Server,
+                    fallback_name: name.to_owned(),
+                })
+                .unwrap();
+            packs.enable_resource_pack(&pack_id).unwrap();
+        }
+        let load = |packs: &ResourceConfiguration| {
             GlyphMap::load(
                 FontSources {
                     resources: &fixture.resource_manager(packs, &fixture.jar()),
@@ -2123,11 +2136,7 @@ mod tests {
         );
         assert_eq!(&pixels.color[offset..offset + 4], &[10, 20, 30, 255]);
 
-        let (reloaded, _) = load(&ResourcePackManager::new(
-            &fixture.root.join("instance"),
-            "fixture",
-            &fixture.client_jar,
-        ));
+        let (reloaded, _) = load(&ResourceConfiguration::new(fixture.root.join(cache)));
         assert_eq!(reloaded.glyph('A', None).advance, 5.0);
         assert!(!reloaded.font_sets.contains_key("example:fancy"));
     }

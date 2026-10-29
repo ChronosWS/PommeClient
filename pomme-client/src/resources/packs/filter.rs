@@ -1,6 +1,6 @@
 use regex::Regex;
 
-use super::resource::ResourceId;
+use crate::resources::ResourceId;
 
 impl ResourceFilter {
     /// Rust regex is not fully compatible with Java Pattern: lookaround and
@@ -24,7 +24,7 @@ impl ResourceFilter {
 }
 
 #[derive(Default)]
-pub(super) struct ResourceFilter {
+pub(in crate::resources) struct ResourceFilter {
     filters: Vec<Filter>,
 }
 
@@ -50,7 +50,7 @@ impl ResourceFilter {
         })
     }
 
-    pub(super) fn blocks(&self, id: &ResourceId) -> bool {
+    pub(in crate::resources) fn blocks(&self, id: &ResourceId) -> bool {
         // Vanilla 26.3 ResourceFilterSection + MultiPackResourceManager:
         // ANY namespace AND ANY path across the filters, NOT paired rules.
         self.namespace_blocked(id.namespace()) && self.path_blocked(id.path())

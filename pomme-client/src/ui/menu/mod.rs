@@ -764,10 +764,10 @@ pub struct MainMenu {
     favicon_dirty_since: Option<Instant>,
     /// The selected packs; a failed reload can leave the active sources
     /// unchanged.
-    pub active_packs: Vec<crate::resources::PackInfo>,
-    pub available_packs: Vec<crate::resources::PackInfo>,
+    pub active_packs: Vec<crate::resources::packs::PackInfo>,
+    pub available_packs: Vec<crate::resources::packs::PackInfo>,
     pub packs_dir: PathBuf,
-    pub pack_toggle: Option<(crate::resources::PackId, bool)>,
+    pub pack_toggle: Option<(crate::resources::packs::PackId, bool)>,
     pub rescan_packs: bool,
     pub reload_assets: bool,
     pub resource_reload_failed: bool,

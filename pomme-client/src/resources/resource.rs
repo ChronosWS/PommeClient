@@ -4,10 +4,21 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::{fmt, io};
 
-use super::pack_resource::{
-    ReadStream, ResourceOrigin, SharedPackResources, ThreadSafeResourceSource,
-};
-use crate::assets::{AssetId, identifier_chars};
+use super::packs::PackId;
+use super::packs::providers::{SharedPackResourceProvider, ThreadSafePackResourceProvider};
+
+/// Owned byte stream; dropping it releases its backing state.
+pub(crate) type ReadStream = Box<dyn Read + 'static>;
+
+/// Logical pack provenance and diagnostic display metadata, not source
+/// identity. Compare pack_id for identity; names can change and layers can
+/// share a pack. Metadata carries its own origin, which may belong to a
+/// different pack.
+#[derive(Clone, Debug)]
+pub(crate) struct ResourceOrigin {
+    pub(super) pack_id: PackId,
+    pub(super) name: String,
+}
 
 /// Logical name with nonempty namespace and path, checked only for
 /// namespace characters and case-preserving ASCII path characters. Storage
@@ -62,13 +73,10 @@ impl ResourceId {
 
     /// Omits only the default `minecraft` namespace.
     pub(crate) fn to_short_string(&self) -> String {
-        self.as_asset_id().canonical()
-    }
-
-    pub(crate) fn as_asset_id(&self) -> AssetId<'_> {
-        AssetId {
-            namespace: self.namespace(),
-            path: self.path(),
+        if self.namespace() == "minecraft" {
+            self.path().to_owned()
+        } else {
+            format!("{}:{}", self.namespace(), self.path())
         }
     }
 }
@@ -89,8 +97,24 @@ const fn resource_id_parts(value: &str) -> (&str, &str) {
 const fn valid_resource_id_parts(namespace: &str, path: &str) -> bool {
     !namespace.is_empty()
         && !path.is_empty()
-        && identifier_chars(namespace, false)
+        && resource_namespace_chars(namespace)
         && resource_path_chars(path)
+}
+
+pub(super) const fn resource_namespace_chars(namespace: &str) -> bool {
+    let bytes = namespace.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if !(byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || matches!(byte, b'_' | b'.' | b'-'))
+        {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 pub(super) const fn resource_path_chars(path: &str) -> bool {
@@ -146,12 +170,12 @@ pub(crate) enum ResourceError {
 pub(crate) struct ResourceContent {
     id: ResourceId,
     origin: ResourceOrigin,
-    source: SharedPackResources,
+    source: SharedPackResourceProvider,
 }
 
 impl ResourceContent {
     /// Requires an ID already located in this source.
-    pub(super) fn new(id: ResourceId, source: SharedPackResources) -> Self {
+    pub(super) fn new(id: ResourceId, source: SharedPackResourceProvider) -> Self {
         Self {
             id,
             origin: source.origin().clone(),
@@ -215,7 +239,7 @@ impl ResourceContent {
 pub(crate) struct ThreadSafeResourceContent {
     id: ResourceId,
     origin: ResourceOrigin,
-    source: Arc<dyn ThreadSafeResourceSource>,
+    source: Arc<dyn ThreadSafePackResourceProvider>,
 }
 
 impl ThreadSafeResourceContent {

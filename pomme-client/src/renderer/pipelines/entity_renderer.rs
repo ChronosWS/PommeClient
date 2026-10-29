@@ -3475,17 +3475,21 @@ mod tests {
         .unwrap();
         std::fs::write(textures.join("iron.png"), b"inside").unwrap();
         std::fs::write(pack.join("iron.png"), b"outside assets").unwrap();
-        let mut packs =
-            crate::resources::ResourcePackManager::new(&root, "fixture", &root.join("unused.jar"));
+        let mut packs = crate::resources::packs::ResourceConfiguration::new(
+            root.join("resourcepacks/.server_cache"),
+        );
+        packs
+            .set_resource_pack_paths(vec![root.join("resourcepacks")])
+            .unwrap();
         let pack_id = packs
-            .available_local_packs()
-            .iter()
+            .resource_packs()
+            .filter(|info| info.provenance == crate::resources::packs::PackProvenance::Local)
             .find(|info| info.name == "armor")
             .unwrap()
             .pack_id()
             .clone();
-        packs.enable_local_pack(&pack_id, true);
-        let resources = crate::resources::ResourceManager::new(packs.sources().unwrap()).unwrap();
+        packs.enable_resource_pack(&pack_id).unwrap();
+        let resources = crate::resources::ResourceManager::from_configuration(&packs).unwrap();
         let inside = equipment_texture_id("iron", "humanoid").unwrap();
         assert!(resources.get_resource(&inside).unwrap().is_some());
         // Six parent components escape the assets root to an existing file;

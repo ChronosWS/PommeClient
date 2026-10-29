@@ -13,9 +13,9 @@ mod occlusion;
 
 use criterion::Criterion;
 
-use crate::assets::AssetIndex;
 use crate::dirs::DataDirs;
-use crate::resources::{ResourceManager, ResourcePackManager};
+use crate::resources::ResourceManager;
+use crate::resources::packs::ResourceConfiguration;
 
 /// Runs every bench whose id contains `filter` (all when `None`); returns the
 /// process exit code.
@@ -82,14 +82,12 @@ fn load_assets(
     dirs: &DataDirs,
     block_state_table: crate::world::block::BlockStateTable,
 ) -> Option<fixtures::Assets> {
-    let asset_index = AssetIndex::load(&dirs.indexes_dir, &dirs.objects_dir, version);
+    let mut configuration =
+        ResourceConfiguration::new(dirs.game_dir.join("resourcepacks/.server_cache"));
+    configuration.set_installation(Some(dirs.installation_location(version)));
     // Resource ownership stays on the calling thread; workers receive only
     // owned CPU mesh assets. Packet-only benchmarks never open these sources.
-    let resources = match ResourceManager::new(ResourcePackManager::builtin_sources(
-        version,
-        &dirs.client_jar,
-        asset_index.as_ref(),
-    )) {
+    let resources = match ResourceManager::from_configuration(&configuration) {
         Ok(resources) => resources,
         Err(error) => {
             eprintln!(

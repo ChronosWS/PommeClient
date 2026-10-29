@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AssetId<'a> {
     pub namespace: &'a str,
@@ -70,70 +67,6 @@ pub(crate) fn valid_asset_key(asset_key: &str) -> bool {
             .any(|component| matches!(component, "" | "." | ".."))
 }
 
-#[derive(Clone)]
-pub struct AssetIndex {
-    objects_dir: PathBuf,
-    hashes: HashMap<String, String>,
-}
-
-impl AssetIndex {
-    pub fn load(indexes_dir: &Path, objects_dir: &Path, version: &str) -> Option<Self> {
-        let index_path = indexes_dir.join(format!("{version}.json"));
-
-        let content = std::fs::read_to_string(&index_path)
-            .map_err(|e| tracing::warn!("Failed to read asset index: {e}"))
-            .ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| tracing::warn!("Failed to parse asset index: {e}"))
-            .ok()?;
-
-        let objects = parsed.get("objects")?.as_object()?;
-        let hashes = objects
-            .iter()
-            .filter_map(|(k, v)| {
-                let hash = v.get("hash")?.as_str()?;
-                Some((k.clone(), hash.to_owned()))
-            })
-            .collect();
-
-        Some(Self {
-            objects_dir: objects_dir.to_path_buf(),
-            hashes,
-        })
-    }
-
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
-        self.hashes.keys().map(String::as_str)
-    }
-
-    pub(crate) fn objects_dir(&self) -> &Path {
-        &self.objects_dir
-    }
-
-    /// Error-aware lookup for the resource boundary. A malformed hash must not
-    /// become a filesystem path.
-    pub(crate) fn resolve_checked(&self, asset_key: &str) -> std::io::Result<Option<PathBuf>> {
-        let Some(hash) = self.hashes.get(asset_key) else {
-            return Ok(None);
-        };
-        if hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("invalid asset-index hash for {asset_key}"),
-            ));
-        }
-        let path = self.objects_dir.join(&hash[..2]).join(hash);
-        match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() => Ok(Some(path)),
-            Ok(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("asset-index object is not a file: {}", path.display()),
-            )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,17 +2,29 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use super::ResourceSources;
-use super::pack_resource::{OpenedResourcePack, ResourcePackDescriptor, validate_query};
+use super::packs::providers::validate_query;
+use super::packs::{ResourceConfiguration, ResourcePack, ResourcePackDescriptor};
 use super::resource::{Resource, ResourceError, ResourceId};
 
 /// App-lifetime owner of the active source stack, ordered low-to-high priority.
 /// Pack discovery and selection belong to pack management.
 pub(crate) struct ResourceManager {
-    packs: Vec<OpenedResourcePack>,
+    packs: Vec<ResourcePack>,
 }
 
 impl ResourceManager {
-    pub(crate) fn new(sources: ResourceSources) -> Result<Self, ResourceError> {
+    pub(crate) fn from_configuration(
+        configuration: &ResourceConfiguration,
+    ) -> Result<Self, ResourceError> {
+        Self::open_sources(configuration.sources()?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_sources(sources: ResourceSources) -> Result<Self, ResourceError> {
+        Self::open_sources(sources)
+    }
+
+    fn open_sources(sources: ResourceSources) -> Result<Self, ResourceError> {
         let packs = sources
             .0
             .into_iter()
@@ -21,15 +33,16 @@ impl ResourceManager {
         Ok(Self { packs })
     }
 
-    /// Open every candidate before activation; failure preserves the active
-    /// sources and skips the callback. Existing handles retain old providers,
-    /// not immutable filesystem bytes. Consumer failures do not roll back.
+    /// Prepare and open every candidate before activation; failure preserves
+    /// the active sources and skips the callback. Existing handles retain old
+    /// providers, not immutable filesystem bytes. Consumer failures do not roll
+    /// back.
     pub(crate) fn reload(
         &mut self,
-        sources: ResourceSources,
+        configuration: &ResourceConfiguration,
         rebuild: impl FnOnce(&Self),
     ) -> Result<(), ResourceError> {
-        let candidate = Self::new(sources)?;
+        let candidate = Self::open_sources(configuration.sources()?)?;
         self.packs = candidate.packs;
         // Vanilla stores PreparableReloadListener objects and coordinates async
         // prepare/apply. Pomme supplies a synchronous callback so consumers stay

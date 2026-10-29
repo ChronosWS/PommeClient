@@ -131,7 +131,7 @@ impl PanoramaPipeline {
 /// set.
 pub fn load_panorama_faces(resources: &ResourceManager) -> Option<[image::RgbaImage; 6]> {
     match collect_panorama_faces(|i| {
-        let id = crate::resources::theme::panorama_id(i).map_err(|error| error.to_string())?;
+        let id = crate::resources::packs::panorama_id(i).map_err(|error| error.to_string())?;
         util::load_resource_image(resources, &id, util::MAX_RESOURCE_IMAGE_BYTES)
     }) {
         Ok(faces) => Some(faces),

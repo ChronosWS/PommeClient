@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::input::{InputKey, NOT_BOUND};
-use crate::resources::PackCompat;
+use crate::resources::packs::PackCompat;
 use crate::ui::common::BTN_H;
 use crate::ui::text::TextSpan;
 
@@ -1670,7 +1670,7 @@ impl MainMenu {
         text_width_fn: common::TextWidthFn,
         key_bindings: &KeyBindings,
     ) -> MainMenuResult {
-        use crate::resources::PackProvenance;
+        use crate::resources::packs::PackProvenance;
 
         if input.escape {
             self.pack_search.clear();
@@ -1812,7 +1812,7 @@ impl MainMenu {
                           name: &str,
                           desc: &str,
                           name_color: [f32; 4],
-                          compat: crate::resources::PackCompat,
+                          compat: crate::resources::packs::PackCompat,
                           interactive: bool|
          -> bool {
             let hovered = interactive && common::hit_test(cursor, [panel_x, ey, list_w, entry_h]);
@@ -1870,7 +1870,6 @@ impl MainMenu {
             ) && clicked
             {
                 self.pack_toggle = Some((pack.pack_id().clone(), true));
-                self.reload_assets = true;
             }
         }
 
@@ -1903,7 +1902,6 @@ impl MainMenu {
             ) && clicked
             {
                 self.pack_toggle = Some((pack.pack_id().clone(), false));
-                self.reload_assets = true;
             }
         }
 
@@ -1915,7 +1913,7 @@ impl MainMenu {
             "Default",
             "The default look and feel of Minecraft",
             WHITE,
-            crate::resources::PackCompat::Compatible,
+            crate::resources::packs::PackCompat::Compatible,
             false,
         );
 

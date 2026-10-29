@@ -437,7 +437,7 @@ fn create_window(
     let window_icon = {
         crate::renderer::util::load_resource_image(
             &core.resources,
-            &crate::resources::POMME_ICON,
+            &crate::resources::packs::POMME_ICON,
             MAX_RESOURCE_IMAGE_BYTES,
         )
         .map(|rgba| {

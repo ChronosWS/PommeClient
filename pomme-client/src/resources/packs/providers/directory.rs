@@ -5,21 +5,21 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{
-    PackResources, ReadStream, ResourceOrigin, ThreadSafeResourceSource, canonical_directory,
-    check_directory, enumeration_error, is_file, lookup_error, matches_prefix, open_file,
-    overlay_directory, resolve_within, source_file, valid_namespace, validate_query,
+    PackResourceProvider, ReadStream, ResourceOrigin, ThreadSafePackResourceProvider,
+    canonical_directory, check_directory, enumeration_error, is_file, lookup_error, matches_prefix,
+    open_file, overlay_directory, resolve_within, source_file, valid_namespace, validate_query,
 };
 use crate::resources::resource::{ResourceContent, ResourceError, ResourceId};
 
 /// Pack assets or a native namespace-root directory with sparse translations.
 #[derive(Clone)]
-pub(super) struct DirectoryPackResources {
+pub(in crate::resources::packs) struct DirectoryPackResourceProvider {
     root: PathBuf,
     layout: DirectoryState,
     origin: ResourceOrigin,
 }
 
-pub(super) enum DirectoryLayout {
+pub(in crate::resources::packs) enum DirectoryLayout {
     /// Pack root containing `assets/<namespace>`, optionally under an overlay.
     ResourcePack {
         root: PathBuf,
@@ -45,8 +45,8 @@ enum DirectoryState {
     },
 }
 
-impl DirectoryPackResources {
-    pub(super) fn open(
+impl DirectoryPackResourceProvider {
+    pub(in crate::resources::packs) fn open(
         layout: DirectoryLayout,
         origin: ResourceOrigin,
     ) -> Result<Self, ResourceError> {
@@ -261,8 +261,8 @@ impl DirectoryPackResources {
     }
 }
 
-impl PackResources for DirectoryPackResources {
-    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafeResourceSource>> {
+impl PackResourceProvider for DirectoryPackResourceProvider {
+    fn thread_safe_source(&self) -> io::Result<Arc<dyn ThreadSafePackResourceProvider>> {
         Ok(Arc::new(self.clone()))
     }
 

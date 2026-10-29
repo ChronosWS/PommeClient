@@ -13,7 +13,6 @@ use crate::app::core::AppCore;
 use crate::app::phases::in_game::{GameState, section_bits};
 use crate::app::{QuickPlay, TICK_RATE};
 use crate::args::LaunchArgs;
-use crate::assets::AssetIndex;
 use crate::benchmark::{BenchMode, CHUNK_LOAD_MIN_RD, ChunkLoadBench, ChunkLoadStep};
 use crate::dirs::DataDirs;
 use crate::net::NetworkEvent;
@@ -21,7 +20,8 @@ use crate::net::connection::{ConnectArgs, ConnectionHandle, Transport, spawn_con
 use crate::position::ChunkPos;
 use crate::renderer::RenderTimings;
 use crate::renderer::chunk::mesh_source::CpuMeshAssets;
-use crate::resources::{ResourceManager, ResourcePackManager};
+use crate::resources::ResourceManager;
+use crate::resources::packs::ResourceConfiguration;
 use crate::singleplayer::World;
 use crate::ui::chat::ChatOptions;
 use crate::ui::menu::{SkinOptions, saved_chunk_detail};
@@ -60,12 +60,10 @@ pub fn run(
     dirs: &DataDirs,
     rt: &tokio::runtime::Runtime,
 ) -> i32 {
-    let asset_index = AssetIndex::load(&dirs.indexes_dir, &dirs.objects_dir, version);
-    let resources = match ResourceManager::new(ResourcePackManager::builtin_sources(
-        version,
-        &dirs.client_jar,
-        asset_index.as_ref(),
-    )) {
+    let mut configuration =
+        ResourceConfiguration::new(dirs.game_dir.join("resourcepacks/.server_cache"));
+    configuration.set_installation(Some(dirs.installation_location(version)));
+    let resources = match ResourceManager::from_configuration(&configuration) {
         Ok(resources) => resources,
         Err(error) => {
             tracing::error!(%error, jar = %dirs.client_jar.display(), "Failed to open headless resources");

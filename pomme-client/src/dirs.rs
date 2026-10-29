@@ -59,6 +59,22 @@ impl DataDirs {
         pomme_dirs::create_profile(&self.game_dir)
     }
 
+    pub fn asset_index_file(&self, version: &str) -> PathBuf {
+        self.indexes_dir.join(format!("{version}.json"))
+    }
+
+    pub(crate) fn installation_location(
+        &self,
+        version: &str,
+    ) -> crate::resources::packs::InstallationLocation {
+        crate::resources::packs::InstallationLocation {
+            version: version.to_owned(),
+            client_jar: self.client_jar.clone(),
+            index_file: self.asset_index_file(version),
+            objects_dir: self.objects_dir.clone(),
+        }
+    }
+
     /// `version`'s assets are downloaded, so the client can start on them.
     pub fn is_installed(&self, version: &str) -> bool {
         pomme_install::is_installed(&self.assets_dir, &self.versions_dir, version)

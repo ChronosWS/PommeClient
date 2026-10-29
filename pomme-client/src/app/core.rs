@@ -18,7 +18,6 @@ use crate::app::level_load::ReadyInputs;
 use crate::app::phases::in_game::GameState;
 use crate::app::phases::{ConnectionPhase, Gfx};
 use crate::app::{POSITION_SEND_INTERVAL, POSITION_THRESHOLD_SQ};
-use crate::assets::AssetIndex;
 use crate::attribute::{AttributeInstance, AttributeKind, AttributeMap};
 use crate::dirs::DataDirs;
 use crate::discord::DiscordPresence;
@@ -30,7 +29,11 @@ use crate::player::LocalPlayer;
 use crate::player::tab_list::{PlayerChatValidation, TabList};
 use crate::renderer::Renderer;
 use crate::renderer::chunk::mesh_source::MeshSource;
-use crate::resources::{ResourceError, ResourcePackManager};
+use crate::resources::ResourceError;
+use crate::resources::packs::{
+    PackId, PackProvenance, ResourceConfiguration, ResourcePackLocation, ResourcePackSource,
+    download_server_pack,
+};
 use crate::ui::menu::{
     CREDITS_KEY_CTRL_L, CREDITS_KEY_CTRL_R, CREDITS_KEY_SPACE, CREDITS_KEY_UP, MainMenu, MenuInput,
 };
@@ -47,7 +50,8 @@ pub struct PendingPackDownload {
     pub handle: std::thread::JoinHandle<PackDownloadResult>,
 }
 
-pub type PackDownloadResult = Result<std::path::PathBuf, crate::resources::PackError>;
+pub type PackDownloadResult =
+    Result<std::path::PathBuf, crate::resources::packs::PackDownloadError>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PlayerSkinSource {
@@ -848,10 +852,11 @@ pub struct AppCore {
     pub tokio_rt: Arc<tokio::runtime::Runtime>,
     pub data_dirs: DataDirs,
     pub version: String,
-    pub resource_packs: ResourcePackManager,
+    pub resource_configuration: ResourceConfiguration,
     pub(crate) resources: crate::resources::ResourceManager,
     pub(crate) block_definitions: Rc<BlockDefinitions>,
     pub pending_pack_download: Option<PendingPackDownload>,
+    server_pack_ids: HashMap<uuid::Uuid, PackId>,
     pub audio: crate::audio::AudioEngine,
     pub tick_accumulator: f32,
     pub time_tick_accumulator: f32,
@@ -960,22 +965,24 @@ fn resolve_head_profile(profile: HeadProfile, tab_list: &TabList) -> HeadProfile
 }
 
 fn register_theme_sources(
-    packs: &mut ResourcePackManager,
+    packs: &mut ResourceConfiguration,
     theme: crate::ui::menu::PanoramaTheme,
     dirs: &DataDirs,
 ) {
-    use crate::resources::theme::ThemeAssets;
+    use crate::resources::packs::ThemeSpecification;
     use crate::ui::menu::PanoramaTheme;
 
     packs.set_theme(match theme {
-        PanoramaTheme::Java => None,
-        PanoramaTheme::Pomme => Some((ThemeAssets::Pomme, dirs.pomme_assets_dir.clone())),
+        PanoramaTheme::Java => Some(ThemeSpecification::Java),
+        PanoramaTheme::Pomme => Some(ThemeSpecification::Pomme {
+            root: dirs.pomme_assets_dir.clone(),
+        }),
         PanoramaTheme::Bedrock => {
             // UI_DIR is resource_pack/textures/ui; expose the native pack tree.
             let mut root = dirs.bedrock_ui_dir();
             root.pop();
             root.pop();
-            Some((ThemeAssets::Bedrock, root))
+            Some(ThemeSpecification::Bedrock { root })
         }
     });
 }
@@ -989,8 +996,12 @@ impl AppCore {
         user: UserData,
         window_size: winit::dpi::LogicalSize<u32>,
     ) -> Self {
-        let mut resource_packs =
-            ResourcePackManager::new(&data_dirs.game_dir, &version, &data_dirs.client_jar);
+        let packs_dir = data_dirs.game_dir.join("resourcepacks");
+        let mut resource_configuration =
+            ResourceConfiguration::new(packs_dir.join(".server_cache"));
+        if let Err(error) = resource_configuration.set_resource_pack_paths(vec![packs_dir]) {
+            tracing::warn!(%error, "Failed to discover startup resource packs; continuing with empty catalog");
+        }
 
         let mut input = InputState::new();
         let mut menu = MainMenu::new(
@@ -1004,20 +1015,16 @@ impl AppCore {
         );
 
         let display_mode = menu.display_mode;
-        register_theme_sources(&mut resource_packs, menu.theme(), &data_dirs);
+        register_theme_sources(&mut resource_configuration, menu.theme(), &data_dirs);
 
-        let asset_index =
-            AssetIndex::load(&data_dirs.indexes_dir, &data_dirs.objects_dir, &version);
         let installed = data_dirs.is_installed(&version);
         if installed {
-            resource_packs.register_installation(asset_index.clone());
+            resource_configuration
+                .set_installation(Some(data_dirs.installation_location(&version)));
         }
-        let resources = crate::resources::ResourceManager::new(
-            resource_packs
-                .sources()
-                .expect("failed to describe startup resources"),
-        )
-        .expect("failed to open startup resources");
+        let resources =
+            crate::resources::ResourceManager::from_configuration(&resource_configuration)
+                .expect("failed to prepare or open startup resources");
         if let Err(error) = crate::lang::reload(&resources) {
             tracing::warn!(%error, "Keeping previous language table after startup load failure");
         }
@@ -1041,10 +1048,11 @@ impl AppCore {
             tokio_rt,
             data_dirs,
             version,
-            resource_packs,
+            resource_configuration,
             resources,
             block_definitions: Rc::new(BlockDefinitions::new()),
             pending_pack_download: None,
+            server_pack_ids: HashMap::new(),
             audio,
             tick_accumulator: 0.0,
             time_tick_accumulator: 0.0,
@@ -1191,7 +1199,7 @@ impl AppCore {
     /// Vanilla builds a fresh `TitleScreen` here, which rolls a new splash.
     pub fn return_to_menu(&mut self, gfx: &mut Gfx) {
         self.menu.restore_bench_render_distance();
-        self.clear_server_resource_packs(&mut gfx.renderer);
+        self.disable_server_resource_packs(&mut gfx.renderer);
         gfx.renderer.clear_chunk_meshes();
         if let Some(p) = &mut self.presence {
             p.set_in_menu(&self.version);
@@ -1593,19 +1601,45 @@ impl AppCore {
     /// Applies local pack requests from either options screen. The caller must
     /// rebuild live world consumers too when a reload is requested in game.
     pub(crate) fn process_resource_pack_requests(&mut self) -> bool {
+        let mut selections_removed = false;
         if std::mem::take(&mut self.menu.rescan_packs) {
-            self.resource_packs.scan_local_packs();
-            self.menu.available_packs = self.resource_packs.available_local_packs().to_vec();
-            self.menu.active_packs = self.resource_packs.active_pack_info();
+            match self.resource_configuration.refresh_local_packs() {
+                Ok(removed) => selections_removed = removed,
+                Err(error) => {
+                    tracing::warn!(%error, "Failed to rescan local resource packs; configuration unchanged")
+                }
+            }
+            self.menu.available_packs = self
+                .resource_configuration
+                .resource_packs()
+                .filter(|info| info.provenance == PackProvenance::Local)
+                .cloned()
+                .collect();
+            self.menu.active_packs = self.resource_configuration.active_pack_info();
         }
 
         if let Some((pack_id, enable)) = self.menu.pack_toggle.take() {
-            self.resource_packs.enable_local_pack(&pack_id, enable);
-            self.menu.active_packs = self.resource_packs.active_pack_info();
-            self.menu.available_packs = self.resource_packs.available_local_packs().to_vec();
+            if enable {
+                match self.resource_configuration.enable_resource_pack(&pack_id) {
+                    Ok(()) => self.menu.reload_assets = true,
+                    Err(error) => {
+                        tracing::warn!(%error, "Failed to change local resource pack selection; configuration unchanged");
+                    }
+                }
+            } else {
+                self.menu.reload_assets |=
+                    self.resource_configuration.disable_resource_pack(&pack_id);
+            }
+            self.menu.active_packs = self.resource_configuration.active_pack_info();
+            self.menu.available_packs = self
+                .resource_configuration
+                .resource_packs()
+                .filter(|info| info.provenance == PackProvenance::Local)
+                .cloned()
+                .collect();
         }
 
-        self.menu.reload_assets
+        self.menu.reload_assets || selections_removed
     }
 
     pub(crate) fn reload_live_resource_assets(
@@ -1666,11 +1700,12 @@ impl AppCore {
         renderer.clear_player_entity_skins();
     }
 
-    pub fn clear_server_resource_packs(&mut self, renderer: &mut Renderer) {
-        if self.resource_packs.clear_server_packs()
+    pub fn disable_server_resource_packs(&mut self, renderer: &mut Renderer) {
+        self.server_pack_ids.clear();
+        if self.resource_configuration.disable_all_server_packs()
             && let Err(error) = self.reload_pack_assets(renderer)
         {
-            tracing::error!(%error, "Failed to reload after clearing server packs; resource sources unchanged");
+            tracing::error!(%error, "Failed to reload after disabling server packs; resource sources unchanged");
         }
     }
 
@@ -1704,7 +1739,7 @@ impl AppCore {
     ) -> Result<(), ResourceError> {
         let Self {
             resources,
-            resource_packs,
+            resource_configuration,
             menu,
             audio,
             data_dirs,
@@ -1715,39 +1750,39 @@ impl AppCore {
         } = self;
         // A failed explicit reload must not reopen sources on every frame.
         menu.reload_assets = false;
-        let installed_index = renderer
-            .is_none()
-            .then(|| AssetIndex::load(&data_dirs.indexes_dir, &data_dirs.objects_dir, version));
-        if let Some(index) = &installed_index {
-            resource_packs.register_installation(index.clone());
+        let installation_reload = renderer.is_none();
+        if installation_reload {
+            resource_configuration.set_installation(Some(data_dirs.installation_location(version)));
         }
-        register_theme_sources(resource_packs, menu.theme(), data_dirs);
-        let result = resource_packs.sources().and_then(|sources| {
-            resources.reload(sources, |resources| {
-                if let Err(error) = crate::lang::reload(resources) {
-                    tracing::warn!(%error, "Keeping previous language table after reload failure");
-                }
-                menu.available_packs = resource_packs.available_local_packs().to_vec();
-                menu.active_packs = resource_packs.active_pack_info();
-                if let Some(renderer) = renderer {
-                    // Retire baked UVs only after sources activate, before the
-                    // shared atlas is repacked. Failed activation keeps them.
-                    renderer.clear_chunk_meshes();
-                    renderer.reload_assets(resources, menu.font_options());
-                }
-                menu.load_splash(resources);
-                if installed_index.is_some() {
-                    *audio = crate::audio::AudioEngine::new(resources, menu.category_volumes());
-                } else {
-                    audio.reload_assets(resources);
-                }
-                // A pack swap changes what the sprites look like, so they reload.
-                inline_objects
-                    .retain(|_, entry| matches!(entry.content, InlineObjectContent::Head { .. }));
-                game_dynamic_atlas_keys.clear();
-                menu.reload_assets = false;
-                menu.reload_fonts = false;
-            })
+        register_theme_sources(resource_configuration, menu.theme(), data_dirs);
+        let result = resources.reload(resource_configuration, |resources| {
+            if let Err(error) = crate::lang::reload(resources) {
+                tracing::warn!(%error, "Keeping previous language table after reload failure");
+            }
+            menu.available_packs = resource_configuration
+                .resource_packs()
+                .filter(|info| info.provenance == PackProvenance::Local)
+                .cloned()
+                .collect();
+            menu.active_packs = resource_configuration.active_pack_info();
+            if let Some(renderer) = renderer {
+                // Retire baked UVs only after sources activate, before the
+                // shared atlas is repacked. Failed activation keeps them.
+                renderer.clear_chunk_meshes();
+                renderer.reload_assets(resources, menu.font_options());
+            }
+            menu.load_splash(resources);
+            if installation_reload {
+                *audio = crate::audio::AudioEngine::new(resources, menu.category_volumes());
+            } else {
+                audio.reload_assets(resources);
+            }
+            // A pack swap changes what the sprites look like, so they reload.
+            inline_objects
+                .retain(|_, entry| matches!(entry.content, InlineObjectContent::Head { .. }));
+            game_dynamic_atlas_keys.clear();
+            menu.reload_assets = false;
+            menu.reload_fonts = false;
         });
         menu.resource_reload_failed = result.is_err();
         result
@@ -3031,21 +3066,23 @@ impl AppCore {
                     required,
                 } => {
                     tracing::info!("Resource pack push: {id} url={url} required={required}");
-                    let cache_dir = self.resource_packs.server_cache_dir().to_path_buf();
+                    let cache_dir = self.resource_configuration.server_cache_dir().to_path_buf();
                     self.pending_pack_download = Some(PendingPackDownload {
                         id,
                         required,
                         hash: hash.clone(),
                         handle: std::thread::spawn(move || {
-                            ResourcePackManager::download_server_pack(&cache_dir, &url, &hash)
+                            download_server_pack(&cache_dir, &url, &hash)
                         }),
                     });
                 }
                 NetworkEvent::ResourcePackPop { id } => {
                     // A server may pop an id it already popped, or never pushed.
                     let removed = match id {
-                        Some(id) => self.resource_packs.remove_server_pack(&id),
-                        None => self.resource_packs.clear_server_packs(),
+                        Some(id) => self.server_pack_ids.get(&id).is_some_and(|pack_id| {
+                            self.resource_configuration.disable_resource_pack(pack_id)
+                        }),
+                        None => self.resource_configuration.disable_all_server_packs(),
                     };
                     if removed && let Err(error) = self.reload_live_resource_assets(game, renderer)
                     {
@@ -3103,8 +3140,8 @@ impl AppCore {
 
         if let Some(pending) = &self.pending_pack_download
             && pending.handle.is_finished()
+            && let Some(pending) = self.pending_pack_download.take()
         {
-            let pending = self.pending_pack_download.take().unwrap();
             let result = pending.handle.join();
 
             use azalea_protocol::packets::game::s_resource_pack;
@@ -3126,13 +3163,50 @@ impl AppCore {
                     }
                     s_resource_pack::Action::FailedDownload
                 }
-                Ok(Ok(_path)) => {
-                    self.resource_packs
-                        .apply_server_pack(pending.id, &pending.hash);
+                Ok(Ok(path)) => {
                     // Vanilla acknowledges SuccessfullyLoaded only after the
                     // resources have been applied. Rebuild the live renderer
                     // (including shared-atlas chunk geometry) before replying.
-                    match self.reload_live_resource_assets(game, renderer) {
+                    let activation = self
+                        .resource_configuration
+                        .register_resource_pack(ResourcePackSource {
+                            location: ResourcePackLocation::Directory(path),
+                            provenance: PackProvenance::Server,
+                            fallback_name: pending.hash.clone(),
+                        })
+                        .and_then(|pack_id| {
+                            if let Err(error) =
+                                self.resource_configuration.enable_resource_pack(&pack_id)
+                            {
+                                if !self
+                                    .resource_configuration
+                                    .unregister_resource_pack(&pack_id)
+                                {
+                                    tracing::warn!(
+                                        ?pack_id,
+                                        "Aborted resource pack registration was already absent"
+                                    );
+                                }
+                                return Err(error);
+                            }
+                            if let Some(previous) = self.server_pack_ids.insert(pending.id, pack_id)
+                                && !self
+                                    .resource_configuration
+                                    .unregister_resource_pack(&previous)
+                            {
+                                tracing::warn!(
+                                    ?previous,
+                                    "Replaced resource pack registration was already absent"
+                                );
+                            }
+                            Ok(())
+                        })
+                        .map_err(|error| error.to_string())
+                        .and_then(|()| {
+                            self.reload_live_resource_assets(game, renderer)
+                                .map_err(|error| error.to_string())
+                        });
+                    match activation {
                         Ok(()) => {
                             tracing::info!("Resource pack {} loaded successfully", pending.id);
                             s_resource_pack::Action::SuccessfullyLoaded

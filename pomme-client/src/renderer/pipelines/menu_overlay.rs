@@ -2,10 +2,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::renderer::{MAX_FRAMES_IN_FLIGHT, packing, rhi, shader, util};
-use crate::resources::{
-    POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT, ResourceError, ResourceId, ResourceManager,
-    resource_id,
-};
+use crate::resources::packs::{POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT};
+use crate::resources::{ResourceError, ResourceId, ResourceManager, resource_id};
 use crate::ui::font::{FontSources, GLYPH_ATLAS_SIZE, GlyphAtlasPixels, GlyphInfo, GlyphMap};
 use crate::ui::text::{InlineObject, PREFIX_CODE, TextSpan, font_spans};
 
