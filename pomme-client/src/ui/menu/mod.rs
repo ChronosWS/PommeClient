@@ -1606,7 +1606,11 @@ mod tests {
         menu.set_screen(Screen::Options, &key_bindings);
         assert!(menu.take_options_saved());
         assert!(!menu.take_options_saved());
-        std::fs::remove_dir_all(&dir).expect("remove menu test directory");
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove menu test directory {}: {error}", dir.display()),
+        }
     }
 
     #[test]
