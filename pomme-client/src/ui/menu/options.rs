@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::input::{InputKey, NOT_BOUND};
-use crate::resource_pack::PackCompat;
+use crate::resources::packs::PackCompat;
 use crate::ui::common::BTN_H;
 use crate::ui::text::TextSpan;
 
@@ -36,6 +36,7 @@ fn compat_label(compat: PackCompat) -> (&'static str, [f32; 4]) {
         PackCompat::Compatible => ("Compatible", [0.33, 0.87, 0.33, 1.0]),
         PackCompat::TooOld => ("Made for an older version", COL_RED),
         PackCompat::TooNew => ("Made for a newer version", COL_RED),
+        PackCompat::Unknown => ("Compatibility unknown", [0.67, 0.67, 0.67, 1.0]),
     }
 }
 
@@ -227,7 +228,7 @@ impl MainMenu {
     fn discrete_slider_span(&self, prefix: &str) -> Option<f32> {
         Some(match prefix {
             "Render Distance:" => self.render_distance_max() as f32 - 2.0,
-            "Chunk Detail:" => 40.0,
+            "Chunk Detail:" => super::CHUNK_DETAIL_SPAN,
             "Simulation Distance:" => 27.0,
             "Max Framerate:" => 25.0,
             "FOV:" => 80.0,
@@ -270,7 +271,11 @@ impl MainMenu {
             "Render Distance: {} chunks",
             self.render_distance.min(rd_max)
         );
-        let cd = format!("Chunk Detail: {} chunks", self.chunk_detail);
+        let cd = if self.chunk_detail >= super::CHUNK_DETAIL_OFF {
+            "Chunk Detail: Off".to_string()
+        } else {
+            format!("Chunk Detail: {} chunks", self.chunk_detail)
+        };
         let sd = format!("Simulation Distance: {} chunks", self.simulation_distance);
         let mf = if self.max_framerate >= super::MAX_FRAMERATE_UNLIMITED {
             "Max Framerate: Unlimited".to_string()
@@ -335,7 +340,9 @@ impl MainMenu {
             OptRow::Pair(&attack_label, "Chunk Fade-in: 1.0s"),
         ];
         let rd_frac = ((self.render_distance as f32 - 2.0) / (rd_max as f32 - 2.0)).clamp(0.0, 1.0);
-        let cd_frac = ((self.chunk_detail as f32 - 8.0) / 40.0).clamp(0.0, 1.0);
+        let cd_frac = (self.chunk_detail.saturating_sub(super::CHUNK_DETAIL_MIN) as f32
+            / super::CHUNK_DETAIL_SPAN)
+            .clamp(0.0, 1.0);
         let sd_frac = (self.simulation_distance as f32 - 5.0) / 27.0;
         let mf_frac = (self.max_framerate as f32 - 10.0) / 250.0;
         let sliders: &[(&str, f32)] = &[
@@ -647,7 +654,7 @@ impl MainMenu {
                     && common::hit_test(row_cursor, [change_x, y, change_w, btn_h])
                 {
                     let text = crate::lang::translate("controls.keybinds.duplicateKeybinds")
-                        .unwrap_or("This key is also used for:\n%s")
+                        .unwrap_or_else(|| "This key is also used for:\n%s".to_owned())
                         .replace("%s", &collisions.join(", "));
                     let width0 = |spans: &[TextSpan]| {
                         spans
@@ -1562,7 +1569,9 @@ impl MainMenu {
             let span = self.discrete_slider_span(prefix).unwrap_or(1.0);
             match *prefix {
                 "Render Distance:" => self.render_distance = (2.0 + v * span).round() as u32,
-                "Chunk Detail:" => self.chunk_detail = (8.0 + v * span).round() as u32,
+                "Chunk Detail:" => {
+                    self.chunk_detail = super::CHUNK_DETAIL_MIN + (v * span).round() as u32
+                }
                 "Simulation Distance:" => {
                     self.simulation_distance = (5.0 + v * span).round() as u32
                 }
@@ -1678,7 +1687,7 @@ impl MainMenu {
         text_width_fn: common::TextWidthFn,
         key_bindings: &KeyBindings,
     ) -> MainMenuResult {
-        use crate::resource_pack::PackSource;
+        use crate::resources::packs::PackProvenance;
 
         if input.escape {
             self.pack_search.clear();
@@ -1787,7 +1796,12 @@ impl MainMenu {
         elements.push(MenuElement::Text {
             x: right_x + list_w / 2.0,
             y: list_top + (label_h - fs) / 2.0,
-            text: "Selected".into(),
+            text: if self.resource_reload_failed {
+                "Selected (reload failed)"
+            } else {
+                "Selected"
+            }
+            .into(),
             scale: fs,
             color: WHITE,
             centered: true,
@@ -1815,7 +1829,7 @@ impl MainMenu {
                           name: &str,
                           desc: &str,
                           name_color: [f32; 4],
-                          compat: crate::resource_pack::PackCompat,
+                          compat: crate::resources::packs::PackCompat,
                           interactive: bool|
          -> bool {
             let hovered = interactive && common::hit_test(cursor, [panel_x, ey, list_w, entry_h]);
@@ -1872,8 +1886,7 @@ impl MainMenu {
                 true,
             ) && clicked
             {
-                self.pack_toggle = Some((pack.name.clone(), true));
-                self.reload_assets = true;
+                self.pack_toggle = Some((pack.pack_id().clone(), true));
             }
         }
 
@@ -1882,7 +1895,7 @@ impl MainMenu {
 
         for (i, pack) in selected.iter().enumerate() {
             let ey = entries_top + i as f32 * (entry_h + entry_gap);
-            let is_server = pack.source == PackSource::Server;
+            let is_server = pack.provenance == PackProvenance::Server;
             let label = if is_server {
                 format!("[Server] {}", pack.name)
             } else {
@@ -1905,8 +1918,7 @@ impl MainMenu {
                 !is_server,
             ) && clicked
             {
-                self.pack_toggle = Some((pack.name.clone(), false));
-                self.reload_assets = true;
+                self.pack_toggle = Some((pack.pack_id().clone(), false));
             }
         }
 
@@ -1918,7 +1930,7 @@ impl MainMenu {
             "Default",
             "The default look and feel of Minecraft",
             WHITE,
-            crate::resource_pack::PackCompat::Compatible,
+            crate::resources::packs::PackCompat::Compatible,
             false,
         );
 
@@ -1938,8 +1950,11 @@ impl MainMenu {
             true,
         );
         any_hovered |= h;
-        if clicked && h {
-            let _ = open::that_detached(&self.packs_dir);
+        if clicked
+            && h
+            && let Err(error) = open::that_detached(&self.packs_dir)
+        {
+            tracing::warn!(path = %self.packs_dir.display(), %error, "Failed to open resource pack folder");
         }
 
         let h = common::push_button(
@@ -2473,7 +2488,11 @@ mod tests {
             std::env::temp_dir().join(format!("pomme-entity-shadows-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let _cleanup = scopeguard::guard((), |_| {
-            let _ = std::fs::remove_dir_all(&dir);
+            if let Err(error) = std::fs::remove_dir_all(&dir)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %dir.display(), %error, "Failed to remove options test directory");
+            }
         });
         let mut grid = Grid::new("Entity Shadows: ON", "Other");
         grid.menu.settings_dir = dir.clone();
