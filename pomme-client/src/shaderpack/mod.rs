@@ -3,13 +3,16 @@
 //! is the spec.
 
 pub mod directives;
+pub mod expr;
 pub mod glsl;
 pub mod include;
+pub mod options;
 pub mod prelude;
 pub mod preprocess;
 pub mod programs;
 pub mod properties;
 pub mod source;
+pub mod uniforms;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,6 +24,7 @@ use prelude::{Geometry, Preludes};
 use preprocess::Overrides;
 use programs::Gbuffers;
 use source::{PackSource, SourceError};
+use uniforms::CustomUniforms;
 
 pub struct ShaderPack {
     pub name: String,
@@ -28,6 +32,9 @@ pub struct ShaderPack {
     properties: BTreeMap<String, String>,
     dimensions: BTreeMap<String, String>,
     overrides: Overrides,
+    /// The option and standard macros `shaders.properties` is read with.
+    macros: BTreeMap<String, String>,
+    pub custom_uniforms: CustomUniforms,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +59,7 @@ pub enum PackError {
 }
 
 /// A program's stages, ready to translate.
+#[derive(Clone)]
 pub struct ProgramText {
     /// The program's path below `shaders/`, without extension, e.g.
     /// `world0/gbuffers_terrain`.
@@ -82,23 +90,30 @@ impl ShaderPack {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let read_properties = |file| {
-            source
-                .read(file)
-                .map(|text| properties::parse(&text))
-                .unwrap_or_default()
-        };
-        let properties = read_properties("shaders.properties");
-        let dimensions = read_properties("dimension.properties");
         let overrides = std::fs::read_to_string(path.with_file_name(format!("{name}.txt")))
             .map(|text| preprocess::parse_overrides(&text))
             .unwrap_or_default();
+        let mut macros = options::macros(&options::discover(&source), &overrides);
+        macros.extend(standard_macros());
+        let read_properties = |file| {
+            source
+                .read(file)
+                .map(|text| properties::parse_ordered(&properties::preprocess(&text, &macros)))
+                .unwrap_or_default()
+        };
+        let ordered = read_properties("shaders.properties");
+        let custom_uniforms = CustomUniforms::parse(&ordered);
+        let dimensions = read_properties("dimension.properties")
+            .into_iter()
+            .collect();
         Ok(Self {
             name,
             source,
-            properties,
+            properties: ordered.into_iter().collect(),
             dimensions,
             overrides,
+            macros,
+            custom_uniforms,
         })
     }
 
@@ -147,13 +162,23 @@ impl ShaderPack {
         Ok(None)
     }
 
-    /// `program.<path>.enabled=false` in `shaders.properties`.
+    /// A `shaders.properties` switch, `default` when it's unset or not
+    /// `true`/`false`.
+    pub fn property_bool(&self, name: &str, default: bool) -> bool {
+        self.properties
+            .get(name)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(default)
+    }
+
+    /// `program.<path>.enabled` in `shaders.properties` reading false: a
+    /// boolean expression over the pack's options, such as `!SSAO`.
     fn disabled(&self, path: &str) -> bool {
         let name = path.rsplit('/').next().unwrap_or(path);
         [path, name].iter().any(|p| {
             self.properties
                 .get(&format!("program.{p}.enabled"))
-                .is_some_and(|v| v == "false")
+                .is_some_and(|v| !properties::condition(v, &self.macros))
         })
     }
 }
@@ -191,8 +216,18 @@ pub fn compile(program: &ProgramText, geometry: Geometry) -> Result<CompiledProg
         fragment: compile_stage(ShaderStage::Fragment, &interface.fragment)?,
         draw_buffers: directives::draw_buffers(&interface.fragment),
         interface,
-        text: format!("{}\n{}", program.vertex, program.fragment),
+        text: {
+            let macros = standard_macros();
+            [&program.vertex, &program.fragment]
+                .map(|stage| properties::preprocess(stage, &macros))
+                .join("\n")
+        },
     })
+}
+
+/// Iris's standard macros, by name.
+fn standard_macros() -> BTreeMap<String, String> {
+    preprocess::standard_macros().into_iter().collect()
 }
 
 /// What Iris runs as `final` when a pack has none: `colortex0` as it is.
@@ -224,6 +259,7 @@ pub fn gbuffers_geometry(program: Gbuffers) -> Geometry {
         Gbuffers::Entities => Geometry::Entity,
         Gbuffers::Block => Geometry::BlockEntity,
         Gbuffers::Water => Geometry::Water,
+        Gbuffers::SkyBasic | Gbuffers::SkyTextured => Geometry::Sky,
         _ => Geometry::Terrain,
     }
 }
@@ -241,6 +277,8 @@ mod corpus {
     fn milestone_programs(pack: &ShaderPack, dimension: &str) -> Vec<(ProgramText, Geometry)> {
         let mut out = Vec::new();
         for program in [
+            Gbuffers::SkyBasic,
+            Gbuffers::SkyTextured,
             Gbuffers::Terrain,
             Gbuffers::Water,
             Gbuffers::Entities,
@@ -261,6 +299,16 @@ mod corpus {
         }
         if let Ok(Some(text)) = pack.program(dimension, "final") {
             out.push((text, Geometry::Final));
+        }
+        if let Ok(Some(text)) = pack.program(dimension, "shadow") {
+            for geometry in [
+                Geometry::Terrain,
+                Geometry::Entity,
+                Geometry::BlockEntity,
+                Geometry::Water,
+            ] {
+                out.push((text.clone(), geometry));
+            }
         }
         out
     }
@@ -319,44 +367,95 @@ mod corpus {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-
-    fn pack(files: &[&str]) -> ShaderPack {
-        ShaderPack {
+impl ShaderPack {
+    /// A pack of empty programs at `files`, with `properties`.
+    pub(crate) fn for_test(files: &[&str], properties: &[(&str, &str)]) -> Self {
+        let empty = b"#version 120\nvoid main() {}\n";
+        Self {
             name: "test".into(),
             source: PackSource::Zip(
                 files
                     .iter()
-                    .map(|f| {
-                        (
-                            (*f).to_owned(),
-                            b"#version 120
-void main() {}
-"
-                            .to_vec(),
-                        )
-                    })
-                    .collect::<HashMap<_, _>>(),
+                    .map(|f| ((*f).to_owned(), empty.to_vec()))
+                    .collect(),
             ),
-            properties: BTreeMap::new(),
+            properties: properties
+                .iter()
+                .map(|&(k, v)| (k.to_owned(), v.to_owned()))
+                .collect(),
             dimensions: BTreeMap::new(),
             overrides: Overrides::new(),
+            macros: BTreeMap::new(),
+            custom_uniforms: CustomUniforms::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sky_programs_read_the_render_stage() {
+        let program = ProgramText {
+            path: "gbuffers_skybasic".to_owned(),
+            vertex: "#version 120
+void main() { gl_Position = ftransform(); }
+"
+            .to_owned(),
+            fragment: "#version 120
+uniform int renderStage;
+void main() { gl_FragData[0] = vec4(renderStage == 4 ? 1.0 : 0.0); }
+"
+            .to_owned(),
+        };
+        let compiled = compile(&program, Geometry::Sky).unwrap();
+        assert!(
+            compiled
+                .interface
+                .uniforms
+                .iter()
+                .all(|u| u.name != "renderStage")
+        );
+        assert_eq!(standard_macros()["MC_RENDER_STAGE_SUN"], "4");
+    }
+
+    #[test]
+    fn target_settings_follow_the_active_branch() {
+        let mut program = copy_program();
+        program.fragment = program.fragment.replace(
+            "void main",
+            "#define HQ
+#ifdef HQ
+/*
+const int colortex0Format = RGBA16F;
+*/
+             #else
+/*
+const int colortex0Format = RGBA8;
+*/
+#endif
+void main",
+        );
+        let compiled = compile(&program, Geometry::Final).unwrap();
+        let mut settings = directives::TargetSettings::default();
+        settings.read(&compiled.text);
+        assert_eq!(settings.colortex.formats[&0], "RGBA16F");
     }
 
     #[test]
     fn a_dimension_folder_replaces_the_root() {
-        let pack = pack(&[
-            "composite.vsh",
-            "composite.fsh",
-            "final.vsh",
-            "final.fsh",
-            "world-1/final.vsh",
-            "world-1/final.fsh",
-        ]);
+        let pack = ShaderPack::for_test(
+            &[
+                "composite.vsh",
+                "composite.fsh",
+                "final.vsh",
+                "final.fsh",
+                "world-1/final.vsh",
+                "world-1/final.fsh",
+            ],
+            &[],
+        );
         let path = |dimension, name| pack.program(dimension, name).unwrap().map(|p| p.path);
         assert_eq!(
             path("minecraft:the_nether", "final").as_deref(),

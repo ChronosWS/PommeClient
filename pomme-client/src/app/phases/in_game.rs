@@ -47,6 +47,7 @@ use crate::renderer::pipelines::entity_shadow::{ShadowCaster, ShadowScene};
 use crate::renderer::pipelines::lightmap::LightmapInfo;
 use crate::renderer::pipelines::menu_overlay::MenuElement;
 use crate::renderer::pipelines::post_effect::PostEffect;
+use crate::renderer::pipelines::shaderpack::PackWorld;
 use crate::renderer::{Renderer, SkyState};
 use crate::resource_pack::ResourcePackManager;
 use crate::ui::chat::{ChatState, ChatUiAction};
@@ -141,6 +142,8 @@ pub struct GameState {
     /// Bubble index the pop sound last played for, so each pop fires once.
     pub last_bubble_pop_sound_played: i32,
     pub biome_climate: Arc<HashMap<u32, BiomeClimate>>,
+    /// The biome registry's names by id, built when a shader pack needs them.
+    pack_biome_names: Arc<[String]>,
     pub player_walk_pos: f32,
     pub player_walk_speed: f32,
     pub player_prev_walk_speed: f32,
@@ -496,6 +499,7 @@ impl GameState {
             player: LocalPlayer::new(),
             last_bubble_pop_sound_played: 0,
             biome_climate: Arc::new(HashMap::new()),
+            pack_biome_names: Arc::default(),
             player_walk_pos: 0.0,
             player_walk_speed: 0.0,
             player_prev_walk_speed: 0.0,
@@ -2172,6 +2176,45 @@ pub(crate) fn send_container_clicks(
 
 fn sleeping_head_pitch_deg(is_sleeping: bool, head_x_rot_deg: f32) -> f32 {
     if is_sleeping { 0.0 } else { head_x_rot_deg }
+}
+
+/// What a shader pack reads about the player's surroundings (Iris's
+/// `BiomeUniforms` and `blindness`).
+fn pack_world(game: &mut GameState) -> PackWorld {
+    use crate::renderer::pipelines::weather::{Precip, precipitation_for};
+    let registry = crate::net::connection::biome_registry(&game.registries);
+    if registry.is_some_and(|r| r.map.len() != game.pack_biome_names.len()) {
+        game.pack_biome_names = registry
+            .into_iter()
+            .flat_map(|r| r.map.keys())
+            .map(ToString::to_string)
+            .collect();
+    }
+    // Iris reads them at `blockPosition()`, the feet.
+    let feet = game.player.position;
+    let [x, y, z] = [feet.x, feet.y, feet.z].map(|c| c.floor() as i32);
+    let biome = game.chunk_store.biome_id(x, y, z);
+    let climate = game.biome_climate.get(&biome).copied().unwrap_or_default();
+    // Iris: a second of fade-out at the end, full while infinite.
+    let blindness = game.player.effects.duration("blindness").map_or(0.0, |d| {
+        if d < 0 {
+            1.0
+        } else {
+            (d as f32 / 20.0).clamp(0.0, 1.0)
+        }
+    });
+    PackWorld {
+        biome: biome as i32,
+        biome_names: Arc::clone(&game.pack_biome_names),
+        precipitation: match precipitation_for(&climate, y) {
+            Precip::None => 0,
+            Precip::Rain => 1,
+            Precip::Snow => 2,
+        },
+        temperature: climate.temperature,
+        rainfall: climate.downfall,
+        blindness,
+    }
 }
 
 /// Vanilla `GameRenderer.renderItemInHand`: not while asleep, with the HUD
@@ -3933,7 +3976,7 @@ pub fn update_game(
     });
 
     use crate::entity::glowing::{appears_glowing, outline_color, scoreboard_name};
-    use crate::renderer::pipelines::entity_renderer::Visibility;
+    use crate::renderer::pipelines::entity_renderer::{PackShadow, Visibility};
     let spectating = crate::player::is_spectator(game.player.game_mode);
     let spectator_outlines = spectating && core.input.performing_action(Action::SpectatorOutlines);
     let viewer = scoreboard_name(&game.tab_list, core.user.uuid, Some(core.user.uuid));
@@ -3995,6 +4038,17 @@ pub fn update_game(
                         &name,
                     ),
                     visibility: visibility(e.is_invisible, &name),
+                    pack_shadow: if game.riding_vehicle_id == Some(entity_id) {
+                        PackShadow::Player
+                    } else if e
+                        .player_uuid
+                        .and_then(|id| game.tab_list.players.get(&id))
+                        .is_some_and(|p| crate::player::is_spectator(p.game_mode))
+                    {
+                        PackShadow::Spectator
+                    } else {
+                        PackShadow::Entity
+                    },
                     light: entity_light(
                         &world_light,
                         e.entity_type,
@@ -4062,6 +4116,7 @@ pub fn update_game(
                     tentacle_angle: extras.tentacle_angle,
                     bat_resting: e.bat_resting,
                     bat_elapsed_secs: extras.bat_elapsed_secs,
+                    sniffer: extras.sniffer,
                     golem_attack_ticks: extras.golem_attack_ticks,
                     golem_offer_flower_ticks: extras.golem_offer_flower_ticks,
                     body_transform: extras.body_transform,
@@ -4079,15 +4134,16 @@ pub fn update_game(
             .collect()
     };
 
-    // Vanilla only extracts the local player while it's the camera entity.
-    if game.camera_entity.is_none()
-        && should_render_local_player(
-            benchmark_running,
-            gfx.renderer.is_first_person(),
-            game.player.is_sleeping(),
-            game.player.death_animation_finished(),
-        )
-    {
+    // Vanilla only extracts the local player while it's the camera entity;
+    // Iris's shadow pass draws it in first person too.
+    let finished = game.player.death_animation_finished();
+    let shown = should_render_local_player(
+        benchmark_running,
+        gfx.renderer.is_first_person(),
+        game.player.is_sleeping(),
+        finished,
+    );
+    if game.camera_entity.is_none() && (shown || !benchmark_running && !finished && !spectating) {
         let interp_pos = game
             .player
             .prev_position
@@ -4121,6 +4177,13 @@ pub fn update_game(
             player_uuid: Some(core.user.uuid),
             outline_color: outline(game.player.glowing, true, &|| viewer.clone()),
             visibility: visibility(game.player.invisible, &|| viewer.clone()),
+            pack_shadow: if spectating {
+                PackShadow::Spectator
+            } else if shown {
+                PackShadow::Player
+            } else {
+                PackShadow::FirstPersonPlayer
+            },
             light: player_light,
             armor: armor_render_infos(game.player.inventory.armor_slots()),
             has_red_overlay: has_red_overlay(game.player.hurt_time, game.player.death_time),
@@ -4324,6 +4387,9 @@ pub fn update_game(
         .shader_pack
         .as_ref()
         .map(|name| core.menu.shader_packs_dir.join(name));
+    if shader_pack.is_some() {
+        gfx.renderer.set_pack_world(pack_world(game));
+    }
     if let Err(e) = gfx.renderer.set_shader_pack(shader_pack.as_deref()) {
         tracing::error!(
             "Shader pack {}: {e}",
@@ -4927,6 +4993,7 @@ struct EntityExtras {
     animate_tail: bool,
     tentacle_angle: f32,
     bat_elapsed_secs: Option<f32>,
+    sniffer: crate::renderer::entity_model::SnifferAnims,
     golem_attack_ticks: f32,
     golem_offer_flower_ticks: u32,
 }
@@ -5030,6 +5097,10 @@ fn entity_extras(
         | EntityKind::TropicalFish
         | EntityKind::Pufferfish => fish_extras(e, alpha),
         EntityKind::IronGolem => golem_extras(e, alpha),
+        EntityKind::Sniffer => EntityExtras {
+            sniffer: sniffer_anims(e, alpha),
+            ..Default::default()
+        },
         EntityKind::Rabbit => EntityExtras {
             // "Toast" overrides the variant texture (slot 7).
             variant_index: if e.custom_name.as_deref() == Some("Toast") {
@@ -5047,6 +5118,28 @@ fn entity_extras(
         },
         _ => EntityExtras::default(),
     }
+}
+
+/// Vanilla `SnifferRenderer.extractRenderState`.
+fn sniffer_anims(
+    e: &crate::entity::LivingEntity,
+    alpha: f32,
+) -> crate::renderer::entity_model::SnifferAnims {
+    use crate::entity::SnifferState as S;
+    let clock = e.sniffer_anim_start.map(|s| anim_clock_secs(e, s, alpha));
+    let mut anims = crate::renderer::entity_model::SnifferAnims {
+        searching: e.sniffer_state == S::Searching,
+        ..Default::default()
+    };
+    match e.sniffer_state {
+        S::Digging => anims.digging = clock,
+        S::Sniffing => anims.sniffing = clock,
+        S::Rising => anims.rising = clock,
+        S::FeelingHappy => anims.feeling_happy = clock,
+        S::Scenting => anims.scenting = clock,
+        S::Idling | S::Searching => {}
+    }
+    anims
 }
 
 /// Seconds on a vanilla `AnimationState` clock started at tick `start`
