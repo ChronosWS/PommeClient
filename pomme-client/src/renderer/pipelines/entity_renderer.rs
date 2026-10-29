@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::entity::components::Position;
 use crate::entity::dimensions;
 use crate::renderer::camera::CameraUniform;
-use crate::renderer::chunk::block_lighter::LightLevels;
+use crate::renderer::chunk::block_lighter::{LightLevels, UNLIT_LANE};
 use crate::renderer::entity_model::{BakedEntityModel, EntityVertex};
 use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::rhi::{self, VertexFormat};
@@ -499,8 +499,6 @@ const HURT_OVERLAY: [f32; 4] = [1.0, 0.0, 0.0, 178.0 / 255.0];
 const NO_OVERLAY: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 pub(super) const ENTITY_ALPHA_CUTOFF: f32 = 0.5;
 pub(crate) const ARMOR_ALPHA_CUTOFF: f32 = 0.1;
-/// The light lane `light_lane_color` leaves unlit.
-const EMISSIVE_LANE: f32 = -1.0;
 
 pub const WOOL_COLOR_RGBA: [[f32; 4]; 16] = [
     rgb(0xF0F0F0), // 0 white
@@ -804,6 +802,9 @@ pub struct EntityRenderer {
     camera_buffers: Vec<rhi::backend::Buffer>,
     /// The shared [`Lightmap`]'s group, set 2.
     lightmap_set: rhi::backend::BindGroup,
+    /// A shader pack's `gbuffers_entities`, which every layer draws with
+    /// while set; the texture binds at set 3.
+    pub pack_binding: Option<super::shaderpack::PackBinding>,
     /// Per-instance vertex buffer (bound at binding 1), one per frame in
     /// flight.
     instance_buffers: Vec<rhi::backend::Buffer>,
@@ -1873,6 +1874,7 @@ impl EntityRenderer {
             camera_sets,
             camera_buffers,
             lightmap_set: lightmap.group,
+            pack_binding: None,
             instance_buffers,
             texture_sampler,
             texture_sampler_repeat,
@@ -2539,6 +2541,7 @@ impl EntityRenderer {
         if records.is_empty() {
             return;
         }
+        let pipeline = self.pack_binding.map_or(pipeline, |pack| pack.pipeline);
         pass.set_pipeline(&pipeline);
         // Per-instance data (binding 1) is the same buffer for the whole pass;
         // gl_InstanceIndex (incl. firstInstance) indexes into it.
@@ -2550,10 +2553,16 @@ impl EntityRenderer {
                 continue; // dropped by the capacity clamp above
             }
             if r.vertex_buffer != last_vb || r.texture_set != last_texture_set {
-                pass.set_bind_groups(
-                    0,
-                    &[self.camera_sets[frame], r.texture_set, self.lightmap_set],
-                );
+                match &self.pack_binding {
+                    Some(pack) => {
+                        pass.set_bind_groups(0, &pack.sets);
+                        pass.set_bind_group(3, r.texture_set);
+                    }
+                    None => pass.set_bind_groups(
+                        0,
+                        &[self.camera_sets[frame], r.texture_set, self.lightmap_set],
+                    ),
+                }
                 pass.set_vertex_buffer(0, r.vertex_buffer);
                 last_vb = r.vertex_buffer;
                 last_texture_set = r.texture_set;
@@ -2774,7 +2783,7 @@ impl<'a> VariantGroups<'a> {
                     };
                     let model = vis[*vi].entity_mat * part;
                     let light = if emissive {
-                        EMISSIVE_LANE
+                        UNLIT_LANE
                     } else {
                         vis[*vi].info.light.lane()
                     };
@@ -3216,7 +3225,7 @@ fn create_pipelines(
 /// Binding 0: per-vertex mesh data. Instanced pipelines add binding 1 with
 /// per-instance data (model columns + tint + overlay + uv), one EntityInstance
 /// per (entity, part); push-constant ones bind only the mesh.
-const INSTANCED_BUFFERS: [rhi::VertexBufferLayout<'static>; 2] = [
+pub(crate) const INSTANCED_BUFFERS: [rhi::VertexBufferLayout<'static>; 2] = [
     EntityVertex::BUFFER,
     rhi::VertexBufferLayout {
         stride: size_of::<EntityInstance>() as u32,

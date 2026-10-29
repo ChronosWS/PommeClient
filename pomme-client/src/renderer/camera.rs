@@ -5,6 +5,7 @@ use crate::app::input::InputState;
 use crate::entity::HURT_DURATION;
 use crate::entity::components::{LookDirection, Position};
 use crate::renderer::pipelines::sky::SkyState;
+use crate::world::block::model::CardinalLightType;
 
 pub const DEFAULT_FOV_DEGREES: f32 = 70.0;
 #[allow(dead_code)]
@@ -510,6 +511,38 @@ impl Camera {
         proj * view
     }
 
+    /// Vanilla `GameRenderer.renderItemInHand`'s pose base: the inverse view
+    /// rotation, then the view bob, which carries first-person normals into
+    /// world space for `Lighting.Entry.LEVEL`.
+    pub fn hand_pose(&self) -> Mat4 {
+        let (forward, up) = self.view_basis();
+        view::look_to_mat4(Vec3::ZERO, forward, up).inverse() * self.view_effect_matrix()
+    }
+
+    /// What a shader pack sees as `gbufferModelView` and `gbufferProjection`:
+    /// the eye-relative view with its bob, and an OpenGL projection.
+    pub fn pack_matrices(&self) -> (Mat4, Mat4) {
+        let (forward, up) = self.view_basis();
+        let view = self.view_effect_matrix() * view::look_to_mat4(Vec3::ZERO, forward, up);
+        let projection = proj::opengl::perspective(
+            self.fov_radians(self.render_partial_tick),
+            self.aspect_ratio,
+            NEAR,
+            self.depth_far,
+        );
+        (view, projection)
+    }
+
+    /// The near and far planes, in blocks.
+    pub fn planes(&self) -> (f32, f32) {
+        (NEAR, self.depth_far)
+    }
+
+    /// The eye relative to [`Self::anchor`], as the world shaders place it.
+    pub fn eye_from_anchor(&self) -> Vec3 {
+        (*self.position - self.anchor()).as_vec3() + self.third_person_offset()
+    }
+
     /// Vanilla `Camera.getViewRotationProjectionMatrix`: rotation-only view
     /// times the GL-convention projection — no view bob, no third-person
     /// translation, no Vulkan Y flip. Used by the locator bar's waypoint
@@ -630,14 +663,16 @@ impl CameraUniform {
             view_proj: camera.view_projection().to_cols_array_2d(),
             camera_pos: [pos.x, pos.y, pos.z, fog_start],
             fog_color: [fog_rgb[0], fog_rgb[1], fog_rgb[2], fog_end],
-            camera_block: anchor
-                .as_ivec3()
-                .extend(i32::from(
-                    sky.cardinal_light == crate::world::block::model::CardinalLightType::Nether,
-                ))
-                .to_array(),
+            camera_block: anchor.as_ivec3().extend(0).to_array(),
             fog_env: [env_start, env_end, 0.0, 0.0],
         }
+        .with_cardinal_light(sky.cardinal_light)
+    }
+
+    /// Lights directional shading (`light.glsl`) as `cardinal_light` does.
+    pub fn with_cardinal_light(mut self, cardinal_light: CardinalLightType) -> Self {
+        self.camera_block[3] = i32::from(cardinal_light == CardinalLightType::Nether);
+        self
     }
 
     /// Unfogged camera: both bands at `f32::MAX` like vanilla's empty fog

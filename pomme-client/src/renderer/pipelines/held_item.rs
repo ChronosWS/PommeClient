@@ -1,12 +1,14 @@
-use glam::{Mat4, Vec3};
+use glam::{Mat3, Mat4, Vec3};
 
 use crate::renderer::camera::CameraUniform;
 use crate::renderer::chunk::atlas::TextureAtlas;
+use crate::renderer::chunk::block_lighter::LightLevels;
 use crate::renderer::pipelines::hand;
 use crate::renderer::pipelines::item_display::{DisplayResolver, DisplayTransform};
 use crate::renderer::pipelines::item_entity::{self, ItemEntityPipeline, ItemPipelineShared};
+use crate::renderer::pipelines::lightmap::Lightmap;
 use crate::renderer::rhi;
-use crate::world::block::model::{ItemDefinitionSources, ModelSources};
+use crate::world::block::model::{CardinalLightType, ItemDefinitionSources, ModelSources};
 
 pub struct HeldItemInfo {
     /// The item, whose model JSON gives the display transforms.
@@ -14,7 +16,6 @@ pub struct HeldItemInfo {
     /// The baked mesh this stack draws with
     /// (`BlockRenderAssets::stack_model_key`).
     pub model: String,
-    pub light: f32,
     pub item_tints: Vec<u32>,
     pub has_3d_model: bool,
     pub charged_crossbow: bool,
@@ -80,8 +81,9 @@ impl HeldItemPipeline {
         atlas: &TextureAtlas,
         models: ModelSources,
         items: ItemDefinitionSources,
+        lightmap: &Lightmap,
     ) -> Self {
-        let shared = ItemPipelineShared::new(device, atlas, "held_item");
+        let shared = ItemPipelineShared::new(device, atlas, lightmap, "held_item");
         let pipeline = item_entity::create_pipeline(device, targets, shared.pipeline_layout);
         Self {
             pipeline,
@@ -123,8 +125,12 @@ impl HeldItemPipeline {
         hands: &[HeldHand<'_>],
         meshes: &ItemEntityPipeline,
         bob: Mat4,
+        hand_pose: Mat4,
+        light: LightLevels,
+        cardinal_light: CardinalLightType,
     ) {
-        let uniform = CameraUniform::with_view_proj(hand::projection(aspect, hud_fov) * bob);
+        let uniform = CameraUniform::with_view_proj(hand::projection(aspect, hud_fov) * bob)
+            .with_cardinal_light(cardinal_light);
         self.shared.update_camera(frame, &uniform);
 
         let tint_count = hands.iter().map(|hand| hand.item.item_tints.len()).sum();
@@ -154,9 +160,14 @@ impl HeldItemPipeline {
                     * Mat4::from_rotation_y((invert * 10.0).to_radians());
             }
             let model = arm * display.to_matrix();
-            let instance =
-                self.shared
-                    .push_item(frame, &model, item.light, false, &item.item_tints, 0);
+            let instance = self.shared.push_item(
+                frame,
+                &model,
+                Mat3::from_mat4(hand_pose),
+                light.lane(),
+                &item.item_tints,
+                0,
+            );
             pass.set_vertex_buffer(0, buffer);
             pass.draw(vertex_count, 1, 0, instance);
         }
