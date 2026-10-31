@@ -134,7 +134,12 @@ impl Install {
                 }
             },
         };
-        match BootScreen::new(&window, core.font_sources(), core.menu.vsync) {
+        match BootScreen::new(
+            &window,
+            core.resources(),
+            core.font_sources(),
+            core.menu.vsync,
+        ) {
             Ok(screen) => self.screen = Some(screen),
             Err(e) => {
                 tracing::error!("Failed to create the download screen: {e}");

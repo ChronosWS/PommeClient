@@ -513,6 +513,7 @@ impl ApplicationHandler for App {
 
                 let mut renderer = match Renderer::new(
                     Arc::clone(&window),
+                    self.core.resources(),
                     self.core.font_sources(),
                     &self.core.data_dirs.game_dir,
                     &self.core.data_dirs.cache_dir,
