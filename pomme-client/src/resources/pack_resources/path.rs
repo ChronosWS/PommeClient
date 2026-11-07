@@ -6,6 +6,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
@@ -258,7 +259,7 @@ fn locate(path: PathBuf) -> io::Result<Option<IoSupplier<ReadStream>>> {
 }
 
 pub(super) fn file_supplier(path: PathBuf) -> IoSupplier<ReadStream> {
-    Rc::new(move || File::open(&path).map(|file| Box::new(file) as ReadStream))
+    Arc::new(move || File::open(&path).map(|file| Box::new(file) as ReadStream))
 }
 
 /// Shared metadata envelope parsing; each pack view owns its successful cache.
@@ -355,19 +356,18 @@ fn emit_resource(
     let relative = path
         .strip_prefix(namespace_root)
         .map_err(io::Error::other)?;
-    let mut id = String::from(namespace);
-    id.push(':');
+    let mut resource_path = String::new();
     for (index, component) in relative.iter().enumerate() {
         let Some(part) = component.to_str() else {
             tracing::warn!(path = %path.display(), "Non-UTF-8 resource path; ignoring");
             return Ok(());
         };
         if index > 0 {
-            id.push('/');
+            resource_path.push('/');
         }
-        id.push_str(part);
+        resource_path.push_str(part);
     }
-    match ResourceId::new(&id) {
+    match ResourceId::from_parts(namespace, &resource_path) {
         Ok(id) => output(id, file_supplier(path)),
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "Invalid resource path; ignoring")

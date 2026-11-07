@@ -120,7 +120,7 @@ impl<'a> EntryStack<'a> {
                         .map(|entry| {
                             entry
                                 .source
-                                .content(self.metadata_id.clone(), Rc::clone(&entry.supplier))
+                                .content(self.metadata_id.clone(), entry.supplier.clone())
                         });
                     Resource::new(content, constant_metadata(metadata))
                 })
@@ -392,7 +392,7 @@ fn constant_metadata(content: Option<ResourceContent>) -> MetadataFinder {
 
 fn metadata_base(id: &ResourceId, origin: &ResourceOrigin) -> Option<ResourceId> {
     let path = id.path().strip_suffix(METADATA_EXTENSION)?;
-    match ResourceId::new(&format!("{}:{path}", id.namespace())) {
+    match ResourceId::from_parts(id.namespace(), path) {
         Ok(base) => Some(base),
         Err(error) => {
             // A bare .mcmeta cannot name a base under Rust's nonempty-ID rule.
