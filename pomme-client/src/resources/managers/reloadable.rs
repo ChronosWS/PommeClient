@@ -31,6 +31,7 @@ impl ReloadableResourceManager {
     /// through distinct sibling views. Resource
     /// metadata closures own snapshots rather than borrowing this mutable
     /// active view.
+    #[cfg(test)]
     pub(crate) fn reload(
         &mut self,
         packs: Vec<(ResourceOrigin, Rc<dyn PackResources>)>,
@@ -38,6 +39,21 @@ impl ReloadableResourceManager {
     ) {
         self.active = MultiPackResourceManager::new(self.pack_type, packs);
         rebuild(self);
+    }
+
+    /// Prepare consumer-owned data against the candidate before publishing it.
+    /// On failure neither activation nor rebuild runs.
+    pub(crate) fn reload_with_preparation<T>(
+        &mut self,
+        packs: Vec<(ResourceOrigin, Rc<dyn PackResources>)>,
+        prepare: impl FnOnce(&dyn ResourceManager) -> io::Result<T>,
+        rebuild: impl FnOnce(&Self),
+    ) -> io::Result<T> {
+        let candidate = MultiPackResourceManager::new(self.pack_type, packs);
+        let prepared = prepare(&candidate)?;
+        self.active = candidate;
+        rebuild(self);
+        Ok(prepared)
     }
 }
 

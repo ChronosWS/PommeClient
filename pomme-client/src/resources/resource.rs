@@ -6,14 +6,23 @@ use std::{fmt, io};
 
 use super::pack_resources::{IoSupplier, METADATA_EXTENSION};
 
-/// Owned byte stream; dropping it releases its backing state.
-pub(crate) type ReadStream = Box<dyn Read + 'static>;
+/// Owned, transferable byte stream; dropping it releases its backing state.
+pub(crate) type ReadStream = Box<dyn Read + Send + 'static>;
 
 /// The pack a resource came from, by ID, as vanilla's `Resource.sourcePackId`.
 /// Metadata carries its own origin, which may belong to a different pack.
 #[derive(Clone, Debug)]
 pub(crate) struct ResourceOrigin {
     pub(super) name: String,
+}
+
+#[cfg(test)]
+impl ResourceOrigin {
+    pub(crate) fn test(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+        }
+    }
 }
 
 /// Vanilla `Identifier`: the same namespace and path characters, and the same
@@ -26,13 +35,13 @@ pub(crate) struct ResourceId {
 }
 
 impl ResourceId {
+    #[cfg(test)]
     pub(crate) fn new(value: &str) -> Result<Self, ResourceError> {
         let (namespace, path) = Self::parse_parts(value)?;
         Ok(Self::from_validated_parts(namespace, path))
     }
 
     /// Validates and owns separate namespace and path components.
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn from_parts(namespace: &str, path: &str) -> Result<Self, ResourceError> {
         if !valid_resource_id_parts(namespace, path) {
             return Err(ResourceError::InvalidId(format!("{namespace}:{path}")));
@@ -49,6 +58,7 @@ impl ResourceId {
 
     /// Validates an identifier, borrowing its parts without allocation on
     /// success.
+    #[cfg(test)]
     fn parse_parts(value: &str) -> Result<(&str, &str), ResourceError> {
         let (namespace, path) = resource_id_parts(value);
         if !valid_resource_id_parts(namespace, path) {
@@ -229,7 +239,8 @@ impl From<ResourceError> for io::Error {
 /// Pins a source, not immutable bytes. Setup validation is trusted; each open
 /// performs ordinary candidate I/O, without revalidating source roots or
 /// policy.
-/// PackResources suppliers and their handles are application-thread-local.
+/// Content handles and their streams can move across threads; pack views,
+/// managers and lazy metadata lookup remain application-thread-local.
 #[derive(Clone)]
 pub(crate) struct ResourceContent {
     id: ResourceId,
@@ -253,6 +264,16 @@ impl ResourceContent {
 
     pub(crate) fn id(&self) -> &ResourceId {
         &self.id
+    }
+
+    /// Empty content under `id`, for tests that only need a handle.
+    #[cfg(test)]
+    pub(crate) fn test(id: ResourceId) -> Self {
+        Self::from_supplier(
+            id,
+            ResourceOrigin::test("test"),
+            std::sync::Arc::new(|| Ok(Box::new(std::io::empty()) as ReadStream)),
+        )
     }
 
     pub(crate) fn origin(&self) -> &ResourceOrigin {
@@ -316,9 +337,7 @@ fn read_bounded(
 #[derive(Clone)]
 pub(crate) struct Resource {
     content: ResourceContent,
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     metadata: Rc<dyn Fn() -> Option<ResourceContent>>,
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     cached_metadata: Rc<OnceCell<Option<ResourceContent>>>,
 }
 
@@ -340,7 +359,6 @@ impl Resource {
 
     /// Vanilla `Resource.metadata`: the sidecar is looked up on the first call
     /// and kept, for this resource and its clones.
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn metadata(&self) -> Option<ResourceContent> {
         self.cached_metadata
             .get_or_init(|| (self.metadata)())

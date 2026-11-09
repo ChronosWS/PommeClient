@@ -1,6 +1,4 @@
 //! Vanilla 26.3 ResourceManager contract, initialized by the application.
-//! Application asset consumers remain on their separate filesystem stack until
-//! migration.
 
 use std::collections::{BTreeMap, HashSet};
 use std::io;
@@ -11,6 +9,7 @@ mod fallback;
 mod multi_pack;
 mod reloadable;
 
+pub(crate) use multi_pack::MultiPackResourceManager;
 pub(crate) use reloadable::ReloadableResourceManager;
 
 /// Returns true when the resource identifier is included in an enumeration.
@@ -26,14 +25,11 @@ pub(crate) trait ResourceManager {
     /// Resolves the highest-priority resource, or None when absent.
     fn get_resource(&self, id: &ResourceId) -> io::Result<Option<Resource>>;
 
-    #[allow(dead_code, reason = "the consumer migration (#785) calls it")]
     fn get_namespaces(&self) -> io::Result<HashSet<String>>;
 
-    #[allow(dead_code, reason = "the consumer migration (#785) calls it")]
     fn get_resource_stack(&self, id: &ResourceId) -> io::Result<Vec<Resource>>;
 
     /// Lists winning resources in identifier order, retaining selected IDs.
-    #[allow(dead_code, reason = "the consumer migration (#785) calls it")]
     fn list_resources(
         &self,
         directory: &str,
@@ -41,7 +37,6 @@ pub(crate) trait ResourceManager {
     ) -> io::Result<BTreeMap<ResourceId, Resource>>;
 
     /// Lists resource stacks in identifier order, retaining selected IDs.
-    #[allow(dead_code, reason = "the consumer migration (#785) calls it")]
     fn list_resource_stacks(
         &self,
         directory: &str,

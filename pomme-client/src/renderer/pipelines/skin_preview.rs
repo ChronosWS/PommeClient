@@ -169,6 +169,19 @@ impl SkinPreviewPipeline {
         self.swing_start = Some(std::time::Instant::now());
     }
 
+    pub fn rebind_skin(
+        &mut self,
+        device: &rhi::backend::Device,
+        texture: rhi::backend::TextureHandle,
+        sampler: rhi::backend::Sampler,
+    ) {
+        self.tex_set.replace(
+            device,
+            self.tex_layout,
+            &util::texture_binding(texture, sampler),
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -433,16 +446,32 @@ const ARMOR_PREVIEW_STATE: PreviewPipelineState = PreviewPipelineState {
     blend: None,
     depth_compare: rhi::CompareFunction::LessEqual,
 };
+// Vanilla `ENTITY_SOLID` for the enchanting book; LEQUAL keeps the seam from
+// winning over the lids it touches. Its mesh keeps vanilla's winding, unlike
+// the Z-reflected skin mesh, so it culls the opposite set.
+const BOOK_PREVIEW_STATE: PreviewPipelineState = PreviewPipelineState {
+    cull_mode: rhi::CullMode::Back,
+    blend: None,
+    depth_compare: rhi::CompareFunction::LessEqual,
+};
 
-/// The textured-model preview pipeline, shared with the enchanting book
-/// preview. Vanilla's GL-CCW front faces come out clockwise in Vulkan's
-/// y-down framebuffer coords, so this culls the CCW set.
-pub(crate) fn create_pipeline(
+/// The textured-model preview pipeline. Vanilla's GL-CCW front faces come
+/// out clockwise in Vulkan's y-down framebuffer coords, so this culls the
+/// CCW set.
+fn create_pipeline(
     device: &rhi::backend::Device,
     targets: rhi::backend::PipelineTargets,
     layout: rhi::backend::PipelineLayout,
 ) -> rhi::backend::RenderPipeline {
     create_pipeline_with_state(device, targets, layout, TEXTURED_PREVIEW_STATE)
+}
+
+pub(crate) fn create_book_pipeline(
+    device: &rhi::backend::Device,
+    targets: rhi::backend::PipelineTargets,
+    layout: rhi::backend::PipelineLayout,
+) -> rhi::backend::RenderPipeline {
+    create_pipeline_with_state(device, targets, layout, BOOK_PREVIEW_STATE)
 }
 
 fn create_armor_pipeline(

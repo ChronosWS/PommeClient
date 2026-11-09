@@ -6,6 +6,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
@@ -210,9 +211,6 @@ fn directory_namespaces(root: &Path) -> HashSet<String> {
     namespaces
 }
 
-/// Logical IDs permit dot/parent components; filesystem resolution must not.
-/// The existing ASCII alphabet also excludes roots, drive prefixes and NULs,
-/// without imposing Java's lowercase-only restriction on resource paths.
 /// A root file's path: one or more segments, each valid on its own.
 pub(super) fn validate_root_path(path: &[&str]) -> io::Result<()> {
     if path.is_empty() {
@@ -272,7 +270,7 @@ fn locate(path: PathBuf) -> io::Result<Option<IoSupplier<ReadStream>>> {
 }
 
 pub(super) fn file_supplier(path: PathBuf) -> IoSupplier<ReadStream> {
-    Rc::new(move || File::open(&path).map(|file| Box::new(file) as ReadStream))
+    Arc::new(move || File::open(&path).map(|file| Box::new(file) as ReadStream))
 }
 
 /// Shared metadata envelope parsing; each pack view owns its successful cache.
@@ -378,19 +376,18 @@ fn emit_resource(
     let relative = path
         .strip_prefix(namespace_root)
         .map_err(io::Error::other)?;
-    let mut id = String::from(namespace);
-    id.push(':');
+    let mut resource_path = String::new();
     for (index, component) in relative.iter().enumerate() {
         let Some(part) = component.to_str() else {
             tracing::warn!(path = %path.display(), "Non-UTF-8 resource path; ignoring");
             return Ok(());
         };
         if index > 0 {
-            id.push('/');
+            resource_path.push('/');
         }
-        id.push_str(part);
+        resource_path.push_str(part);
     }
-    match ResourceId::new(&id) {
+    match ResourceId::from_parts(namespace, &resource_path) {
         Ok(id) => output(id, file_supplier(path)),
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "Invalid resource path; ignoring")
@@ -708,14 +705,14 @@ mod path_validation {
 #[cfg(test)]
 mod metadata_reader_tests {
     use std::path::Path;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     use super::read_metadata;
     use crate::resources::ReadStream;
 
     fn read(bytes: &'static [u8]) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         read_metadata(
-            Some(Rc::new(move || Ok(Box::new(bytes) as ReadStream))),
+            Some(Arc::new(move || Ok(Box::new(bytes) as ReadStream))),
             Path::new("pack.mcmeta"),
         )
     }

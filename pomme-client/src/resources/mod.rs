@@ -1,20 +1,20 @@
 //! Resource bytes, independent of particles, render assets and the GPU.
-//! Resource view for subsequent asset-consumer adoption through repository
-//! sources. Server-data domains are not implemented.
+//! Asset consumers share the repository's activated view. Server-data domains
+//! are not implemented.
 //!
 //! Repository sources own locations and discovery; the repository owns pack
 //! selection. Downloading is separate. PackResources suppliers open storage
 //! and hydrate asset indexes. Root metadata decoding is private; resource
 //! sidecars remain queryable. As in vanilla, a pack or source that fails is
 //! logged and left out rather than failing a lookup or a reload, so the
-//! embedded Pomme pack always loads. Optional local packs stay disabled here;
-//! existing UI/server selection still controls the filesystem asset stack.
+//! embedded Pomme pack always loads. AppCore activates that bootstrap first,
+//! then configures local discovery, installation and theme sources. Local UI
+//! and server selections activate this same view before refreshing consumers.
 //! The Vanilla supplier exposes extracted and indexed entries with their own
 //! root/fallback metadata: managers apply filters between those entries too,
 //! even with the same logical origin.
 //! Ordinary directory/ZIP overlays remain one composed entry with primary-only
-//! root metadata. Existing application asset consumers remain on their separate
-//! filesystem-based stack until migration.
+//! root metadata.
 //! Overlays belong in source composition, not loaders. This layer
 //! does not merge JSON, decode images or build atlases.
 //!
@@ -22,8 +22,9 @@
 //! and pin a source or pathname, not immutable bytes; reopening may change or
 //! fail. Sources must retain required storage leases. Streams close on drop.
 //! Reload opens candidates before activation, then invokes a synchronous
-//! rebuild callback (the menu's splash). Suppliers and resource handles remain
-//! on the application thread; they do not provide a transferable content API.
+//! rebuild callback. Managers, pack views and lazy metadata lookup remain
+//! application-thread-local; selected ResourceContent handles and their owned
+//! readers can move across threads.
 
 pub(crate) mod managers;
 pub(crate) mod pack_resources;

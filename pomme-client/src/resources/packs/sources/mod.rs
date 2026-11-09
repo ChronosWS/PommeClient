@@ -31,9 +31,26 @@ fn path_error(operation: &str, path: &Path, error: io::Error) -> io::Error {
     )
 }
 
+#[cfg(all(test, unix))]
+mod path_validation {
+    use super::{RepositorySource, tests};
+
+    // Fixtures supply otherwise-valid packs under trusted discovery roots,
+    // default-deny policy, and no filesystem mutation after validation.
+    pub(super) fn assert_load_packs_catalog<S: RepositorySource + ?Sized>(
+        source: &mut S,
+        expected_location_ids: &[&str],
+    ) {
+        assert!(
+            !expected_location_ids.is_empty(),
+            "load_packs needs a nonempty successful catalog control"
+        );
+        tests::test_load_packs(source, expected_location_ids);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-
     use super::RepositorySource;
 
     pub(super) fn test_load_packs_empty<S: RepositorySource + ?Sized>(source: &mut S) {
@@ -57,23 +74,5 @@ mod tests {
             ids, expected,
             "load_packs location IDs including multiplicity"
         );
-    }
-}
-
-#[cfg(all(test, unix))]
-mod path_validation {
-    use super::{RepositorySource, tests};
-
-    // Fixtures supply otherwise-valid packs under trusted discovery roots,
-    // default-deny policy, and no filesystem mutation after validation.
-    pub(super) fn assert_load_packs_catalog<S: RepositorySource + ?Sized>(
-        source: &mut S,
-        expected_location_ids: &[&str],
-    ) {
-        assert!(
-            !expected_location_ids.is_empty(),
-            "load_packs needs a nonempty successful catalog control"
-        );
-        tests::test_load_packs(source, expected_location_ids);
     }
 }

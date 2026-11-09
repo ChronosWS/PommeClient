@@ -41,6 +41,21 @@ impl MappedResourcesSupplier {
         })
     }
 
+    /// Exposes only the aliases and their companions, so the folder's other
+    /// files can't shadow anything.
+    pub(crate) fn aliases_only(
+        root: PathBuf,
+        namespace: String,
+        remappings: BTreeMap<ResourceId, PathBuf>,
+    ) -> io::Result<Self> {
+        let mut mapping = PreparedMapping::new(namespace, remappings)?;
+        mapping.aliases_only = true;
+        Ok(Self {
+            root,
+            mapping: Rc::new(mapping),
+        })
+    }
+
     fn open(&self, location: &PackLocationInfo) -> MappedPackResources {
         MappedPackResources::from_prepared(
             location.clone(),
@@ -73,6 +88,7 @@ struct PreparedMapping {
     /// always win, even when their target is absent. Translation is
     /// single-step.
     remappings: BTreeMap<ResourceId, PathBuf>,
+    aliases_only: bool,
 }
 
 impl MappedPackResources {
@@ -122,8 +138,11 @@ impl PreparedMapping {
         }
         let mut resolved = remappings.clone();
         for (id, path) in remappings {
-            let companion =
-                ResourceId::new(&format!("{id}{METADATA_EXTENSION}")).map_err(io::Error::other)?;
+            let companion = ResourceId::from_parts(
+                id.namespace(),
+                &format!("{}{METADATA_EXTENSION}", id.path()),
+            )
+            .map_err(io::Error::other)?;
             let mut companion_path = path.into_os_string();
             companion_path.push(METADATA_EXTENSION);
             resolved.entry(companion).or_insert(companion_path.into());
@@ -131,6 +150,7 @@ impl PreparedMapping {
         Ok(Self {
             namespace,
             remappings: resolved,
+            aliases_only: false,
         })
     }
 }
@@ -165,20 +185,18 @@ impl PackResources for MappedPackResources {
         if id.namespace() != self.mapping.namespace {
             return Ok(None);
         }
-        let relative = self
-            .mapping
-            .remappings
-            .get(id)
-            .map_or(Path::new(id.path()), PathBuf::as_path);
+        let alias = self.mapping.remappings.get(id);
+        if alias.is_none() && self.mapping.aliases_only {
+            return Ok(None);
+        }
+        let relative = alias.map_or(Path::new(id.path()), PathBuf::as_path);
         let path = self.root.root().join(relative);
-        // Mapped resources require a regular file.
-        // Only the selected candidate is inspected, never source ancestors.
+        // Mapped resources require a regular file; anything else is absent,
+        // as `list_resources` skips it. Only the selected candidate is
+        // inspected, never source ancestors.
         match fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() => Ok(Some(file_supplier(path))),
-            Ok(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("resource is not a file: {}", path.display()),
-            )),
+            Ok(_) => Ok(None),
             Err(error) if missing_directory(&error) => Ok(None),
             Err(error) => Err(error),
         }
@@ -196,18 +214,20 @@ impl PackResources for MappedPackResources {
             return Ok(());
         }
         validate_path(directory)?;
-        list_namespace(
-            self.root.root(),
-            namespace,
-            directory,
-            &mut |id, supplier| {
-                // Only files reach this callback: a remapped directory name must
-                // not prune its ordinary descendants. Derived sidecars shadow too.
-                if !self.mapping.remappings.contains_key(&id) {
-                    output(id, supplier);
-                }
-            },
-        )?;
+        if !self.mapping.aliases_only {
+            list_namespace(
+                self.root.root(),
+                namespace,
+                directory,
+                &mut |id, supplier| {
+                    // Only files reach this callback: a remapped directory name must
+                    // not prune its ordinary descendants. Derived sidecars shadow too.
+                    if !self.mapping.remappings.contains_key(&id) {
+                        output(id, supplier);
+                    }
+                },
+            )?;
+        }
         for (id, relative) in &self.mapping.remappings {
             if !id.is_under(directory) {
                 continue;
@@ -435,6 +455,62 @@ mod resources_supplier_tests {
 }
 
 #[cfg(test)]
+mod aliases_only_tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::MappedResourcesSupplier;
+    use crate::resources::pack_resources::PackType;
+    use crate::resources::packs::{PackLocationInfo, PackMetadata, ResourcesSupplier};
+    use crate::resources::resource_id;
+    use crate::resources::test_dir::TempDir;
+
+    #[test]
+    fn exposes_only_its_aliases() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.0.join("faces")).unwrap();
+        fs::create_dir_all(temp.0.join("textures/entity")).unwrap();
+        fs::write(temp.0.join("faces/0.png"), b"face").unwrap();
+        fs::write(temp.0.join("textures/entity/chest.png"), b"other").unwrap();
+        let alias = resource_id!("minecraft:textures/gui/panorama_0.png");
+        let supplier = MappedResourcesSupplier::aliases_only(
+            temp.0.clone(),
+            "minecraft".into(),
+            BTreeMap::from([(alias.clone(), PathBuf::from("faces/0.png"))]),
+        )
+        .unwrap();
+        let pack = supplier
+            .open_resources(
+                &PackLocationInfo::test("aliases-only"),
+                &PackMetadata::test(),
+            )
+            .unwrap()
+            .remove(0);
+        let other = resource_id!("minecraft:textures/entity/chest.png");
+        assert!(
+            pack.get_resource(PackType::ClientResources, &alias)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            pack.get_resource(PackType::ClientResources, &other)
+                .unwrap()
+                .is_none()
+        );
+        let mut listed = Vec::new();
+        pack.list_resources(
+            PackType::ClientResources,
+            "minecraft",
+            "textures",
+            &mut |id, _| listed.push(id),
+        )
+        .unwrap();
+        assert_eq!(listed, vec![alias]);
+    }
+}
+
+#[cfg(test)]
 mod path_validation {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -560,5 +636,65 @@ mod path_validation {
                 Ok(_) => panic!("constructor accepted escaping target {target:?}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod companion_tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::MappedPackResources;
+    use super::test_fixture::default_location;
+    use crate::resources::pack_resources::{PackType, tests};
+    use crate::resources::resource::ResourceId;
+    use crate::resources::test_dir::TempDir;
+
+    fn id(path: &str) -> ResourceId {
+        ResourceId::from_parts("ns", path).unwrap()
+    }
+
+    /// An alias brings its file's `.mcmeta` along unless that has an alias of
+    /// its own, and an alias naming a directory is absent everywhere.
+    #[test]
+    fn aliases_carry_their_mcmeta_and_skip_directories() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.0.join("files/folder")).unwrap();
+        for (name, text) in [
+            ("files/a.png", "a"),
+            ("files/a.png.mcmeta", "derived a"),
+            ("files/b.png", "b"),
+            ("files/b.png.mcmeta", "derived b"),
+            ("files/own.mcmeta", "explicit b"),
+        ] {
+            fs::write(temp.0.join(name), text).unwrap();
+        }
+        let pack = MappedPackResources::new(
+            default_location(),
+            temp.0.clone(),
+            "ns".into(),
+            BTreeMap::from([
+                (id("t/a.png"), PathBuf::from("files/a.png")),
+                (id("t/b.png"), PathBuf::from("files/b.png")),
+                (id("t/b.png.mcmeta"), PathBuf::from("files/own.mcmeta")),
+                (id("t/folder.png"), PathBuf::from("files/folder")),
+            ]),
+        )
+        .unwrap();
+        let client = PackType::ClientResources;
+        tests::test_get_resource_missing(&pack, client, &id("t/folder.png"));
+        tests::test_list_resources(
+            &pack,
+            client,
+            "ns",
+            "t",
+            &[
+                (id("t/a.png"), b"a".to_vec()),
+                (id("t/a.png.mcmeta"), b"derived a".to_vec()),
+                (id("t/b.png"), b"b".to_vec()),
+                (id("t/b.png.mcmeta"), b"explicit b".to_vec()),
+            ],
+        );
     }
 }

@@ -17,8 +17,7 @@ const BLOCK_CACHE_FILE: &str = "block_cache_v4.json";
 use super::block_state_table::BlockStateTable;
 use super::json_bundle::JsonBundle;
 use super::model;
-use super::model::BakedModel;
-use crate::assets::AssetIndex;
+use super::model::{BakedModel, WeightedModels};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tint {
@@ -86,7 +85,7 @@ impl FaceTextures {
 
 /// A block state's model lookups, resolved once per state.
 struct StateRender {
-    model: Option<Arc<BakedModel>>,
+    model: Option<Arc<WeightedModels>>,
     opaque_full_cube: bool,
     occludes: bool,
     hidden_when_enclosed: bool,
@@ -95,12 +94,11 @@ struct StateRender {
 #[derive(Default)]
 pub struct BlockRenderAssets {
     textures: HashMap<String, FaceTextures>,
-    baked: HashMap<String, HashMap<String, Arc<BakedModel>>>,
+    baked: model::BakedModelMap,
     /// Per block-state table slot, every state's resolved model lookups,
     /// indexed by state id; built on first use of the slot. The mesher queries
     /// these for every block and neighbour, so they must not hash or parse.
     state_render: [OnceLock<Box<[StateRender]>>; super::TABLE_SLOTS],
-    multipart: HashMap<String, Vec<model::MultipartEntry>>,
     item_models: HashMap<String, BakedModel>,
     flat_item_textures: std::collections::HashSet<String>,
     flat_item_texture_keys: HashMap<String, Vec<Option<String>>>,
@@ -194,23 +192,20 @@ impl LoadProgress {
 
 impl BlockRenderAssets {
     pub fn load(
-        jar_assets_dir: &Path,
-        asset_index: &Option<AssetIndex>,
+        inputs: &model::ModelInputs,
         cache_dir: Option<&Path>,
-        packs: Option<&crate::resource_pack::ResourcePackManager>,
+        use_vanilla_cache: bool,
         progress: Option<&LoadProgress>,
     ) -> Self {
         // Only vanilla textures are cached, so a cache shared between
         // profiles never carries one profile's resource packs into another.
         let cache_path = cache_dir
-            .filter(|_| packs.is_none())
+            .filter(|_| use_vanilla_cache)
             .map(|dir| dir.join(BLOCK_CACHE_FILE));
 
-        // The bundle is the jar's files alone, so packs read from disk.
-        let bundle = packs
-            .is_none()
-            .then(|| JsonBundle::load(jar_assets_dir, asset_index, cache_dir, progress));
-        let bundle = bundle.as_ref();
+        // Parallel reads use selected contents even for custom packs. Never
+        // read or write their data through the shared vanilla bundle cache.
+        let bundle = JsonBundle::load(inputs, cache_dir.filter(|_| use_vanilla_cache), progress);
 
         let textures: Option<HashMap<String, FaceTextures>> =
             cache_path.as_deref().and_then(load_cache);
@@ -222,8 +217,7 @@ impl BlockRenderAssets {
         }
 
         let textures = textures.unwrap_or_else(|| {
-            let mut textures =
-                model::load_all_block_textures(jar_assets_dir, asset_index, packs, bundle);
+            let mut textures = model::load_all_block_textures(inputs, &bundle);
 
             textures
                 .entry("water".into())
@@ -239,20 +233,10 @@ impl BlockRenderAssets {
             textures
         });
 
-        LoadProgress::begin_stage(
-            progress,
-            LoadStage::Blockstates,
-            bundle.map_or(0, |b| b.blockstates().len()),
-        );
-        let (baked, multipart) =
-            model::bake_all_models(jar_assets_dir, asset_index, packs, bundle, progress);
-        LoadProgress::begin_stage(
-            progress,
-            LoadStage::Items,
-            bundle.map_or(0, |b| b.item_names().len()),
-        );
-        let baked_items =
-            model::bake_item_models(jar_assets_dir, asset_index, packs, bundle, progress);
+        LoadProgress::begin_stage(progress, LoadStage::Blockstates, bundle.blockstates().len());
+        let baked = model::bake_all_models(inputs, &bundle, progress);
+        LoadProgress::begin_stage(progress, LoadStage::Items, bundle.item_names().len());
+        let baked_items = model::bake_item_models(inputs, Some(&bundle), progress);
         let item_models = baked_items.models;
         let flat_item_textures = baked_items.generated_textures;
         let flat_item_texture_keys = baked_items.flat_texture_keys;
@@ -264,7 +248,6 @@ impl BlockRenderAssets {
             textures,
             baked,
             state_render: [const { OnceLock::new() }; super::TABLE_SLOTS],
-            multipart,
             item_models,
             flat_item_textures,
             flat_item_texture_keys,
@@ -374,12 +357,12 @@ impl BlockRenderAssets {
                         // `isSolidRender` (`canOcclude` and a full occlusion shape),
                         // but it still counts the model's quads and ignores
                         // `canOcclude`, so glass counts as solid there.
-                        let opaque_full_cube = !block_state_data.is_air
-                            && model.as_ref().is_some_and(|m| m.is_full_cube);
+                        let first = model.as_deref().map(WeightedModels::first);
+                        let opaque_full_cube =
+                            !block_state_data.is_air && first.is_some_and(|m| m.is_full_cube);
                         let occludes = block_state_data.occludes_neighbor_faces();
-                        let all_quads_cull = model
-                            .as_ref()
-                            .is_some_and(|m| m.quads.iter().all(|q| q.cullface.is_some()));
+                        let all_quads_cull =
+                            first.is_some_and(|m| m.quads.iter().all(|q| q.cullface.is_some()));
                         StateRender {
                             model,
                             opaque_full_cube,
@@ -394,8 +377,8 @@ impl BlockRenderAssets {
             .get(u32::from(state) as usize)
     }
 
-    fn resolve_model(&self, block: &str, props: &super::PropMap) -> Option<&Arc<BakedModel>> {
-        let variants = self.baked.get(block)?;
+    fn resolve_model(&self, block: &str, props: &super::PropMap) -> Option<&Arc<WeightedModels>> {
+        let variants = &self.blockstate_layer(block, props)?.variants;
 
         if variants.len() == 1 {
             return variants.values().next();
@@ -413,6 +396,26 @@ impl BlockRenderAssets {
             .or_else(|| variants.values().next())
     }
 
+    fn blockstate_layer(
+        &self,
+        block: &str,
+        props: &super::PropMap,
+    ) -> Option<&model::BakedBlockstate> {
+        let layers = self.baked.get(block)?;
+        // Vanilla merges instantiated states, not JSON keys: a higher partial
+        // variant definition leaves unmatched states in the lower layer.
+        layers
+            .iter()
+            .rev()
+            .find(|layer| {
+                !layer.multipart.is_empty()
+                    || layer.variants.keys().any(|key| {
+                        constraints_match(props, key.split(',').filter_map(|p| p.split_once('=')))
+                    })
+            })
+            .or_else(|| layers.first())
+    }
+
     pub fn texture_names(&self) -> impl Iterator<Item = &str> + '_ {
         let face_textures = self.textures.values().flat_map(|ft| {
             let base = [
@@ -426,12 +429,19 @@ impl BlockRenderAssets {
         let models = self
             .baked
             .values()
-            .flat_map(|variants| variants.values().map(|model| &**model))
-            .chain(
-                self.multipart
+            .flatten()
+            .flat_map(|layer| {
+                layer
+                    .variants
                     .values()
-                    .flat_map(|entries| entries.iter().map(|entry| &*entry.model)),
-            )
+                    .flat_map(|models| models.models())
+                    .chain(
+                        layer
+                            .multipart
+                            .iter()
+                            .flat_map(|entry| entry.models.models()),
+                    )
+            })
             .chain(self.item_models.values());
         let quad_textures =
             models.flat_map(|model| model.quads.iter().map(|quad| quad.texture.name()));
@@ -451,23 +461,43 @@ impl<'a> BlockRenderView<'a> {
             .get(self.block_state_table.block_state_data(state).id)
     }
 
-    pub(crate) fn get_baked_model(self, state: BlockState) -> Option<&'a BakedModel> {
-        self.assets
+    /// The state's variant model as vanilla `ModelBlockRenderer` picks it for
+    /// the block at `pos`, or the first of a weighted list without one.
+    pub(crate) fn get_baked_model(
+        self,
+        state: BlockState,
+        pos: Option<[i32; 3]>,
+    ) -> Option<&'a BakedModel> {
+        let models = self
+            .assets
             .state_render(self.block_state_table, state)?
             .model
-            .as_deref()
+            .as_deref()?;
+        Some(models.pick_at(pos, position_random))
     }
 
+    /// Vanilla `MultiPartModel.collectParts`: every matching case reseeded
+    /// from one draw, so each picks as if alone. The draw waits for the first
+    /// weighted case, as a single model's pick takes none.
     pub(crate) fn get_multipart_quads(
         self,
         state: BlockState,
+        pos: Option<[i32; 3]>,
     ) -> Option<Vec<&'a model::BakedQuad>> {
         let block_state_data = self.block_state_table.block_state_data(state);
-        let entries = self.assets.multipart.get(block_state_data.id)?;
+        let entries = &self
+            .assets
+            .blockstate_layer(block_state_data.id, &block_state_data.properties)?
+            .multipart;
+        let mut seed = None;
         let mut quads = Vec::new();
         for entry in entries {
             if entry.when.matches(&block_state_data.properties) {
-                quads.extend(entry.model.quads.iter());
+                let model = entry.models.pick_at(pos, |pos| {
+                    let seed = *seed.get_or_insert_with(|| position_random(pos).next_long());
+                    crate::util::JavaRandom::new(seed)
+                });
+                quads.extend(model.quads.iter());
             }
         }
         if quads.is_empty() { None } else { Some(quads) }
@@ -493,6 +523,15 @@ impl<'a> BlockRenderView<'a> {
             .state_render(self.block_state_table, state)
             .is_some_and(|r| r.hidden_when_enclosed)
     }
+}
+
+/// Vanilla `ModelBlockRenderer`'s random, seeded by `BlockState.getSeed`.
+// TODO: doors, double plants and beds override `getSeed` to share one seed
+// between their halves; no vanilla blockstate of theirs is weighted, so only
+// a resource pack's would differ.
+#[inline]
+fn position_random([x, y, z]: [i32; 3]) -> crate::util::JavaRandom {
+    crate::util::JavaRandom::new(super::position_seed(x, y, z))
 }
 
 fn opaque_rgb(color: u32) -> u32 {

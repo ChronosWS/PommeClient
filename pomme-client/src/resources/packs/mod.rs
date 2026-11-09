@@ -13,18 +13,13 @@ mod pack;
 mod repository;
 mod sources;
 
-pub(crate) use download::{PackDownloadError, download_server_pack, extract_zip};
+pub(crate) use download::{PackDownloadError, download_server_pack};
 pub(crate) use id::PackId;
 pub(crate) use location::PackLocationInfo;
 pub(crate) use pack::{Pack, PackEnablementConfig, PackMetadata, PackPosition, ResourcesSupplier};
 pub(crate) use repository::PackRepository;
-#[allow(
-    unused_imports,
-    reason = "the consumer migration (#785) registers server packs"
-)]
-pub(crate) use sources::PhysicalPack;
 pub(crate) use sources::{
-    BuiltinRepositorySource, FolderRepositorySource, InstallationLocation,
+    BuiltinRepositorySource, FolderRepositorySource, InstallationLocation, PhysicalPack,
     RegisteredRepositorySource, RepositorySource, SymlinkPolicy, ThemeSpecification,
 };
 

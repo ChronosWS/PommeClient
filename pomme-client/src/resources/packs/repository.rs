@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{Pack, PackId, RepositorySource};
+use super::{Pack, PackEnablementConfig, PackId, RepositorySource};
 use crate::resources::ResourceOrigin;
 use crate::resources::pack_resources::PackResources;
 
@@ -76,12 +76,10 @@ impl PackRepository {
             .and_then(|&index| self.available.get(index))
     }
 
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn available_packs(&self) -> impl Iterator<Item = &Pack> {
         self.available.iter()
     }
 
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn enabled_ids(&self) -> &[PackId] {
         &self.enabled
     }
@@ -93,26 +91,39 @@ impl PackRepository {
     /// Preserve requested order and duplicates, omit unknown IDs, then insert
     /// missing required packs. Compatibility and PackSource's automatic-add
     /// flag are not enablement gates; fixed positions do not reorder requests.
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn set_enabled(&mut self, ids: &[PackId]) {
         self.enabled = Self::rebuild_enabled(&self.available, &self.by_id, ids);
     }
 
-    /// Append a known, disabled pack to the enabled list without changing the
-    /// available catalog. An already-enabled pack is not moved.
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
-    pub(crate) fn enable_pack(&mut self, id: &PackId) -> bool {
-        if !self.by_id.contains_key(id) || self.enabled.contains(id) {
+    /// Vanilla `PackSelectionModel.EntryBase.toggleSelection`: in at the pack's
+    /// default edge, inside the fixed block there. Unreversed, as this list
+    /// runs low to high where the model's runs high to low.
+    pub(crate) fn select_pack(&mut self, id: &PackId) -> bool {
+        let Some(pack) = self.get_pack(id) else {
+            return false;
+        };
+        if self.enabled.contains(id) {
             return false;
         }
-        self.enabled.push(id.clone());
+        let position = pack.enablement_config().default_position;
+        let (available, by_id) = (&self.available, &self.by_id);
+        position.insert(
+            &mut self.enabled,
+            id.clone(),
+            |entry| {
+                by_id
+                    .get(entry)
+                    .and_then(|&index| available.get(index))
+                    .map_or(PackEnablementConfig::DISCOVERED, Pack::enablement_config)
+            },
+            false,
+        );
         true
     }
 
     /// Remove only the first enabled occurrence, even if required, without
     /// changing the available catalog. Required packs are reinserted by the
     /// next set_enabled/reload, not by every mutation.
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn disable_pack(&mut self, id: &PackId) -> bool {
         if let Some(index) = self.enabled.iter().position(|enabled| enabled == id) {
             self.enabled.remove(index);
@@ -226,10 +237,10 @@ mod pack_repository_api_tests {
         assert_eq!(repository.enabled_ids(), ids, "set_enabled IDs");
     }
 
-    pub(super) fn test_enable_pack(repository: &mut PackRepository, id: &PackId) {
+    pub(super) fn test_select_pack(repository: &mut PackRepository, id: &PackId) {
         assert!(
-            repository.enable_pack(id),
-            "enable_pack should add the pack"
+            repository.select_pack(id),
+            "select_pack should add the pack"
         );
     }
 
@@ -343,10 +354,10 @@ mod pack_repository_tests {
     }
 
     #[test]
-    fn test_enable_pack() {
+    fn test_select_pack() {
         let (mut repository, id) = fixture();
         repository.reload();
-        pack_repository_api_tests::test_enable_pack(&mut repository, &id);
+        pack_repository_api_tests::test_select_pack(&mut repository, &id);
     }
 
     #[test]
@@ -424,6 +435,19 @@ mod catalog_tests {
             .enabled_packs()
             .map(|pack| pack.location().title.plain_text())
             .collect()
+    }
+
+    #[test]
+    fn a_selected_pack_goes_below_a_pinned_top_pack() {
+        let server = pack("server", "server", true, PackPosition::Top, true);
+        let player = pack("file/player", "player", false, PackPosition::Top, false);
+        let player_id = player.id().clone();
+        let mut repository = PackRepository::new(vec![Box::new(Packs(vec![server, player]))]);
+        repository.reload();
+        assert_eq!(titles(&repository), ["server"]);
+        assert!(repository.select_pack(&player_id));
+        assert!(!repository.select_pack(&player_id));
+        assert_eq!(titles(&repository), ["player", "server"]);
     }
 
     #[test]

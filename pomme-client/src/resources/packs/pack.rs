@@ -16,15 +16,7 @@ use crate::resources::pack_resources::{PackMetadataResources, PackResources, Pac
 /// Applicable overlay directories are already validated, in declaration order.
 #[derive(Clone)]
 pub(crate) struct PackMetadata {
-    #[allow(
-        dead_code,
-        reason = "the consumer migration (#785) shows it in pack selection"
-    )]
     pub(crate) description: Component,
-    #[allow(
-        dead_code,
-        reason = "the consumer migration (#785) shows it in pack selection"
-    )]
     pub(crate) compatibility: PackCompat,
     pub(crate) overlays: Vec<String>,
 }
@@ -170,7 +162,6 @@ impl Pack {
     }
 
     /// Allocate a new opaque registration once, independently of textual ID.
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn new(
         location: PackLocationInfo,
         metadata: PackMetadata,
@@ -213,7 +204,6 @@ impl Pack {
         &self.location
     }
 
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn metadata(&self) -> &PackMetadata {
         &self.metadata
     }

@@ -10,7 +10,7 @@ use crate::mob_effect::ActiveMobEffects;
 use crate::position::BlockPos;
 use crate::renderer::pipelines::menu_overlay::{MenuElement, SpriteId};
 use crate::ui::boss_bar::BossBarState;
-use crate::ui::debug_entries::{DebugColumns, push_debug_columns};
+use crate::ui::debug_entries::DebugColumns;
 use crate::ui::text::TextSpan;
 use crate::world::waypoints::{LocatorDot, PitchDirection, WaypointStyleId};
 
@@ -672,9 +672,10 @@ pub fn build_hud(
     spans_width_fn: super::common::SpansWidthFn<'_>,
     scoreboard: &Scoreboard,
     effects: &ActiveMobEffects,
+    // Vanilla `Screen.showsActiveEffects`: the open screen lists them instead.
+    screen_shows_effects: bool,
     boss_bars: &BossBarState,
     first_person: bool,
-    debug: &DebugColumns,
     gs: f32,
     attack: &AttackIndicatorState,
     text_width_fn: TextWidthFn,
@@ -686,8 +687,6 @@ pub fn build_hud(
     if first_person && (game_mode != 3 || spectator_crosshair) {
         build_crosshair(elements, cx, cy, gs, attack);
     }
-
-    push_debug_columns(elements, debug, screen_w, gs, text_width_fn);
 
     // The bar geometry also anchors the status rows and XP bar below.
     let hotbar_w = HOTBAR_W * gs;
@@ -825,7 +824,9 @@ pub fn build_hud(
         });
     }
 
-    build_effect_icons(elements, screen_w, gs, effects);
+    if !screen_shows_effects {
+        build_effect_icons(elements, screen_w, gs, effects);
+    }
 
     build_boss_bars(elements, screen_w, screen_h, gs, boss_bars);
 
@@ -1042,8 +1043,6 @@ pub fn build_hud(
 /// Vanilla `Hud.extractEffects`: active effect icons anchored to the top-right,
 /// beneficial on the first row, everything else (harmful and neutral) on the
 /// second.
-// TODO: hide while a screen showing effects is open, once the vanilla
-// `EffectsInInventory` panel is ported.
 fn build_effect_icons(
     elements: &mut Vec<MenuElement>,
     screen_w: f32,

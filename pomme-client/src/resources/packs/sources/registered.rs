@@ -13,10 +13,6 @@ use crate::resources::packs::{
 };
 
 pub(crate) enum PhysicalPack {
-    #[allow(
-        dead_code,
-        reason = "the consumer migration (#785) registers server packs"
-    )]
     Directory(PathBuf),
 }
 
@@ -47,6 +43,12 @@ struct Definition {
     enablement: PackEnablementConfig,
 }
 
+/// A detached definition, retaining its identity and source-local position.
+pub(crate) struct RemovedRegistration {
+    definition: Definition,
+    position: usize,
+}
+
 struct RegisteredState {
     definitions: Vec<Definition>,
     pack_type: PackType,
@@ -74,7 +76,6 @@ impl RegisteredRepositorySource {
 
     /// Definition only, no I/O. Duplicate paths receive distinct opaque IDs.
     /// Validation is deferred to reload, which must succeed before enabling ID.
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn register(
         &self,
         location: PackLocationInfo,
@@ -94,12 +95,29 @@ impl RegisteredRepositorySource {
     /// Forget only the definition: no deletion or closure of existing views.
     /// A later failed reload leaves the repository's old active catalog intact;
     /// it does not restore this removed definition.
-    #[allow(dead_code, reason = "the consumer migration (#785) uses it")]
     pub(crate) fn unregister(&self, id: &PackId) -> bool {
+        self.take_registration(id).is_some()
+    }
+
+    /// Temporarily remove one definition without changing retained views.
+    pub(crate) fn take_registration(&self, id: &PackId) -> Option<RemovedRegistration> {
         let mut state = self.state.borrow_mut();
-        let before = state.definitions.len();
-        state.definitions.retain(|definition| &definition.id != id);
-        before != state.definitions.len()
+        let position = state
+            .definitions
+            .iter()
+            .position(|definition| &definition.id == id)?;
+        Some(RemovedRegistration {
+            definition: state.definitions.remove(position),
+            position,
+        })
+    }
+
+    /// Restore to the same source without reallocating an ID or reading
+    /// metadata.
+    pub(crate) fn restore_registration(&self, removed: RemovedRegistration) {
+        let mut state = self.state.borrow_mut();
+        let position = removed.position.min(state.definitions.len());
+        state.definitions.insert(position, removed.definition);
     }
 
     pub(crate) fn set_target_format(&self, target: Option<PackFormat>) {

@@ -47,12 +47,12 @@ use crate::renderer::pipelines::entity_renderer::{
 };
 use crate::renderer::pipelines::entity_shadow::{ShadowCaster, ShadowScene};
 use crate::renderer::pipelines::lightmap::LightmapInfo;
-use crate::renderer::pipelines::menu_overlay::MenuElement;
+use crate::renderer::pipelines::menu_overlay::{MenuElement, TooltipLine};
 use crate::renderer::pipelines::post_effect::PostEffect;
 use crate::renderer::pipelines::shaderpack::PackWorld;
 use crate::renderer::pipelines::sign_text::{SignFace, SignRenderInfo};
 use crate::renderer::{Renderer, SkyState};
-use crate::resource_pack::ResourcePackManager;
+use crate::resources::managers::ResourceManager;
 use crate::ui::chat::{ChatState, ChatUiAction};
 use crate::ui::death::{self, DeathAction};
 use crate::ui::debug_entries::{self, DebugColumns, DebugEntryInput};
@@ -518,7 +518,7 @@ impl GameState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mesh_source: &impl MeshSource,
-        resource_packs: Option<&ResourcePackManager>,
+        resources: &dyn ResourceManager,
         render_distance: u32,
         singleplayer: bool,
         chat_options: crate::ui::chat::ChatOptions,
@@ -538,7 +538,7 @@ impl GameState {
         let mesh_dispatcher = mesh_source.create_mesh_dispatcher(
             block_registry.owned_render_view(),
             biome_climate,
-            resource_packs,
+            resources,
             Default::default(),
         );
 
@@ -934,12 +934,64 @@ impl GameState {
             && !self.chat.is_open()
     }
 
+    /// The open screen's panel when it has vanilla's `EffectsInInventory`
+    /// (the inventory and creative screens).
+    fn effects_screen_panel(
+        &self,
+        sw: f32,
+        sh: f32,
+        gs: f32,
+    ) -> Option<crate::ui::container::Panel> {
+        if self.dialog_open() {
+            None
+        } else if self.creative_inventory_open {
+            Some(crate::ui::creative_inventory::panel(sw, sh, gs))
+        } else if self.inventory_open {
+            let x_offset = crate::ui::recipe_book::main_x_offset(
+                &self.recipe_book,
+                crate::recipe::RecipeBookType::Crafting,
+                sw,
+                gs,
+            );
+            Some(crate::ui::inventory::panel(sw, sh, gs, x_offset))
+        } else {
+            None
+        }
+    }
+
+    /// The open screen's `EffectsInInventory` elements, for it to draw over
+    /// its panel, and the tooltip to draw last.
+    fn screen_effects(
+        &self,
+        sw: f32,
+        sh: f32,
+        gs: f32,
+        cursor: (f32, f32),
+        spans_width_fn: crate::ui::common::SpansWidthFn<'_>,
+    ) -> (Vec<MenuElement>, Option<Vec<TooltipLine>>) {
+        let mut effects = Vec::new();
+        let tooltip = self.effects_screen_panel(sw, sh, gs).and_then(|panel| {
+            crate::ui::effects_in_inventory::push(
+                &mut effects,
+                &panel,
+                sw,
+                cursor,
+                &self.player.effects,
+                spans_width_fn,
+            )
+        });
+        (effects, tooltip)
+    }
+
     pub fn gui_open(&self) -> bool {
+        self.in_game_ui() || self.dialog_open() || self.game_mode_switcher.is_some()
+    }
+
+    /// Vanilla `Screen.isInGameUi`: the open screen is a container or a sign.
+    fn in_game_ui(&self) -> bool {
         self.inventory_open
             || self.creative_inventory_open
             || self.open_container.is_some()
-            || self.dialog_open()
-            || self.game_mode_switcher.is_some()
             || self.sign_editor.is_some()
     }
 
@@ -3021,6 +3073,7 @@ pub fn update_game(
     core.tick_accumulator += dt;
     let disconnect_reason =
         core.drain_network_events(connection, None, &mut gfx.renderer, &gfx.window, game);
+    crate::ui::menu::sync_resource_packs(core);
     if let Some(reason) = disconnect_reason {
         return GameUpdateResult::Disconnected { reason };
     }
@@ -3402,14 +3455,7 @@ pub fn update_game(
             game.player.look_dir.x_rot_deg(),
         );
     }
-    if !benchmark_running && game.hide_gui {
-        // F1 hides the debug lines too, unless a screen is open.
-        if !game.input_live() {
-            debug_entries::push_debug_columns(&mut elements, &debug, sw, gs, &|t, s| {
-                gfx.renderer.menu_text_width(t, s)
-            });
-        }
-    } else if !benchmark_running {
+    if !benchmark_running && !game.hide_gui {
         // Vanilla Hud.extractCameraOverlays: vignette, pumpkin, and portal
         // draw under everything else in the HUD.
         let portal_intensity = game
@@ -3586,9 +3632,10 @@ pub fn update_game(
             &|spans, s| gfx.renderer.menu_spans_width(spans, s),
             &game.scoreboard,
             &game.player.effects,
+            game.effects_screen_panel(sw, sh, gs)
+                .is_some_and(|panel| crate::ui::effects_in_inventory::can_see_effects(&panel, sw)),
             &game.boss_bars,
             gfx.renderer.is_first_person(),
-            &debug,
             gs,
             &attack,
             &|t, s| gfx.renderer.menu_text_width(t, s),
@@ -3615,6 +3662,61 @@ pub fn update_game(
         hud::build_sleep_overlay(&mut elements, sw, sh, game.player.sleep_counter);
     }
 
+    // Before chat so chat draws over it (vanilla extract order).
+    if !benchmark_running && !game.hide_gui {
+        game.title.build(&mut elements, sw, sh, gs, partial_tick);
+    }
+
+    // F1 hides the closed-chat overlay; an open chat is a screen and renders
+    // regardless (vanilla Hud.extractChat vs ChatScreen).
+    if !game.hide_gui || game.chat.is_focused() {
+        let dialog_open = game.dialog_open();
+        let command_tree = game.command_tree.clone();
+        // Vanilla `ChatScreen.mouseClicked` offers the click to the chat's own
+        // targets before its widgets.
+        let chat_takes_click = game
+            .chat
+            .hovering_clickable(core.input.cursor_pos(), core.input.shift_held());
+        let chat_action = game.chat.build(
+            &mut elements,
+            crate::ui::chat::ChatBuildContext {
+                screen_w: sw,
+                screen_h: sh,
+                gui_scale: gs,
+                cursor: core.input.cursor_pos(),
+                covered: dialog_open,
+                clicked: core.input.left_just_pressed(),
+                shift: core.input.shift_held(),
+                command_tree: command_tree.as_deref(),
+                advanced_item_tooltips: game.advanced_item_tooltips,
+                key_bindings: &core.input.key_bindings,
+                text_width_fn: &|t, s| gfx.renderer.menu_text_width(t, s),
+                spans_width_fn: &|spans, s| gfx.renderer.menu_spans_width(spans, s),
+            },
+        );
+        if let Some(action) = chat_action {
+            handle_chat_ui_action(action, core, connection, game);
+        }
+        if game.chat.is_in_bed() && !dialog_open && !game.chat.has_pending_modal_prompt() {
+            let hovered = common::push_button(
+                &mut elements,
+                core.input.cursor_pos(),
+                sw / 2.0 - 100.0 * gs,
+                sh - 40.0 * gs,
+                200.0 * gs,
+                20.0 * gs,
+                gs,
+                common::FONT_SIZE * gs,
+                crate::lang::translate("multiplayer.stopSleeping").unwrap_or("Leave Bed"),
+                true,
+            );
+            if hovered && core.input.left_just_pressed() && !chat_takes_click {
+                core.audio.play_ui_click();
+                game.stop_sleeping_requested = true;
+            }
+        }
+    }
+
     if core.input.performing_action(input::Action::ViewPlayerList)
         && !game.hide_gui
         && !game.paused
@@ -3635,21 +3737,32 @@ pub fn update_game(
         );
     }
 
-    if !benchmark_running && !game.hide_gui {
-        let renderer = &gfx.renderer;
-        crate::ui::player_tab::build_player_nameplates(
-            &mut elements,
-            crate::ui::player_tab::PlayerNameplates {
-                entity_store: &game.entity_store,
-                tab_list: &game.tab_list,
-                scoreboard: &game.scoreboard,
-                local_uuid: core.user.uuid,
-                partial_tick,
-                gs,
-                camera_pos: renderer.camera_render_position(),
-                project: &|position| renderer.project_world_to_screen(position),
-            },
+    // Vanilla Hud.extractSubtitleOverlay: drawn last when no screen or an
+    // in-game one is open (then even with F1), else here under the screen.
+    // The queue is empty while the option is off.
+    let subtitle_now = std::time::Instant::now();
+    for ev in core.audio.take_subtitle_events() {
+        game.subtitles
+            .on_play_sound(&ev.key, *ev.pos, ev.range, subtitle_now);
+    }
+    let in_game_ui = game.in_game_ui() && !game.dialog_open();
+    let mut subtitles = Vec::new();
+    if core.menu.show_subtitles && !benchmark_running && (!game.hide_gui || in_game_ui) {
+        let (yaw_deg, pitch_deg) = gfx.renderer.camera_effective_look_deg();
+        game.subtitles.build(
+            &mut subtitles,
+            sw,
+            sh,
+            gs,
+            gfx.renderer.camera_render_position(),
+            yaw_deg,
+            pitch_deg,
+            subtitle_now,
+            &|t, s| gfx.renderer.menu_text_width(t, s),
         );
+    }
+    if !in_game_ui && !game.input_live() {
+        elements.append(&mut subtitles);
     }
 
     if let Some(switcher) = &mut game.game_mode_switcher {
@@ -4051,6 +4164,9 @@ pub fn update_game(
                 }));
         }
         let main_x_offset = recipe_frame.map_or(0.0, |frame| frame.main_x_offset);
+        let (mut effects, effect_tooltip) = game.screen_effects(sw, sh, gs, cursor, &|spans, s| {
+            gfx.renderer.menu_spans_width(spans, s)
+        });
         let recipe_book_visible = recipe_frame.is_some_and(|frame| frame.visible);
         let hide_main_for_book = recipe_frame.is_some_and(|frame| frame.visible && frame.narrow);
         let mut deferred_recipe_cursor = azalea_inventory::ItemStack::Empty;
@@ -4090,6 +4206,7 @@ pub fn update_game(
                         cursor,
                         &game.player.inventory,
                     );
+                    elements.append(&mut effects);
                     player_preview = Some(preview);
                 }
             }
@@ -4273,6 +4390,7 @@ pub fn update_game(
                 gs,
                 main_x_offset,
                 recipe_book_visible.then_some(&mut deferred_recipe_cursor),
+                effects,
             );
             player_preview = Some(result.player_preview);
             (result.clicked_outside, result.ops, result.hovered, false)
@@ -4425,6 +4543,9 @@ pub fn update_game(
                 );
             }
         }
+        if let Some(lines) = effect_tooltip {
+            crate::ui::common::push_tooltip_lines(&mut elements, cursor, sw, sh, gs, lines);
+        }
         core.input.clear_just_pressed_actions();
     }
 
@@ -4448,6 +4569,9 @@ pub fn update_game(
         // Vanilla's focused search box takes every key, the drop key included.
         let drop = (!game.wants_text_input() && core.input.drop_key_just_pressed())
             .then(|| core.input.ctrl_held());
+        let (effects, effect_tooltip) = game.screen_effects(sw, sh, gs, cursor, &|spans, s| {
+            gfx.renderer.menu_spans_width(spans, s)
+        });
         let action = crate::ui::creative_inventory::build_creative_inventory(
             &mut elements,
             &mut game.creative_state,
@@ -4472,7 +4596,11 @@ pub fn update_game(
             core.input.right_held(),
             core.input.shift_held(),
             &|t, s| gfx.renderer.menu_text_width(t, s),
+            effects,
         );
+        if let Some(lines) = effect_tooltip {
+            crate::ui::common::push_tooltip_lines(&mut elements, cursor, sw, sh, gs, lines);
+        }
         player_preview = crate::ui::creative_inventory::player_preview(
             &game.creative_state,
             sw,
@@ -4510,95 +4638,6 @@ pub fn update_game(
         core.input.clear_just_pressed_actions();
     }
 
-    // Before chat so chat draws over it (vanilla extract order).
-    if !benchmark_running && !game.hide_gui {
-        game.title.build(&mut elements, sw, sh, gs, partial_tick);
-    }
-
-    // F1 hides the closed-chat overlay; an open chat is a screen and renders
-    // regardless (vanilla Hud.extractChat vs ChatScreen).
-    // TODO: the closed chat (and titles) build after screens, so they draw
-    // sharp over the menu blur; vanilla's HUD extracts them before the screen.
-    if !game.hide_gui || game.chat.is_focused() {
-        let command_tree = game.command_tree.clone();
-        // Vanilla `ChatScreen.mouseClicked` offers the click to the chat's own
-        // targets before its widgets.
-        let chat_takes_click = game
-            .chat
-            .hovering_clickable(core.input.cursor_pos(), core.input.shift_held());
-        let chat_action = game.chat.build(
-            &mut elements,
-            crate::ui::chat::ChatBuildContext {
-                screen_w: sw,
-                screen_h: sh,
-                gui_scale: gs,
-                cursor: core.input.cursor_pos(),
-                covered: dialog_open,
-                clicked: core.input.left_just_pressed(),
-                shift: core.input.shift_held(),
-                command_tree: command_tree.as_deref(),
-                advanced_item_tooltips: game.advanced_item_tooltips,
-                key_bindings: &core.input.key_bindings,
-                text_width_fn: &|t, s| gfx.renderer.menu_text_width(t, s),
-                spans_width_fn: &|spans, s| gfx.renderer.menu_spans_width(spans, s),
-            },
-        );
-        if let Some(action) = chat_action {
-            handle_chat_ui_action(action, core, connection, game);
-        }
-        if game.chat.is_in_bed() && !dialog_open && !game.chat.has_pending_modal_prompt() {
-            let hovered = common::push_button(
-                &mut elements,
-                core.input.cursor_pos(),
-                sw / 2.0 - 100.0 * gs,
-                sh - 40.0 * gs,
-                200.0 * gs,
-                20.0 * gs,
-                gs,
-                common::FONT_SIZE * gs,
-                crate::lang::translate("multiplayer.stopSleeping").unwrap_or("Leave Bed"),
-                true,
-            );
-            if hovered && core.input.left_just_pressed() && !chat_takes_click {
-                core.audio.play_ui_click();
-                game.stop_sleeping_requested = true;
-            }
-        }
-    }
-
-    // Subtitles draw above chat and the tab list; toasts stay on top
-    // (vanilla extract order). The queue is empty while the option is off.
-    let subtitle_now = std::time::Instant::now();
-    for ev in core.audio.take_subtitle_events() {
-        game.subtitles
-            .on_play_sound(&ev.key, *ev.pos, ev.range, subtitle_now);
-    }
-    if core.menu.show_subtitles && !benchmark_running && !game.hide_gui {
-        let (yaw_deg, pitch_deg) = gfx.renderer.camera_effective_look_deg();
-        game.subtitles.build(
-            &mut elements,
-            sw,
-            sh,
-            gs,
-            gfx.renderer.camera_render_position(),
-            yaw_deg,
-            pitch_deg,
-            subtitle_now,
-            &|t, s| gfx.renderer.menu_text_width(t, s),
-        );
-    }
-
-    // Vanilla Gui.update() runs the toast manager every frame regardless of
-    // screens or F1; only rendering is gated (ToastManager.extractRenderState).
-    for event in game.toasts.update() {
-        core.audio.play_ui_sound(event, 1.0, 1.0);
-    }
-    if !benchmark_running && !game.hide_gui {
-        game.toasts.build(&mut elements, sw, gs, &|spans, s| {
-            gfx.renderer.menu_spans_width(spans, s)
-        });
-    }
-
     build_server_screens(
         &mut elements,
         sw,
@@ -4634,6 +4673,42 @@ pub fn update_game(
         }
         core.input.clear_just_pressed_actions();
     }
+
+    // Above screens and under toasts, shown with F1 too.
+    if !benchmark_running && !game.deterministic && core.menu.show_autosave_indicator {
+        let alpha = game
+            .last_saving_indicator_value
+            .lerp(game.saving_indicator_value, partial_tick)
+            .clamp(0.0, 1.0);
+        if (alpha * 255.0).floor() > 0.0 {
+            hud::build_saving_indicator(&mut elements, sw, sh, gs, alpha, &|t, s| {
+                gfx.renderer.menu_text_width(t, s)
+            });
+        }
+    }
+
+    // Vanilla Gui.update() runs the toast manager every frame regardless of
+    // screens or F1; only rendering is gated (ToastManager.extractRenderState).
+    for event in game.toasts.update() {
+        core.audio.play_ui_sound(event, 1.0, 1.0);
+    }
+    if !benchmark_running && !game.hide_gui {
+        game.toasts.build(&mut elements, sw, gs, &|spans, s| {
+            gfx.renderer.menu_spans_width(spans, s)
+        });
+    }
+
+    // Vanilla `DebugScreenOverlay`: above toasts, shown with the GUI hidden
+    // (F1) only while a screen is open, and never over Debug Options.
+    if !benchmark_running
+        && (!game.hide_gui || !game.input_live())
+        && !(game.options_from_game && core.menu.is_debug_options())
+    {
+        debug_entries::push_debug_columns(&mut elements, &debug, sw, gs, &|t, s| {
+            gfx.renderer.menu_text_width(t, s)
+        });
+    }
+    elements.append(&mut subtitles);
 
     if screen_pointer != game.screen_pointer {
         game.screen_pointer = screen_pointer;
@@ -5234,20 +5309,6 @@ pub fn update_game(
         };
         [held(main_stack), held(inventory.offhand())]
     };
-    // Last element pushed: vanilla draws the saving indicator on its own
-    // stratum above screens, with the GUI hidden (F1) included.
-    if !benchmark_running && !game.deterministic && core.menu.show_autosave_indicator {
-        let alpha = game
-            .last_saving_indicator_value
-            .lerp(game.saving_indicator_value, partial_tick)
-            .clamp(0.0, 1.0);
-        if (alpha * 255.0).floor() > 0.0 {
-            hud::build_saving_indicator(&mut elements, sw, sh, gs, alpha, &|t, s| {
-                gfx.renderer.menu_text_width(t, s)
-            });
-        }
-    }
-
     // Recompute after this frame's state changes (a finished benchmark releases
     // the cursor mid-frame), so the renderer doesn't re-hide it from a stale value.
     let hide_cursor = game.input_live() && !game.dead && core.input.is_cursor_captured();
@@ -5439,8 +5500,7 @@ pub fn update_game(
         );
     }
     if game.options_from_game {
-        // TODO: a resource-pack toggle's `menu.reload_assets` is only applied
-        // once back on the title screen.
+        crate::ui::menu::apply_resource_pack_options(core, &mut gfx.renderer, Some(game));
         core.apply_font_options(&mut gfx.renderer);
         if !core.menu.is_options_screen() {
             game.options_from_game = false;

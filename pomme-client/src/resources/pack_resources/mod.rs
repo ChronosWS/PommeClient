@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 use std::io;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -21,12 +21,7 @@ mod vanilla;
 
 #[cfg(test)]
 pub(crate) use embedded::EmbeddedPackResources;
-pub(crate) use embedded::{EmbeddedResourcesSupplier, POMME_ICON};
-#[allow(
-    unused_imports,
-    reason = "the consumer migration (#785) loads the menu fonts"
-)]
-pub(crate) use embedded::{POMME_ICONS_FONT, POMME_UI_FONT};
+pub(crate) use embedded::{EmbeddedResourcesSupplier, POMME_ICON, POMME_ICONS_FONT, POMME_UI_FONT};
 pub(crate) use file::FileResourcesSupplier;
 pub(crate) use mapped::MappedResourcesSupplier;
 pub(crate) use overlayed::OverlayedPackResources;
@@ -36,11 +31,11 @@ pub(crate) use vanilla::VanillaResourcesSupplier;
 pub(crate) const METADATA_EXTENSION: &str = ".mcmeta";
 pub(crate) const PACK_META: &str = "pack.mcmeta";
 
-/// Owned, repeatable, application-thread supplier; invocation may fail.
+/// Owned, repeatable supplier shared across threads; invocation may fail.
 /// Captures must retain any needed storage leases rather than borrow a pack or
 /// manager. Owned streams are memory-safe beyond those objects' lifetimes, but
 /// continued usability after explicit pack closure is a backend policy.
-pub(crate) type IoSupplier<T> = Rc<dyn Fn() -> io::Result<T> + 'static>;
+pub(crate) type IoSupplier<T> = Arc<dyn Fn() -> io::Result<T> + Send + Sync + 'static>;
 
 /// Enumeration transfers identifiers and unopened suppliers to the caller.
 pub(crate) type ResourceOutput<'a> = dyn FnMut(ResourceId, IoSupplier<ReadStream>) + 'a;
@@ -366,7 +361,7 @@ mod path_validation {
 pub(crate) mod test_pack {
     use std::collections::{HashMap, HashSet};
     use std::io;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     use serde_json::Value;
 
@@ -409,7 +404,7 @@ pub(crate) mod test_pack {
     }
 
     fn supplier(bytes: &'static str) -> IoSupplier<ReadStream> {
-        Rc::new(move || Ok(Box::new(bytes.as_bytes()) as ReadStream))
+        Arc::new(move || Ok(Box::new(bytes.as_bytes()) as ReadStream))
     }
 
     impl PackMetadataResources for TestPack {
